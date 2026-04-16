@@ -1,0 +1,11 @@
+{
+  "vault_root": "/path/to/your/Obsidian Vault parent (contains 'Permanent Note/')",
+  "learning_base": "Permanent Note/08_YouTube学習",
+  "assets_dir": "Permanent Note/_assets/2026/pipeline-youtube",
+  "chunk_seconds": 30,
+  "concurrency": 1,
+  "default_video_resolution": "480",
+  "capture_format": "auto",
+  "whisper_model": "small",
+  "ai_model": "sonnet"
+}
