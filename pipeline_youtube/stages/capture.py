@@ -253,14 +253,15 @@ def run_stage_capture(
     if not ranges:
         return CaptureResult(ranges=[], error="no_ranges_parsed")
 
+    if dry_run:
+        return CaptureResult(ranges=ranges, capture_format=capture_format) 
+
     try:
         choice = _resolve_capture_format(capture_format)
     except RuntimeError as e:
         return CaptureResult(ranges=ranges, error=f"format_unavailable: {e}")
 
     ext = choice.ext
-    if dry_run:
-        return CaptureResult(ranges=ranges, capture_format=ext)
 
     # Resolve the assets dir (subject to path safety)
     vault_root = get_vault_root()
