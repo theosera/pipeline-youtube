@@ -32,6 +32,7 @@ packages = ["pipeline_youtube"]
 
 [dependency-groups]
 dev = [
+    "mypy>=1.20.1",
     "pytest>=8",
     "pytest-asyncio>=0.23",
 ]

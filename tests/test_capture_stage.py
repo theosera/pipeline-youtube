@@ -18,6 +18,7 @@ from pipeline_youtube.stages.capture import (
     CaptureOutcome,
     CaptureResult,
     SummaryRange,
+    _FormatChoice,
     _capture_image_name,
     parse_summary_ranges,
     run_stage_capture,
@@ -188,7 +189,19 @@ class TestRunStageCapture:
             dest.write_bytes(b"\x00\x00\x00\x20ftypmp42")  # mp4 magic
 
         monkeypatch.setattr(capture_stage, "_download_video", fake_download)
+        # Pin format to WebP so test is deterministic regardless of host ffmpeg capabilities
+        monkeypatch.setattr(
+            capture_stage,
+            "_resolve_capture_format",
+            lambda _fmt: _FormatChoice(ext="webp", strategy="direct"),
+        )
         monkeypatch.setattr(subprocess, "run", _fake_successful_ffmpeg)
+        # Pin format to WebP so test is deterministic regardless of host ffmpeg capabilities
+        monkeypatch.setattr(
+            capture_stage,
+            "_resolve_capture_format",
+            lambda _fmt: _FormatChoice(ext="webp", strategy="direct"),
+        )
 
         result = run_stage_capture(
             video,
@@ -302,6 +315,12 @@ class TestRunStageCapture:
             dest.write_bytes(b"stub")
 
         monkeypatch.setattr(capture_stage, "_download_video", fake_download)
+        # Pin format to WebP so test is deterministic regardless of host ffmpeg capabilities
+        monkeypatch.setattr(
+            capture_stage,
+            "_resolve_capture_format",
+            lambda _fmt: _FormatChoice(ext="webp", strategy="direct"),
+        )
 
         call_count = {"n": 0}
 
@@ -344,7 +363,19 @@ class TestRunStageCapture:
             recorded_paths.append(dest)
 
         monkeypatch.setattr(capture_stage, "_download_video", fake_download)
+        # Pin format to WebP so test is deterministic regardless of host ffmpeg capabilities
+        monkeypatch.setattr(
+            capture_stage,
+            "_resolve_capture_format",
+            lambda _fmt: _FormatChoice(ext="webp", strategy="direct"),
+        )
         monkeypatch.setattr(subprocess, "run", _fake_successful_ffmpeg)
+        # Pin format to WebP so test is deterministic regardless of host ffmpeg capabilities
+        monkeypatch.setattr(
+            capture_stage,
+            "_resolve_capture_format",
+            lambda _fmt: _FormatChoice(ext="webp", strategy="direct"),
+        )
 
         run_stage_capture(
             video,
