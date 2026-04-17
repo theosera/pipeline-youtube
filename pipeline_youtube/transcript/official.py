@@ -51,18 +51,18 @@ def fetch_official(video_id: str, languages: list[str]) -> TranscriptResult:
         transcript_list = api.list(video_id)
         transcript = transcript_list.find_manually_created_transcript(languages)
         fetched = transcript.fetch()
-    except NoTranscriptFound:
-        raise TranscriptNotAvailable("no_manual_transcript_in_languages")
-    except TranscriptsDisabled:
-        raise TranscriptNotAvailable("transcripts_disabled")
-    except VideoUnavailable:
-        raise TranscriptNotAvailable("video_unavailable")
-    except IpBlocked:
-        raise TranscriptNotAvailable("ip_blocked")
+    except NoTranscriptFound as e:
+        raise TranscriptNotAvailable("no_manual_transcript_in_languages") from e
+    except TranscriptsDisabled as e:
+        raise TranscriptNotAvailable("transcripts_disabled") from e
+    except VideoUnavailable as e:
+        raise TranscriptNotAvailable("video_unavailable") from e
+    except IpBlocked as e:
+        raise TranscriptNotAvailable("ip_blocked") from e
     except CouldNotRetrieveTranscript as e:
-        raise TranscriptNotAvailable(f"retrieve_failed:{type(e).__name__}")
+        raise TranscriptNotAvailable(f"retrieve_failed:{type(e).__name__}") from e
     except Exception as e:  # catch-all so the chain continues
-        raise TranscriptNotAvailable(f"unexpected:{type(e).__name__}:{e}")
+        raise TranscriptNotAvailable(f"unexpected:{type(e).__name__}:{e}") from e
 
     snippets = [
         TranscriptSnippet(text=s.text, start=float(s.start), duration=float(s.duration))

@@ -65,9 +65,7 @@ class ClaudeResponse:
     def total_tokens(self) -> int:
         """Sum of fresh input + cache creation + output (cache reads are ~free)."""
         return (
-            (self.input_tokens or 0)
-            + (self.cache_creation_tokens or 0)
-            + (self.output_tokens or 0)
+            (self.input_tokens or 0) + (self.cache_creation_tokens or 0) + (self.output_tokens or 0)
         )
 
 
@@ -188,9 +186,7 @@ def invoke_claude(
             env=env,
         )
     except subprocess.TimeoutExpired as e:
-        raise ClaudeCliError(
-            f"claude -p timeout after {timeout}s (cmd: {shlex.join(cmd)})"
-        ) from e
+        raise ClaudeCliError(f"claude -p timeout after {timeout}s (cmd: {shlex.join(cmd)})") from e
     except FileNotFoundError as e:
         raise ClaudeCliError(
             "`claude` CLI not found in PATH. Install Claude Code or run `claude login`."

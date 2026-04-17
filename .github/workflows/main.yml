@@ -30,6 +30,12 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
+      - name: Lint (ruff check)
+        run: uv run ruff check pipeline_youtube/ tests/
+
+      - name: Format check (ruff format --check)
+        run: uv run ruff format --check pipeline_youtube/ tests/
+
       - name: Type check
         run: uv run mypy pipeline_youtube/ --ignore-missing-imports
 

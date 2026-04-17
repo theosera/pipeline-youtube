@@ -107,6 +107,7 @@ def run_stage_synthesis(
     playlist_title: str,
     model: str = "sonnet",
     min_playlist_size: int = MIN_PLAYLIST_SIZE,
+    max_chapters: int | None = None,
     dry_run: bool = False,
     folder_name_override: str | None = None,
 ) -> SynthesisStageResult:
@@ -155,7 +156,7 @@ def run_stage_synthesis(
     agent_results.append(alpha_res)
 
     try:
-        chapters, beta_res = call_beta(topics, model=model)
+        chapters, beta_res = call_beta(topics, model=model, max_chapters=max_chapters)
     except SynthesisParseError as e:
         return SynthesisStageResult(
             topics=topics, agent_results=agent_results, error=f"beta_parse_failed: {e}"

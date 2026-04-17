@@ -78,14 +78,10 @@ class TestRunStageScripts:
         monkeypatch.setattr(
             scripts_stage,
             "fetch_with_fallback",
-            lambda video_id, languages, fetchers: _fake_fetch_success()(
-                video_id, languages
-            ),
+            lambda video_id, languages, fetchers: _fake_fetch_success()(video_id, languages),
         )
 
-        result = scripts_stage.run_stage_scripts(
-            video, scripts_path, window_seconds=30.0
-        )
+        result = scripts_stage.run_stage_scripts(video, scripts_path, window_seconds=30.0)
 
         assert result.source == TranscriptSource.OFFICIAL
 
@@ -108,9 +104,7 @@ class TestRunStageScripts:
         monkeypatch.setattr(
             scripts_stage,
             "fetch_with_fallback",
-            lambda video_id, languages, fetchers: _fake_fetch_success()(
-                video_id, languages
-            ),
+            lambda video_id, languages, fetchers: _fake_fetch_success()(video_id, languages),
         )
 
         result = scripts_stage.run_stage_scripts(
@@ -148,9 +142,7 @@ class TestRunStageScripts:
         monkeypatch.setattr(
             scripts_stage,
             "fetch_with_fallback",
-            lambda video_id, languages, fetchers: _fake_fetch_success()(
-                video_id, languages
-            ),
+            lambda video_id, languages, fetchers: _fake_fetch_success()(video_id, languages),
         )
 
         with pytest.raises(FileNotFoundError):

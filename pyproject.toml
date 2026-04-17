@@ -33,11 +33,32 @@ packages = ["pipeline_youtube"]
 [dependency-groups]
 dev = [
     "mypy>=1.20.1",
+    "pre-commit>=3.7",
     "pytest>=8",
     "pytest-asyncio>=0.23",
+    "ruff>=0.8",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+# Conservative default set: pyflakes, pycodestyle errors + warnings,
+# isort, bugbear, pyupgrade, simplify. Everything else (formatting,
+# naming, docstrings) is left to review / the formatter.
+select = ["E", "W", "F", "I", "B", "UP", "SIM"]
+# Allow ambiguous-var names in pedagogical/Japanese-heavy codebase.
+ignore = [
+    "E501",  # line length: enforced by formatter only when auto-fixable
+    "B008",  # click.Option(...) in decorator default is idiomatic
+    "SIM108",  # ternary vs if/else readability is case-by-case
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]  # allow assert False in tests

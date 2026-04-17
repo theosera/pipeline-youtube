@@ -22,8 +22,7 @@ fallback chain terminates gracefully.
 
 from __future__ import annotations
 
-import shutil
-import subprocess
+import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -197,16 +196,14 @@ def fetch_whisper(
         finally:
             # Clean up audio file
             if audio_path is not None:
-                try:
+                with contextlib.suppress(OSError):
                     audio_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
 
 
 class _noop_lock:
     """No-op context manager when filelock is not installed."""
 
-    def __enter__(self) -> "_noop_lock":
+    def __enter__(self) -> _noop_lock:
         return self
 
     def __exit__(self, *args: object) -> None:

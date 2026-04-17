@@ -70,9 +70,7 @@ class TestFormatLearningMaterials:
 
     def test_length_mismatch_raises(self):
         with pytest.raises(ValueError, match="length mismatch"):
-            format_learning_materials(
-                [_video("v1", "t1")], ["body 1", "body 2"]
-            )
+            format_learning_materials([_video("v1", "t1")], ["body 1", "body 2"])
 
     def test_sanitizes_control_chars(self):
         videos = [_video("v1", "title\x01with\x08control")]
@@ -131,9 +129,7 @@ class TestCallAlpha:
         ]
         bodies = ["body1", "body2", "body3"]
 
-        topics, result = call_alpha(
-            videos, bodies, playlist_title="Test Playlist"
-        )
+        topics, result = call_alpha(videos, bodies, playlist_title="Test Playlist")
 
         assert len(topics) == 2
         assert topics[0].topic_id == "t001"
@@ -142,7 +138,10 @@ class TestCallAlpha:
 
         # System prompt is append mode
         assert "append_system_prompt" in captured
-        assert "TopicExtractor" in captured["append_system_prompt"] or "topic" in captured["append_system_prompt"].lower()
+        assert (
+            "TopicExtractor" in captured["append_system_prompt"]
+            or "topic" in captured["append_system_prompt"].lower()
+        )
 
         # Prompt wraps materials in untrusted_content
         prompt = captured["prompt"]
@@ -162,9 +161,7 @@ class TestCallAlpha:
         )
 
         with pytest.raises(SynthesisParseError):
-            call_alpha(
-                [_video("v1", "t1")], ["body"], playlist_title="x"
-            )
+            call_alpha([_video("v1", "t1")], ["body"], playlist_title="x")
 
 
 # =====================================================
@@ -233,7 +230,43 @@ class TestCallBeta:
         prompt = captured["prompt"]
         assert "t001" in prompt
         assert "t002" in prompt
-        assert "ChapterArchitect" in captured["append_system_prompt"] or "章" in captured["append_system_prompt"]
+        assert (
+            "ChapterArchitect" in captured["append_system_prompt"]
+            or "章" in captured["append_system_prompt"]
+        )
+
+    def test_max_chapters_injects_prompt_constraint(self, monkeypatch):
+        captured: dict = {}
+        monkeypatch.setattr(
+            agents_mod,
+            "invoke_claude",
+            lambda **kw: (captured.update(kw), _fake_response(SAMPLE_BETA_OUTPUT))[1],
+        )
+
+        topics = [
+            Topic(topic_id="t001", label="A", duplication_count=3, category="core"),
+        ]
+        call_beta(topics, max_chapters=5)
+
+        prompt = captured["prompt"]
+        assert "最大 5 章" in prompt
+
+    def test_unset_max_chapters_omits_constraint(self, monkeypatch):
+        captured: dict = {}
+        monkeypatch.setattr(
+            agents_mod,
+            "invoke_claude",
+            lambda **kw: (captured.update(kw), _fake_response(SAMPLE_BETA_OUTPUT))[1],
+        )
+
+        topics = [
+            Topic(topic_id="t001", label="A", duplication_count=3, category="core"),
+        ]
+        call_beta(topics)
+
+        prompt = captured["prompt"]
+        assert "最大" not in prompt
+        assert "追加制約" not in prompt
 
 
 # =====================================================
@@ -263,7 +296,9 @@ class TestCallGamma:
             Topic(topic_id="t002", label="y", duplication_count=2, category="supporting"),
         ]
         chapters = [
-            ChapterPlan(index=1, label="ch1", category="core", topic_ids=["t001", "t002"], source_videos=[]),
+            ChapterPlan(
+                index=1, label="ch1", category="core", topic_ids=["t001", "t002"], source_videos=[]
+            ),
         ]
         report, result = call_gamma(topics, chapters)
 
@@ -316,12 +351,14 @@ class TestCallLeader:
         chapters = [
             ChapterPlan(index=1, label="ch1", category="core", topic_ids=["t001"], source_videos=[])
         ]
-        coverage = CoverageReport(
-            covered_topic_ids=["t001"], missing_topic_ids=[], notes="ok"
-        )
+        coverage = CoverageReport(covered_topic_ids=["t001"], missing_topic_ids=[], notes="ok")
 
         leader_out, result = call_leader(
-            videos, bodies, topics, chapters, coverage,
+            videos,
+            bodies,
+            topics,
+            chapters,
+            coverage,
             playlist_title="Test Playlist",
         )
 

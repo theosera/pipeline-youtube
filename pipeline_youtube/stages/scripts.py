@@ -21,7 +21,6 @@ from ..transcript.base import TranscriptResult, fetch_with_fallback
 from ..transcript.chunking import Chunk, chunk_by_window
 from ..transcript.official import fetch_official
 
-
 DEFAULT_LANGUAGES: list[str] = ["ja", "en"]
 
 

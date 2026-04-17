@@ -6,7 +6,6 @@ download or model inference happens.
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -63,13 +62,15 @@ class TestFetchWhisper:
     @patch("pipeline_youtube.transcript.whisper_fallback.whisper", create=True)
     def test_whisper_not_installed_raises(self, _mock_whisper):
         """When whisper import fails, TranscriptNotAvailable is raised."""
-        with patch.dict("sys.modules", {"whisper": None}):
-            with patch(
+        with (
+            patch.dict("sys.modules", {"whisper": None}),
+            patch(
                 "pipeline_youtube.transcript.whisper_fallback.fetch_whisper",
                 side_effect=TranscriptNotAvailable("whisper_not_installed"),
-            ):
-                with pytest.raises(TranscriptNotAvailable, match="whisper_not_installed"):
-                    fetch_whisper("test_id", ["ja"])
+            ),
+            pytest.raises(TranscriptNotAvailable, match="whisper_not_installed"),
+        ):
+            fetch_whisper("test_id", ["ja"])
 
     @patch("pipeline_youtube.transcript.whisper_fallback._download_audio")
     @patch("pipeline_youtube.transcript.whisper_fallback._run_whisper")
@@ -101,18 +102,22 @@ class TestFetchWhisper:
         mock_download.return_value = audio_file
         mock_run.return_value = []
 
-        with patch.dict("sys.modules", {"whisper": MagicMock()}):
-            with pytest.raises(TranscriptNotAvailable, match="whisper_produced_no_segments"):
-                fetch_whisper("test_id", ["ja"])
+        with (
+            patch.dict("sys.modules", {"whisper": MagicMock()}),
+            pytest.raises(TranscriptNotAvailable, match="whisper_produced_no_segments"),
+        ):
+            fetch_whisper("test_id", ["ja"])
 
     @patch("pipeline_youtube.transcript.whisper_fallback._download_audio")
     def test_download_failure_raises(self, mock_download):
         """When audio download fails, TranscriptNotAvailable is raised."""
         mock_download.side_effect = TranscriptNotAvailable("audio_download_failed: 404")
 
-        with patch.dict("sys.modules", {"whisper": MagicMock()}):
-            with pytest.raises(TranscriptNotAvailable, match="audio_download_failed"):
-                fetch_whisper("test_id", ["en"])
+        with (
+            patch.dict("sys.modules", {"whisper": MagicMock()}),
+            pytest.raises(TranscriptNotAvailable, match="audio_download_failed"),
+        ):
+            fetch_whisper("test_id", ["en"])
 
     @patch("pipeline_youtube.transcript.whisper_fallback._download_audio")
     @patch("pipeline_youtube.transcript.whisper_fallback._run_whisper")

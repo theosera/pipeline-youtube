@@ -7,12 +7,8 @@ import json
 import pytest
 
 from pipeline_youtube.synthesis.scoring import (
-    Category,
-    ChapterPlan,
-    CoverageReport,
     LeaderOutput,
     SynthesisParseError,
-    Topic,
     derive_category,
     extract_json,
     parse_alpha_topics,

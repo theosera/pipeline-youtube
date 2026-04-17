@@ -28,9 +28,7 @@ class _FakeSnippet:
     duration: float
 
 
-def _make_fake_transcript(
-    snippets: list[_FakeSnippet], language_code: str = "ja"
-) -> MagicMock:
+def _make_fake_transcript(snippets: list[_FakeSnippet], language_code: str = "ja") -> MagicMock:
     t = MagicMock()
     t.language_code = language_code
     t.fetch.return_value = snippets
@@ -43,16 +41,12 @@ def _make_fake_transcript_list(
 ) -> MagicMock:
     tl = MagicMock()
     if manual is None:
-        tl.find_manually_created_transcript.side_effect = NoTranscriptFound(
-            "vid", ["ja"], []
-        )
+        tl.find_manually_created_transcript.side_effect = NoTranscriptFound("vid", ["ja"], [])
     else:
         tl.find_manually_created_transcript.return_value = manual
 
     if generated is None:
-        tl.find_generated_transcript.side_effect = NoTranscriptFound(
-            "vid", ["ja"], []
-        )
+        tl.find_generated_transcript.side_effect = NoTranscriptFound("vid", ["ja"], [])
     else:
         tl.find_generated_transcript.return_value = generated
 

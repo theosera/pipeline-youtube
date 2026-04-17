@@ -11,13 +11,10 @@ import pytest
 from pipeline_youtube import config
 from pipeline_youtube.playlist import VideoMeta
 from pipeline_youtube.providers.claude_cli import ClaudeResponse
-from pipeline_youtube.stages import synthesis as synthesis_stage
 from pipeline_youtube.stages.synthesis import (
-    MIN_PLAYLIST_SIZE,
     run_stage_synthesis,
 )
 from pipeline_youtube.synthesis import agents as agents_mod
-from pipeline_youtube.synthesis.scoring import CoverageReport
 
 
 @pytest.fixture
@@ -42,25 +39,63 @@ def _video(i: int) -> VideoMeta:
 
 def _fake(text: str) -> ClaudeResponse:
     return ClaudeResponse(
-        text=text, model="sonnet", input_tokens=3, output_tokens=500,
-        cache_creation_tokens=24000, cache_read_tokens=15000,
-        total_cost_usd=0.1, duration_ms=20000,
+        text=text,
+        model="sonnet",
+        input_tokens=3,
+        output_tokens=500,
+        cache_creation_tokens=24000,
+        cache_read_tokens=15000,
+        total_cost_usd=0.1,
+        duration_ms=20000,
     )
 
 
 ALPHA_OUT = json.dumps(
-    {"topics": [
-        {"topic_id": "t001", "label": "コンテキスト管理", "source_videos": ["vid001", "vid002", "vid003"], "duplication_count": 3, "category": "core", "summary": "s", "excerpts": []},
-        {"topic_id": "t002", "label": "Agent Teams", "source_videos": ["vid001", "vid002"], "duplication_count": 2, "category": "supporting", "summary": "s"},
-    ]},
+    {
+        "topics": [
+            {
+                "topic_id": "t001",
+                "label": "コンテキスト管理",
+                "source_videos": ["vid001", "vid002", "vid003"],
+                "duplication_count": 3,
+                "category": "core",
+                "summary": "s",
+                "excerpts": [],
+            },
+            {
+                "topic_id": "t002",
+                "label": "Agent Teams",
+                "source_videos": ["vid001", "vid002"],
+                "duplication_count": 2,
+                "category": "supporting",
+                "summary": "s",
+            },
+        ]
+    },
     ensure_ascii=False,
 )
 
 BETA_OUT = json.dumps(
-    {"chapters": [
-        {"index": 1, "label": "コンテキスト管理の基礎", "category": "core", "topic_ids": ["t001"], "source_videos": ["vid001", "vid002", "vid003"], "rationale": "r"},
-        {"index": 2, "label": "Agent Teams 実装", "category": "supporting", "topic_ids": ["t002"], "source_videos": ["vid001", "vid002"], "rationale": "r"},
-    ]},
+    {
+        "chapters": [
+            {
+                "index": 1,
+                "label": "コンテキスト管理の基礎",
+                "category": "core",
+                "topic_ids": ["t001"],
+                "source_videos": ["vid001", "vid002", "vid003"],
+                "rationale": "r",
+            },
+            {
+                "index": 2,
+                "label": "Agent Teams 実装",
+                "category": "supporting",
+                "topic_ids": ["t002"],
+                "source_videos": ["vid001", "vid002"],
+                "rationale": "r",
+            },
+        ]
+    },
     ensure_ascii=False,
 )
 
@@ -76,12 +111,20 @@ LEADER_OUT = json.dumps(
             "body_markdown": "# Test Playlist ハンズオン\n\n## 章構成\n- [[01_コンテキスト管理の基礎]] - core\n- [[02_Agent Teams 実装]] - supporting",
         },
         "chapters": [
-            {"chapter_index": 1, "label": "コンテキスト管理の基礎", "category": "core",
-             "source_video_ids": ["vid001", "vid002", "vid003"],
-             "body_markdown": "> [!important]\n> コア概念です\n\n## 概念定義\n\n..."},
-            {"chapter_index": 2, "label": "Agent Teams 実装", "category": "supporting",
-             "source_video_ids": ["vid001", "vid002"],
-             "body_markdown": "## 実装\n\n**Agent Teams** とは..."},
+            {
+                "chapter_index": 1,
+                "label": "コンテキスト管理の基礎",
+                "category": "core",
+                "source_video_ids": ["vid001", "vid002", "vid003"],
+                "body_markdown": "> [!important]\n> コア概念です\n\n## 概念定義\n\n...",
+            },
+            {
+                "chapter_index": 2,
+                "label": "Agent Teams 実装",
+                "category": "supporting",
+                "source_video_ids": ["vid001", "vid002"],
+                "body_markdown": "## 実装\n\n**Agent Teams** とは...",
+            },
         ],
     },
     ensure_ascii=False,
@@ -121,12 +164,50 @@ class TestSkipRules:
         bodies = [f"body{i}" for i in range(1, 4)]
 
         result = run_stage_synthesis(
-            videos, bodies,
+            videos,
+            bodies,
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
         )
         assert result.skipped is False
         assert result.error is None
+
+    def test_min_playlist_size_override_raises_threshold(self, vault):
+        videos = [_video(i) for i in range(1, 4)]
+        bodies = [f"body{i}" for i in range(1, 4)]
+        result = run_stage_synthesis(
+            videos,
+            bodies,
+            run_time=datetime(2026, 4, 15),
+            playlist_title="Test Playlist",
+            min_playlist_size=5,
+        )
+        assert result.skipped is True
+        assert result.skip_reason is not None
+        assert "< 5" in result.skip_reason
+
+    def test_max_chapters_threads_through_to_beta(self, vault, monkeypatch):
+        _mock_all_agents(monkeypatch)
+        captured: dict = {}
+        original = agents_mod.invoke_claude
+
+        def spy(**kw):
+            if "チャプターアーキテクト" in kw.get("append_system_prompt", ""):
+                captured.update(kw)
+            return original(**kw)
+
+        monkeypatch.setattr(agents_mod, "invoke_claude", spy)
+
+        videos = [_video(i) for i in range(1, 4)]
+        bodies = [f"body{i}" for i in range(1, 4)]
+        run_stage_synthesis(
+            videos,
+            bodies,
+            run_time=datetime(2026, 4, 15),
+            playlist_title="Test Playlist",
+            max_chapters=4,
+        )
+        assert "最大 4 章" in captured["prompt"]
 
     def test_length_mismatch_returns_error(self, vault):
         result = run_stage_synthesis(
@@ -151,7 +232,8 @@ class TestHappyPath:
         bodies = [f"body{i}" for i in range(1, 4)]
 
         result = run_stage_synthesis(
-            videos, bodies,
+            videos,
+            bodies,
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
         )
@@ -172,7 +254,8 @@ class TestHappyPath:
         bodies = [f"body{i}" for i in range(1, 4)]
 
         result = run_stage_synthesis(
-            videos, bodies,
+            videos,
+            bodies,
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
         )
@@ -190,7 +273,8 @@ class TestHappyPath:
         bodies = [f"body{i}" for i in range(1, 4)]
 
         result = run_stage_synthesis(
-            videos, bodies,
+            videos,
+            bodies,
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
         )
@@ -207,7 +291,8 @@ class TestHappyPath:
         bodies = [f"body{i}" for i in range(1, 4)]
 
         result = run_stage_synthesis(
-            videos, bodies,
+            videos,
+            bodies,
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
         )
@@ -229,7 +314,8 @@ class TestHappyPath:
         bodies = [f"body{i}" for i in range(1, 4)]
 
         result = run_stage_synthesis(
-            videos, bodies,
+            videos,
+            bodies,
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
         )
@@ -245,7 +331,8 @@ class TestHappyPath:
         bodies = [f"body{i}" for i in range(1, 4)]
 
         result = run_stage_synthesis(
-            videos, bodies,
+            videos,
+            bodies,
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
             dry_run=True,
@@ -266,7 +353,8 @@ class TestErrorHandling:
         _mock_all_agents(monkeypatch, responses=["not json", BETA_OUT, GAMMA_OUT, LEADER_OUT])
         videos = [_video(i) for i in range(1, 4)]
         result = run_stage_synthesis(
-            videos, ["b1", "b2", "b3"],
+            videos,
+            ["b1", "b2", "b3"],
             run_time=datetime(2026, 4, 15),
             playlist_title="x",
         )
@@ -277,7 +365,8 @@ class TestErrorHandling:
         _mock_all_agents(monkeypatch, responses=[ALPHA_OUT, "not json", GAMMA_OUT, LEADER_OUT])
         videos = [_video(i) for i in range(1, 4)]
         result = run_stage_synthesis(
-            videos, ["b1", "b2", "b3"],
+            videos,
+            ["b1", "b2", "b3"],
             run_time=datetime(2026, 4, 15),
             playlist_title="x",
         )

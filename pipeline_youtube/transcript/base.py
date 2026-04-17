@@ -14,13 +14,13 @@ the plan (decision 1).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
-from enum import Enum
-from typing import Callable
+from datetime import UTC, datetime
+from enum import StrEnum
 
 
-class TranscriptSource(str, Enum):
+class TranscriptSource(StrEnum):
     OFFICIAL = "official"
     AUTO = "auto-generated"
     WHISPER = "whisper"
@@ -68,7 +68,7 @@ Fetcher = Callable[[str, list[str]], TranscriptResult]
 
 
 def _iso_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def build_result(

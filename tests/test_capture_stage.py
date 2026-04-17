@@ -5,25 +5,21 @@ from __future__ import annotations
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from pipeline_youtube import config
-from pipeline_youtube.obsidian import format_video_note_base
 from pipeline_youtube.pipeline import create_placeholder_notes
 from pipeline_youtube.playlist import VideoMeta
 from pipeline_youtube.stages import capture as capture_stage
 from pipeline_youtube.stages.capture import (
-    CaptureOutcome,
     CaptureResult,
-    SummaryRange,
-    _FormatChoice,
     _capture_image_name,
+    _FormatChoice,
     parse_summary_ranges,
     run_stage_capture,
 )
-
 
 # =====================================================
 # Pure-function tests (no filesystem / subprocess)
@@ -85,10 +81,7 @@ class TestParseSummaryRanges:
         assert parse_summary_ranges("") == []
 
     def test_ignores_non_range_h3(self):
-        md = (
-            "### プロローグ\n本文\n"
-            "### [00:00 ~ 01:00] 正しいレンジ\n本文\n"
-        )
+        md = "### プロローグ\n本文\n### [00:00 ~ 01:00] 正しいレンジ\n本文\n"
         ranges = parse_summary_ranges(md)
         assert len(ranges) == 1
         assert ranges[0].heading == "正しいレンジ"
@@ -178,9 +171,7 @@ def _fake_failing_ffmpeg(*args, **kwargs):
 
 
 class TestRunStageCapture:
-    def test_happy_path_creates_webps_and_appends_md(
-        self, vault, monkeypatch
-    ):
+    def test_happy_path_creates_webps_and_appends_md(self, vault, monkeypatch):
         video, paths = _setup_case(vault)
 
         # Mock yt-dlp download to create an empty mp4
@@ -304,9 +295,7 @@ class TestRunStageCapture:
         assert "RuntimeError" in result.error
         assert result.video_downloaded is False
 
-    def test_partial_ffmpeg_failure_numbering_contiguous(
-        self, vault, monkeypatch
-    ):
+    def test_partial_ffmpeg_failure_numbering_contiguous(self, vault, monkeypatch):
         """Range 1 fails → successful names remain contiguous: _00, _01, _02."""
         video, paths = _setup_case(vault)
 
@@ -327,9 +316,7 @@ class TestRunStageCapture:
         def flaky_ffmpeg(*args, **kwargs):
             call_count["n"] += 1
             if call_count["n"] == 2:  # second range fails
-                raise subprocess.CalledProcessError(
-                    returncode=1, cmd=args[0], stderr=b"oops"
-                )
+                raise subprocess.CalledProcessError(returncode=1, cmd=args[0], stderr=b"oops")
             return _fake_successful_ffmpeg(*args, **kwargs)
 
         monkeypatch.setattr(subprocess, "run", flaky_ffmpeg)

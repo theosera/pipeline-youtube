@@ -35,7 +35,6 @@ from .scoring import (
     parse_leader_output,
 )
 
-
 # =====================================================
 # System prompts (one per role)
 # =====================================================
@@ -304,7 +303,7 @@ def format_learning_materials(
         )
 
     parts: list[str] = []
-    for video, body in zip(videos, learning_md_bodies):
+    for video, body in zip(videos, learning_md_bodies, strict=True):
         safe_title = sanitize_untrusted_text(video.title or "Untitled", 200)
         safe_body = sanitize_untrusted_text(body, _MAX_INPUT_CHARS // max(len(videos), 1))
         parts.append(f"## VIDEO: {video.video_id}: {safe_title}\n\n{safe_body}")
@@ -406,12 +405,24 @@ def call_beta(
     topics: list[Topic],
     *,
     model: str = "sonnet",
+    max_chapters: int | None = None,
 ) -> tuple[list[ChapterPlan], AgentCallResult]:
-    """Run the ChapterArchitect agent."""
+    """Run the ChapterArchitect agent.
+
+    `max_chapters` (if set) caps the number of chapters β may produce.
+    Enforced via a prompt constraint — the caller does not post-filter.
+    """
+    constraint = ""
+    if max_chapters is not None and max_chapters >= 1:
+        constraint = (
+            f"\n\n## 追加制約\n章数は **最大 {max_chapters} 章** までに収めてください。"
+            "それを超える場合は関連トピックをまとめて章数を減らしてください。"
+        )
     prompt = (
         "α (TopicExtractor) が抽出したトピック群です。"
         "これを基に学習ハンズオンの章立てを設計してください。\n\n"
         f"{wrap_untrusted(_topics_to_json_block(topics))}"
+        f"{constraint}"
     )
     response = invoke_claude(
         prompt=prompt,
