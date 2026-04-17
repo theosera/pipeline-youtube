@@ -13,7 +13,6 @@ from pipeline_youtube.stages.learning import (
     parse_capture_mapping,
 )
 
-
 SAMPLE_CAPTURE_BODY = """[00:00 ~ 01:03]
 ![[2026-04-15-2123 Anthropicが公開したハーネス設計、全部解説します.webp]]
 

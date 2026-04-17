@@ -20,9 +20,7 @@ def set_vault_root(path: str | Path) -> None:
 
 def get_vault_root() -> Path:
     if _vault_root is None:
-        raise RuntimeError(
-            "vault_root is not set. Call set_vault_root() before using path_safety."
-        )
+        raise RuntimeError("vault_root is not set. Call set_vault_root() before using path_safety.")
     return _vault_root
 
 

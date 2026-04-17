@@ -51,9 +51,7 @@ def write_chapter(
     )
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        fm + "\n" + chapter.body_markdown.strip() + "\n", encoding="utf-8"
-    )
+    target.write_text(fm + "\n" + chapter.body_markdown.strip() + "\n", encoding="utf-8")
     return target
 
 

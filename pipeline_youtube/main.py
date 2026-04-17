@@ -12,6 +12,7 @@ runs more than one instance even under concurrency > 1.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import sys
@@ -178,10 +179,8 @@ def _process_video(
 
         click.echo("  [01] scripts...", nl=False)
         transcript = run_stage_scripts(video, paths["scripts"], dry_run=dry_run)
-        try:
+        with contextlib.suppress(Exception):
             record_transcript_stat(video, transcript)
-        except Exception:
-            pass
         click.echo(
             f" source={transcript.source.value}"
             f" snippets={len(transcript.snippets)}"
@@ -308,6 +307,19 @@ async def _run_videos_concurrent(
     help="Claude model alias for stages 02/04/05 (sonnet, haiku, opus, or full ID).",
 )
 @click.option(
+    "--min-playlist-size",
+    type=click.IntRange(1, 100),
+    default=MIN_PLAYLIST_SIZE,
+    show_default=True,
+    help="Skip stage 05 when fewer than N videos succeed (default 3).",
+)
+@click.option(
+    "--max-chapters",
+    type=click.IntRange(1, 30),
+    default=None,
+    help="Cap β's chapter count via prompt constraint. Unset = let β decide.",
+)
+@click.option(
     "--config",
     "config_path",
     type=click.Path(path_type=Path),
@@ -323,6 +335,8 @@ def cli(
     force_video: tuple[str, ...],
     capture_format: str,
     model: str,
+    min_playlist_size: int,
+    max_chapters: int | None,
     config_path: Path | None,
 ) -> None:
     """Process a YouTube playlist or single-video URL end-to-end."""
@@ -340,6 +354,8 @@ def cli(
     click.echo(f"model: {model}")
     click.echo(f"capture_format: {capture_format}")
     click.echo(f"concurrency: {concurrency}")
+    click.echo(f"min_playlist_size: {min_playlist_size}")
+    click.echo(f"max_chapters: {max_chapters if max_chapters is not None else 'auto'}")
 
     click.echo("fetching metadata...")
     videos = fetch_metadata(url)
@@ -361,9 +377,9 @@ def cli(
             videos, playlist_title, run_time
         )
         click.echo(f"matched: {len(matched_videos)}/{len(videos)} videos")
-        if len(matched_videos) < MIN_PLAYLIST_SIZE:
+        if len(matched_videos) < min_playlist_size:
             click.echo(
-                f"[skip] only {len(matched_videos)} matched (< {MIN_PLAYLIST_SIZE}), "
+                f"[skip] only {len(matched_videos)} matched (< {min_playlist_size}), "
                 "stage 05 skipped"
             )
             return
@@ -428,9 +444,9 @@ def cli(
             click.echo("[skip] --skip-synthesis: stage 05 bypassed")
             return
 
-        if len(succeeded) < MIN_PLAYLIST_SIZE:
+        if len(succeeded) < min_playlist_size:
             click.echo(
-                f"[skip] only {len(succeeded)} videos succeeded (< {MIN_PLAYLIST_SIZE}), "
+                f"[skip] only {len(succeeded)} videos succeeded (< {min_playlist_size}), "
                 "stage 05 skipped"
             )
             return
@@ -444,6 +460,8 @@ def cli(
         run_time=run_time,
         playlist_title=playlist_title,
         model=model,
+        min_playlist_size=min_playlist_size,
+        max_chapters=max_chapters,
         dry_run=dry_run,
         folder_name_override=folder_override,
     )

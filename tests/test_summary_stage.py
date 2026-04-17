@@ -175,9 +175,7 @@ class TestPromptBuilding:
         video = _video()
         run_time = datetime(2026, 4, 14, 21, 41)
         paths = create_placeholder_notes(video, run_time, dry_run=False)
-        transcript = _transcript(
-            [TranscriptSnippet("本文テキスト", 0.0, 30.0)]
-        )
+        transcript = _transcript([TranscriptSnippet("本文テキスト", 0.0, 30.0)])
 
         captured: dict = {}
 
@@ -211,7 +209,10 @@ class TestPromptBuilding:
         monkeypatch.setattr(
             summary_stage,
             "invoke_claude",
-            lambda **kw: (captured.update(kw), _fake_claude_response("## 全体サマリ\n\nok\n\n## 要点タイムライン\n\n"))[1],
+            lambda **kw: (
+                captured.update(kw),
+                _fake_claude_response("## 全体サマリ\n\nok\n\n## 要点タイムライン\n\n"),
+            )[1],
         )
 
         summary_stage.run_stage_summary(video, paths["summary"], transcript)
@@ -230,7 +231,10 @@ class TestPromptBuilding:
         monkeypatch.setattr(
             summary_stage,
             "invoke_claude",
-            lambda **kw: (captured.update(kw), _fake_claude_response("## 全体サマリ\n\nok\n\n## 要点タイムライン\n\n"))[1],
+            lambda **kw: (
+                captured.update(kw),
+                _fake_claude_response("## 全体サマリ\n\nok\n\n## 要点タイムライン\n\n"),
+            )[1],
         )
 
         summary_stage.run_stage_summary(video, paths["summary"], transcript)
@@ -253,7 +257,10 @@ class TestPromptBuilding:
         monkeypatch.setattr(
             summary_stage,
             "invoke_claude",
-            lambda **kw: (captured.update(kw), _fake_claude_response("## 全体サマリ\n\nok\n\n## 要点タイムライン\n\n"))[1],
+            lambda **kw: (
+                captured.update(kw),
+                _fake_claude_response("## 全体サマリ\n\nok\n\n## 要点タイムライン\n\n"),
+            )[1],
         )
 
         summary_stage.run_stage_summary(video, paths["summary"], transcript)

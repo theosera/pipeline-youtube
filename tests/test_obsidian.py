@@ -67,17 +67,12 @@ class TestFormatVideoNoteBase:
     def test_matches_dummy_data(self):
         """Must match the existing dummy-data filename in 08_YouTube学習."""
         dt = datetime(2026, 4, 14, 21, 41)
-        result = format_video_note_base(
-            dt, "Anthropicが公開したハーネス設計、全部解説します"
-        )
+        result = format_video_note_base(dt, "Anthropicが公開したハーネス設計、全部解説します")
         assert result == "2026-04-14-2141 Anthropicが公開したハーネス設計、全部解説します"
 
     def test_unsafe_chars_in_title(self):
         dt = datetime(2026, 4, 14, 21, 41)
-        assert (
-            format_video_note_base(dt, "Slash/and:colon")
-            == "2026-04-14-2141 Slash and colon"
-        )
+        assert format_video_note_base(dt, "Slash/and:colon") == "2026-04-14-2141 Slash and colon"
 
     def test_zero_padded_time(self):
         dt = datetime(2026, 1, 2, 3, 5)
@@ -117,10 +112,7 @@ class TestFormatPlaylistFolder:
 
     def test_strips_multiple_slashes(self):
         dt = datetime(2026, 4, 16, 9, 14)
-        assert (
-            format_playlist_folder_name(dt, "A/B/C Title")
-            == "2026-04-16-0914 C Title"
-        )
+        assert format_playlist_folder_name(dt, "A/B/C Title") == "2026-04-16-0914 C Title"
 
     def test_fullwidth_slash_is_kept(self):
         """Full-width `／` is legitimate Japanese punctuation, not a separator."""
@@ -152,9 +144,7 @@ class TestResolveUniquePath:
 
     def test_custom_extension(self, tmp_path: Path):
         (tmp_path / "image.png").write_text("x")
-        assert (
-            resolve_unique_path(tmp_path, "image", ".png") == tmp_path / "image-2.png"
-        )
+        assert resolve_unique_path(tmp_path, "image", ".png") == tmp_path / "image-2.png"
 
 
 class TestEscapeYaml:

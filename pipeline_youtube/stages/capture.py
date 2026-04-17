@@ -35,13 +35,15 @@ still run and the md records the failure as an HTML comment.
 
 from __future__ import annotations
 
+import contextlib
 import re
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 import yt_dlp  # type: ignore[import-untyped]
 
@@ -254,7 +256,7 @@ def run_stage_capture(
         return CaptureResult(ranges=[], error="no_ranges_parsed")
 
     if dry_run:
-        return CaptureResult(ranges=ranges, capture_format=capture_format) 
+        return CaptureResult(ranges=ranges, capture_format=capture_format)
 
     try:
         choice = _resolve_capture_format(capture_format)
@@ -337,10 +339,8 @@ def run_stage_capture(
             capture_format=ext,
         )
     finally:
-        try:
+        with contextlib.suppress(OSError):
             tmp_video_path.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 # =====================================================
@@ -423,12 +423,18 @@ def _extract_webp_direct(
     """
     cmd = [
         "ffmpeg",
-        "-ss", f"{start_sec:.2f}",
-        "-t", f"{duration:.2f}",
-        "-i", str(video_path),
-        "-vf", f"fps={fps},scale=-2:{scale_height}:flags=lanczos",
-        "-c:v", "libwebp",
-        "-loop", "0",
+        "-ss",
+        f"{start_sec:.2f}",
+        "-t",
+        f"{duration:.2f}",
+        "-i",
+        str(video_path),
+        "-vf",
+        f"fps={fps},scale=-2:{scale_height}:flags=lanczos",
+        "-c:v",
+        "libwebp",
+        "-loop",
+        "0",
         "-an",
         "-y",
         str(output_path),
@@ -468,19 +474,20 @@ def _extract_webp_via_gif2webp(
         #   -m 6: compression method 6 = max quality/size tradeoff
         cmd = [
             "gif2webp",
-            "-q", "75",
-            "-m", "6",
+            "-q",
+            "75",
+            "-m",
+            "6",
             "-mt",
             "-quiet",
             str(tmp_gif),
-            "-o", str(output_path),
+            "-o",
+            str(output_path),
         ]
         subprocess.run(cmd, capture_output=True, check=True, timeout=120)
     finally:
-        try:
+        with contextlib.suppress(OSError):
             tmp_gif.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def _extract_gif(
@@ -504,10 +511,14 @@ def _extract_gif(
     palette_path = output_path.with_suffix(".palette.png")
     palettegen_cmd = [
         "ffmpeg",
-        "-ss", f"{start_sec:.2f}",
-        "-t", f"{duration:.2f}",
-        "-i", str(video_path),
-        "-vf", f"{vf},palettegen",
+        "-ss",
+        f"{start_sec:.2f}",
+        "-t",
+        f"{duration:.2f}",
+        "-i",
+        str(video_path),
+        "-vf",
+        f"{vf},palettegen",
         "-y",
         str(palette_path),
     ]
@@ -517,22 +528,26 @@ def _extract_gif(
         # Pass 2: apply palette to produce the final GIF
         paletteuse_cmd = [
             "ffmpeg",
-            "-ss", f"{start_sec:.2f}",
-            "-t", f"{duration:.2f}",
-            "-i", str(video_path),
-            "-i", str(palette_path),
-            "-lavfi", f"{vf} [x]; [x][1:v] paletteuse",
-            "-loop", "0",
+            "-ss",
+            f"{start_sec:.2f}",
+            "-t",
+            f"{duration:.2f}",
+            "-i",
+            str(video_path),
+            "-i",
+            str(palette_path),
+            "-lavfi",
+            f"{vf} [x]; [x][1:v] paletteuse",
+            "-loop",
+            "0",
             "-an",
             "-y",
             str(output_path),
         ]
         subprocess.run(paletteuse_cmd, capture_output=True, check=True, timeout=180)
     finally:
-        try:
+        with contextlib.suppress(OSError):
             palette_path.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def _render_body(outcomes: list[CaptureOutcome]) -> str:

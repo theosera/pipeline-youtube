@@ -14,7 +14,6 @@ from pipeline_youtube.providers.claude_cli import (
     invoke_claude,
 )
 
-
 # =====================================================
 # Helpers
 # =====================================================
@@ -237,9 +236,7 @@ class TestFlagComposition:
 class TestErrorHandling:
     def test_nonzero_exit_raises(self):
         with patch("subprocess.run") as run:
-            run.return_value = _completed(
-                returncode=1, stdout="", stderr="oops something broke"
-            )
+            run.return_value = _completed(returncode=1, stdout="", stderr="oops something broke")
             with pytest.raises(ClaudeCliError, match="exited 1"):
                 invoke_claude("hi")
 
