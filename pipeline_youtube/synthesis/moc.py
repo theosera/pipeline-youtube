@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..obsidian import build_frontmatter
+from .body_validator import validate_chapter_body
 from .scoring import SynthesisMoc
 
 
@@ -15,11 +16,13 @@ def write_moc(
     *,
     run_time: datetime,
     playlist_title: str,
+    allowed_assets: frozenset[str] | set[str] = frozenset(),
 ) -> None:
     """Write `00_MOC.md` with frontmatter + leader-produced body.
 
-    The file is written atomically in one `write_text` call. Parent
-    directories are created if missing.
+    Body passes through `validate_chapter_body` (same defense layer as
+    chapter writes) to strip disallowed embeds, HTML, and Templater
+    tokens. The file is written atomically in one `write_text` call.
     """
     fm = build_frontmatter(
         dt=run_time,
@@ -28,5 +31,6 @@ def write_moc(
         tags=["memo", "youtube", "synthesis", "moc"],
         extra={"playlist": playlist_title},
     )
+    validated_body = validate_chapter_body(moc.body_markdown, allowed_assets)
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    target_path.write_text(fm + "\n" + moc.body_markdown.strip() + "\n", encoding="utf-8")
+    target_path.write_text(fm + "\n" + validated_body.strip() + "\n", encoding="utf-8")

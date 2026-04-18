@@ -9,8 +9,36 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import yt_dlp  # type: ignore[import-untyped]
+
+_ALLOWED_HOSTS = frozenset(
+    {
+        "www.youtube.com",
+        "youtube.com",
+        "m.youtube.com",
+        "youtu.be",
+    }
+)
+
+
+def validate_youtube_url(url: str) -> str:
+    """Validate a URL as a YouTube playlist or video URL.
+
+    Guards yt-dlp from file://, http://internal-host, and arbitrary
+    third-party extractors. Scheme must be http/https; hostname must be
+    a known YouTube domain. Returns the URL on success; raises ValueError
+    otherwise.
+    """
+    if not isinstance(url, str) or not url:
+        raise ValueError("URL is empty or not a string")
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"URL scheme must be http/https: {parsed.scheme!r}")
+    if parsed.hostname not in _ALLOWED_HOSTS:
+        raise ValueError(f"URL host must be a YouTube domain: {parsed.hostname!r}")
+    return url
 
 
 @dataclass(frozen=True)
@@ -47,6 +75,7 @@ def fetch_metadata(url: str) -> list[VideoMeta]:
     for a playlist). On a playlist URL, the playlist title is propagated
     to every VideoMeta.playlist_title for downstream folder naming.
     """
+    validate_youtube_url(url)
     opts = {**_BASE_OPTS, "extract_flat": "in_playlist"}
     with yt_dlp.YoutubeDL(opts) as ydl:
         info: dict[str, Any] = ydl.extract_info(url, download=False)  # type: ignore[assignment]

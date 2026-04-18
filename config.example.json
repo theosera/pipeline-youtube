@@ -1,3 +1,11 @@
 {
-  "vault_root": "/path/to/your/Obsidian Vault parent (contains 'Permanent Note/')"
+  "vault_root": "/path/to/your/Obsidian Vault parent (contains 'Permanent Note/')",
+  "models": {
+    "stage_02": "haiku",
+    "stage_04": "sonnet",
+    "alpha": "haiku",
+    "beta": "sonnet",
+    "gamma": "haiku",
+    "leader": "opus"
+  }
 }

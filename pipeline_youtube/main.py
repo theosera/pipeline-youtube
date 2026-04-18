@@ -28,8 +28,9 @@ from .config import set_dry_run, set_vault_root
 from .obsidian import format_playlist_folder_name
 from .path_safety import ensure_safe_path
 from .pipeline import LEARNING_BASE, UNIT_DIRS, compute_note_paths, create_placeholder_notes
-from .playlist import VideoMeta, fetch_metadata
-from .stages.capture import run_stage_capture
+from .playlist import VideoMeta, fetch_metadata, validate_youtube_url
+from .sanitize import configure_alert_sink
+from .stages.capture import prefetch_video_download, run_stage_capture, sweep_stale_tmp
 from .stages.learning import run_stage_learning
 from .stages.scripts import run_stage_scripts
 from .stages.summary import run_stage_summary
@@ -38,8 +39,22 @@ from .stats import record_transcript_stat
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
+_MODEL_KEYS = frozenset({"stage_02", "stage_04", "alpha", "beta", "gamma", "leader"})
 
-def _load_vault_root(config_path: Path) -> Path:
+
+@dataclass(frozen=True)
+class CliConfig:
+    vault_root: Path
+    models: dict[str, str]
+    filler_words: tuple[str, ...]
+
+
+def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
+    """Load config.json. Unknown keys are ignored; `models` is optional.
+
+    Any missing model key falls back to `fallback_model` (CLI --model).
+    Unrecognized model keys raise UsageError so typos are caught early.
+    """
     if not config_path.exists():
         raise click.UsageError(
             f"config.json not found at {config_path}. "
@@ -52,7 +67,29 @@ def _load_vault_root(config_path: Path) -> Path:
     path = Path(vault_root).expanduser()
     if not path.exists():
         raise click.UsageError(f"vault_root does not exist: {path}")
-    return path
+
+    models_raw = data.get("models") or {}
+    if not isinstance(models_raw, dict):
+        raise click.UsageError("config.json: 'models' must be an object")
+    unknown = set(models_raw) - _MODEL_KEYS
+    if unknown:
+        raise click.UsageError(
+            f"config.json: unknown model keys {sorted(unknown)!r}; "
+            f"expected any of {sorted(_MODEL_KEYS)!r}"
+        )
+    models = {key: models_raw.get(key, fallback_model) for key in _MODEL_KEYS}
+
+    filler_raw = data.get("filler_words")
+    if filler_raw is None:
+        from .transcript.chunking import DEFAULT_FILLER_WORDS
+
+        filler = DEFAULT_FILLER_WORDS
+    else:
+        if not isinstance(filler_raw, list) or not all(isinstance(x, str) for x in filler_raw):
+            raise click.UsageError("config.json: 'filler_words' must be a list of strings")
+        filler = tuple(filler_raw)
+
+    return CliConfig(vault_root=path, models=models, filler_words=filler)
 
 
 @dataclass
@@ -100,12 +137,94 @@ def _load_existing_04_body(video_id: str, playlist_title: str, run_date: datetim
     return None
 
 
+def _find_summary_md(video_id: str, playlist_title: str, run_date: datetime) -> Path | None:
+    """Locate the existing 02_Summary.md for `video_id` within a given run date.
+
+    Used by Phase 3 (`--resume-reviewed`) to look up summaries written
+    in a prior Phase 1 run. Falls back across date-prefix matches so
+    users can resume on a different clock day.
+    """
+    from .config import get_vault_root
+
+    vault_root = get_vault_root()
+    rel = f"{LEARNING_BASE}/{UNIT_DIRS['summary']}"
+    safe_rel = ensure_safe_path(rel)
+    base = vault_root / safe_rel
+    if not base.exists():
+        return None
+
+    # Try today's canonical playlist folder, then any folder under base.
+    for candidate_folder in _summary_folder_candidates(base, playlist_title, run_date):
+        if not candidate_folder.exists():
+            continue
+        for md in candidate_folder.glob("*.md"):
+            try:
+                head = md.read_bytes()[:500].decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            m = _VIDEO_ID_IN_FRONTMATTER.search(head)
+            if m and m.group(1) == video_id:
+                return md
+    return None
+
+
+def _filter_to_reviewed(
+    to_process: list[tuple[int, VideoMeta]],
+    playlist_title: str,
+    run_time: datetime,
+) -> list[tuple[int, VideoMeta]]:
+    """Keep only videos whose 02_Summary.md frontmatter has `reviewed: true`."""
+    from .obsidian import read_frontmatter_field
+
+    kept: list[tuple[int, VideoMeta]] = []
+    for i, video in to_process:
+        summary_md = _find_summary_md(video.video_id, playlist_title, run_time)
+        if summary_md is None:
+            click.echo(f"  [skip] {video.video_id}: no 02_Summary.md found")
+            continue
+        value = read_frontmatter_field(summary_md, "reviewed")
+        if value and value.lower() == "true":
+            kept.append((i, video))
+        else:
+            click.echo(f"  [skip] {video.video_id}: reviewed={value!r}")
+    return kept
+
+
+def _summary_folder_candidates(base: Path, playlist_title: str, run_date: datetime):
+    """Yield likely playlist folders holding 02_Summary files.
+
+    Canonical first, then any date-prefixed folder that contains the
+    sanitized title substring (mirrors `_find_learning_folder` heuristics).
+    """
+    from .obsidian import _strip_playlist_category_prefix, sanitize_title_for_filename
+
+    canonical_name = format_playlist_folder_name(run_date, playlist_title)
+    yield base / canonical_name
+
+    date_prefix = run_date.strftime("%Y-%m-%d")
+    display_title = _strip_playlist_category_prefix(playlist_title)
+    title_needle = sanitize_title_for_filename(display_title)
+    if not title_needle:
+        return
+    try:
+        for child in base.iterdir():
+            if (
+                child.is_dir()
+                and child.name.startswith(date_prefix)
+                and title_needle in child.name
+                and child.name != canonical_name
+            ):
+                yield child
+    except OSError:
+        return
+
+
 def _collect_existing_learning_bodies(
     videos: list[VideoMeta],
     playlist_title: str,
     run_time: datetime,
 ) -> tuple[list[VideoMeta], list[str], str]:
-    """Scan the existing 04_Lerning_Material folder for the given playlist date
+    """Scan the existing 04_Learning_Material folder for the given playlist date
     and return `(videos, bodies, folder_name)` aligned by input video_id order.
 
     Also returns the resolved folder name so stage 05 can reuse the exact
@@ -171,7 +290,9 @@ def _process_video(
     *,
     dry_run: bool,
     capture_format: str,
-    model: str,
+    models: dict[str, str],
+    filler_words: tuple[str, ...] = (),
+    stop_after_capture: bool = False,
 ) -> VideoRunResult:
     try:
         paths = compute_note_paths(video, run_time)
@@ -190,15 +311,34 @@ def _process_video(
         if not transcript.snippets:
             return VideoRunResult(video=video, error="no_transcript_snippets")
 
-        click.echo("  [02] summary...", nl=False)
+        # Kick off Stage 03 video download in parallel with Stage 02 LLM call.
+        # Stage 03 still waits for Stage 02's output to parse timeline ranges,
+        # but the download — the bulk of Stage 03's wall time — can overlap.
+        prefetch = None
+        if not dry_run:
+            with contextlib.suppress(Exception):
+                prefetch = prefetch_video_download(video)
+
+        click.echo(f"  [02] summary (model={models['stage_02']})...", nl=False)
         summary_resp = run_stage_summary(
-            video, paths["summary"], transcript, model=model, dry_run=dry_run
+            video,
+            paths["summary"],
+            transcript,
+            model=models["stage_02"],
+            filler_words=filler_words,
+            dry_run=dry_run,
         )
         click.echo(
             f" in={summary_resp.input_tokens or 0}"
             f" out={summary_resp.output_tokens or 0}"
             f" cost=${summary_resp.total_cost_usd or 0:.3f}"
         )
+
+        prefetched_path = None
+        if prefetch is not None:
+            err = prefetch.wait()
+            if err is None and prefetch.path.exists():
+                prefetched_path = prefetch.path
 
         click.echo("  [03] capture...", nl=False)
         capture_result = run_stage_capture(
@@ -207,6 +347,7 @@ def _process_video(
             paths["capture"],
             capture_format=capture_format,  # type: ignore[arg-type]
             dry_run=dry_run,
+            prefetched_video_path=prefetched_path,
         )
         if capture_result.error and not capture_result.outcomes:
             click.echo(f" FAILED: {capture_result.error}")
@@ -216,14 +357,20 @@ def _process_video(
                 f" fmt={capture_result.capture_format}"
             )
 
-        click.echo("  [04] learning...", nl=False)
+        if stop_after_capture:
+            click.echo(
+                "  [stop-after-capture] review 02_Summary.md then re-run with --resume-reviewed"
+            )
+            return VideoRunResult(video=video, learning_md_body=None)
+
+        click.echo(f"  [04] learning (model={models['stage_04']})...", nl=False)
         learning_resp = run_stage_learning(
             video,
             paths["summary"],
             paths["capture"],
             paths["learning"],
             run_time=run_time,
-            model=model,
+            model=models["stage_04"],
             dry_run=dry_run,
         )
         click.echo(
@@ -254,7 +401,9 @@ async def _run_videos_concurrent(
     concurrency: int,
     dry_run: bool,
     capture_format: str,
-    model: str,
+    models: dict[str, str],
+    filler_words: tuple[str, ...] = (),
+    stop_after_capture: bool = False,
 ) -> list[VideoRunResult]:
     """Process multiple videos concurrently with bounded parallelism."""
     sem = asyncio.Semaphore(concurrency)
@@ -268,7 +417,9 @@ async def _run_videos_concurrent(
                 run_time,
                 dry_run=dry_run,
                 capture_format=capture_format,
-                model=model,
+                models=models,
+                filler_words=filler_words,
+                stop_after_capture=stop_after_capture,
             )
 
     tasks = [_task(i, v) for i, v in enumerate(videos, 1)]
@@ -326,6 +477,22 @@ async def _run_videos_concurrent(
     default=None,
     help="Override config.json path.",
 )
+@click.option(
+    "--stop-after-capture",
+    is_flag=True,
+    help=(
+        "Phase 1: run stages 01-03 and stop. User reviews Stage 02 in Obsidian, "
+        "flips frontmatter `reviewed: true`, then runs again with --resume-reviewed."
+    ),
+)
+@click.option(
+    "--resume-reviewed",
+    is_flag=True,
+    help=(
+        "Phase 3: skip stages 01-03; only process videos whose 02_Summary.md "
+        "frontmatter has `reviewed: true`. Runs stages 04 and 05 on the filtered set."
+    ),
+)
 def cli(
     url: str | None,
     dry_run: bool,
@@ -338,16 +505,42 @@ def cli(
     min_playlist_size: int,
     max_chapters: int | None,
     config_path: Path | None,
+    stop_after_capture: bool,
+    resume_reviewed: bool,
 ) -> None:
     """Process a YouTube playlist or single-video URL end-to-end."""
     if not url:
         click.echo("Usage: pipeline-youtube <playlist-or-video-url> [options]")
         sys.exit(2)
 
+    try:
+        validate_youtube_url(url)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    # Mutually-exclusive phase flags
+    phase_flags = sum(bool(x) for x in (stop_after_capture, resume_reviewed, synthesis_only))
+    if phase_flags > 1:
+        raise click.UsageError(
+            "--stop-after-capture, --resume-reviewed, and --synthesis-only are mutually exclusive."
+        )
+
     cfg_path = config_path or DEFAULT_CONFIG_PATH
-    vault_root = _load_vault_root(cfg_path)
-    set_vault_root(vault_root)
+    cfg = _load_config(cfg_path, fallback_model=model)
+    set_vault_root(cfg.vault_root)
     set_dry_run(dry_run)
+    vault_root = cfg.vault_root
+    models = cfg.models
+    filler_words = cfg.filler_words
+
+    project_root = Path(__file__).resolve().parent.parent
+    logs_dir = project_root / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    configure_alert_sink(logs_dir / "sanitize_alerts.jsonl")
+
+    swept = sweep_stale_tmp(project_root / "tmp")
+    if swept:
+        click.echo(f"swept {swept} stale tmp video file(s)")
 
     click.echo(f"vault_root: {vault_root}")
     click.echo(f"dry_run: {dry_run}")
@@ -406,6 +599,10 @@ def cli(
             else:
                 to_process.append((i, video))
 
+        if resume_reviewed:
+            # Phase 3: filter to videos whose 02_Summary.md has `reviewed: true`.
+            to_process = _filter_to_reviewed(to_process, playlist_title, run_time)
+
         # Process remaining videos
         if to_process and concurrency > 1:
             process_videos = [v for _, v in to_process]
@@ -416,7 +613,9 @@ def cli(
                     concurrency=concurrency,
                     dry_run=dry_run,
                     capture_format=capture_format,
-                    model=model,
+                    models=models,
+                    filler_words=filler_words,
+                    stop_after_capture=stop_after_capture,
                 )
             )
             results.extend(concurrent_results)
@@ -428,9 +627,18 @@ def cli(
                     run_time,
                     dry_run=dry_run,
                     capture_format=capture_format,
-                    model=model,
+                    models=models,
+                    filler_words=filler_words,
+                    stop_after_capture=stop_after_capture,
                 )
                 results.append(result)
+
+        if stop_after_capture:
+            click.echo(
+                "\n[stop-after-capture] Phase 1 complete. Review 02_Summary.md, "
+                "set `reviewed: true`, then re-run with --resume-reviewed."
+            )
+            return
 
         succeeded = [r for r in results if r.ok]
         failed = [r for r in results if not r.ok]
@@ -460,6 +668,7 @@ def cli(
         run_time=run_time,
         playlist_title=playlist_title,
         model=model,
+        agent_models={k: models[k] for k in ("alpha", "beta", "gamma", "leader")},
         min_playlist_size=min_playlist_size,
         max_chapters=max_chapters,
         dry_run=dry_run,

@@ -1,7 +1,7 @@
 """Video-level pipeline orchestration.
 
 Exposes path computation and placeholder creation for the 4 processing
-units (01 Scripts / 02 Summary / 03 Capture / 04 Lerning_Material).
+units (01 Scripts / 02 Summary / 03 Capture / 04 Learning_Material).
 
 Templater interaction note
 --------------------------
@@ -36,14 +36,16 @@ from .path_safety import ensure_safe_path
 from .playlist import VideoMeta
 
 # Base Obsidian folder for YouTube learning notes.
-# Note: '04_Lerning_Material' preserves the existing (typo) folder name.
 LEARNING_BASE = "Permanent Note/08_YouTube学習"
 UNIT_DIRS: dict[str, str] = {
     "scripts": "01_Scripts_Processing_Unit",
     "summary": "02_Summary_Processing_Unit",
     "capture": "03_Capture_Processing_Unit",
-    "learning": "04_Lerning_Material",
+    "learning": "04_Learning_Material",
 }
+# Historical (typo) folder name. Kept only for backward-compat lookups in
+# `checkpoint._find_learning_folder`; new writes always use UNIT_DIRS.
+LEGACY_LEARNING_DIR = "04_Lerning_Material"
 
 # Units that get pre-created as empty placeholders before stages run.
 # 'learning' is excluded — see the module docstring for why.
@@ -113,11 +115,15 @@ def create_placeholder_notes(
         path = resolve_unique_path(folder, note_base, ".md")
         paths[unit_key] = path
 
-        extra = (
-            {"playlist": video.playlist_title or "", "video_id": video.video_id}
-            if unit_key == "learning"
-            else None
-        )
+        extra: dict[str, str] = {
+            "playlist": video.playlist_title or "",
+            "video_id": video.video_id,
+        }
+        if unit_key == "summary":
+            # `reviewed` flags Phase 3 (WS5) that the user has approved the
+            # summary for downstream synthesis. User flips to `true` in
+            # Obsidian after manual review.
+            extra["reviewed"] = "false"
         fm = build_frontmatter(
             dt=run_time,
             title=video.title,

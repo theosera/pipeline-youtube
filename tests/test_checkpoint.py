@@ -16,7 +16,7 @@ from pipeline_youtube.config import reset_vault_root, set_vault_root
 
 @pytest.fixture()
 def vault(tmp_path: Path):
-    """Set up a vault with a 04_Lerning_Material playlist folder."""
+    """Set up a vault with a 04_Learning_Material playlist folder."""
     set_vault_root(tmp_path)
     yield tmp_path
     reset_vault_root()
@@ -24,7 +24,7 @@ def vault(tmp_path: Path):
 
 def _create_04_md(vault: Path, folder_name: str, video_id: str, title: str = "test") -> Path:
     """Create a minimal 04 md with video_id frontmatter."""
-    folder = vault / "Permanent Note" / "08_YouTube学習" / "04_Lerning_Material" / folder_name
+    folder = vault / "Permanent Note" / "08_YouTube学習" / "04_Learning_Material" / folder_name
     folder.mkdir(parents=True, exist_ok=True)
     md = folder / f"2026-04-16-0914 {title}.md"
     md.write_text(

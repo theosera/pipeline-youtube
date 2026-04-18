@@ -8,13 +8,32 @@ if we added the next snippet's start time.
 This preserves snippet boundaries (we never split a snippet's text) and
 produces natural-looking chunks similar to the dummy data in
 `Permanent Note/08_YouTube学習/01_Scripts_Processing_Unit/`.
+
+Optional filler-word stripping compresses transcripts before they are
+sent to the LLM (cheaper cache footprint, less noise). The default
+filler list is a conservative set of common Japanese hesitations; more
+terms may be added via `config.json:filler_words`.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from .base import TranscriptSnippet
+
+DEFAULT_FILLER_WORDS: tuple[str, ...] = (
+    "えー",
+    "えっと",
+    "えーと",
+    "あのー",
+    "あの",
+    "そのー",
+    "まあ",
+    "なんか",
+    "みたいな",
+    "っていう",
+)
 
 
 @dataclass(frozen=True)
@@ -38,6 +57,8 @@ class Chunk:
 def chunk_by_window(
     snippets: list[TranscriptSnippet],
     window_seconds: float = 30.0,
+    *,
+    filler_words: tuple[str, ...] | list[str] | None = None,
 ) -> list[Chunk]:
     """Group snippets into windows of roughly `window_seconds` each.
 
@@ -47,6 +68,8 @@ def chunk_by_window(
         has at least one snippet so we don't emit empties).
       - Text is concatenated with single spaces and leading/trailing
         whitespace is stripped.
+      - If `filler_words` is provided, each chunk text has filler terms
+        and immediate duplicate tokens stripped before emission.
 
     Returns an empty list for empty input.
     """
@@ -55,6 +78,7 @@ def chunk_by_window(
     if window_seconds <= 0:
         raise ValueError(f"window_seconds must be > 0, got {window_seconds}")
 
+    fillers = tuple(filler_words) if filler_words is not None else ()
     chunks: list[Chunk] = []
     chunk_start: float = snippets[0].start
     chunk_texts: list[str] = []
@@ -62,17 +86,14 @@ def chunk_by_window(
     for snippet in snippets:
         if snippet.start >= chunk_start + window_seconds and chunk_texts:
             chunks.append(
-                Chunk(
-                    start=chunk_start,
-                    text=_join_texts(chunk_texts),
-                )
+                Chunk(start=chunk_start, text=_compress(_join_texts(chunk_texts), fillers))
             )
             chunk_start = snippet.start
             chunk_texts = []
         chunk_texts.append(snippet.text)
 
     if chunk_texts:
-        chunks.append(Chunk(start=chunk_start, text=_join_texts(chunk_texts)))
+        chunks.append(Chunk(start=chunk_start, text=_compress(_join_texts(chunk_texts), fillers)))
 
     return chunks
 
@@ -85,3 +106,20 @@ def _join_texts(texts: list[str]) -> str:
         if stripped:
             parts.append(stripped)
     return " ".join(parts)
+
+
+_DUP_WORD_RE = re.compile(r"(\S+?)(?:\s+\1){2,}")
+
+
+def _compress(text: str, fillers: tuple[str, ...]) -> str:
+    """Strip filler words and collapse 3+ immediate repeats of the same token."""
+    if not text:
+        return text
+    if fillers:
+        for word in fillers:
+            if not word:
+                continue
+            text = text.replace(word, " ")
+        text = " ".join(text.split())
+    text = _DUP_WORD_RE.sub(r"\1", text)
+    return text

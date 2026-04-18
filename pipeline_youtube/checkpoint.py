@@ -20,24 +20,32 @@ from pathlib import Path
 from .config import get_vault_root
 from .obsidian import format_playlist_folder_name, sanitize_title_for_filename
 from .path_safety import ensure_safe_path
-from .pipeline import LEARNING_BASE, UNIT_DIRS
+from .pipeline import LEARNING_BASE, LEGACY_LEARNING_DIR, UNIT_DIRS
 
 _VIDEO_ID_RE = re.compile(r'^video_id:\s*"([^"]+)"', re.MULTILINE)
 
 
 def _find_learning_folder(playlist_title: str, run_date: datetime) -> Path | None:
-    """Locate the 04_Lerning_Material playlist folder for a given date.
+    """Locate the 04_Learning_Material playlist folder for a given date.
 
     Tries the canonical name first (`YYYY-MM-DD-HHmm <title>`), then
     falls back to any folder starting with today's date prefix and
     containing the sanitized playlist title. Returns None if nothing
     matches.
+
+    Historical `04_Lerning_Material` (typo) folders are also searched
+    so existing vaults continue to work without renaming. See
+    `pipeline.LEGACY_LEARNING_DIR`.
     """
     vault_root = get_vault_root()
-    base = vault_root / ensure_safe_path(f"{LEARNING_BASE}/{UNIT_DIRS['learning']}")
-
-    if not base.exists():
+    bases = [
+        vault_root / ensure_safe_path(f"{LEARNING_BASE}/{UNIT_DIRS['learning']}"),
+        vault_root / ensure_safe_path(f"{LEARNING_BASE}/{LEGACY_LEARNING_DIR}"),
+    ]
+    bases = [b for b in bases if b.exists()]
+    if not bases:
         return None
+    base = bases[0]
 
     # Canonical name
     canonical = base / format_playlist_folder_name(run_date, playlist_title)
@@ -56,9 +64,10 @@ def _find_learning_folder(playlist_title: str, run_date: datetime) -> Path | Non
     display_title = _strip_playlist_category_prefix(playlist_title)
     title_needle = sanitize_title_for_filename(display_title)
 
-    for child in base.iterdir():
-        if child.is_dir() and child.name.startswith(date_prefix) and title_needle in child.name:
-            return child
+    for b in bases:
+        for child in b.iterdir():
+            if child.is_dir() and child.name.startswith(date_prefix) and title_needle in child.name:
+                return child
     return None
 
 
@@ -69,7 +78,7 @@ def is_video_complete(
 ) -> bool:
     """Return True if a stage 04 md with matching video_id already exists.
 
-    Scans the 04_Lerning_Material playlist folder for any .md file whose
+    Scans the 04_Learning_Material playlist folder for any .md file whose
     YAML frontmatter contains `video_id: "<video_id>"`.
     """
     folder = _find_learning_folder(playlist_title, run_date)

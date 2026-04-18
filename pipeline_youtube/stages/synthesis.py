@@ -1,7 +1,7 @@
 """Stage 05: Playlist-level synthesis via Agent Teams.
 
 Runs after all per-video stages (01-04) complete for a playlist with
-≥3 successful videos. Reads every 04_Lerning_Material md in the
+≥3 successful videos. Reads every 04_Learning_Material md in the
 playlist folder and orchestrates the α→β→γ→leader agent chain to
 produce:
 
@@ -44,6 +44,7 @@ from ..synthesis.agents import (
     call_gamma,
     call_leader,
 )
+from ..synthesis.body_validator import extract_allowed_embeds
 from ..synthesis.chapter import write_chapter
 from ..synthesis.moc import write_moc
 from ..synthesis.scoring import (
@@ -106,6 +107,7 @@ def run_stage_synthesis(
     run_time: datetime,
     playlist_title: str,
     model: str = "sonnet",
+    agent_models: dict[str, str] | None = None,
     min_playlist_size: int = MIN_PLAYLIST_SIZE,
     max_chapters: int | None = None,
     dry_run: bool = False,
@@ -125,7 +127,18 @@ def run_stage_synthesis(
         Shared datetime for the synthesis folder and all frontmatter.
     playlist_title:
         Used for the output folder name and MOC title.
+    model:
+        Default model used for any agent not explicitly overridden.
+    agent_models:
+        Optional `{"alpha", "beta", "gamma", "leader"}` override map.
+        Missing keys fall back to `model`.
     """
+    am = agent_models or {}
+    alpha_model = am.get("alpha", model)
+    beta_model = am.get("beta", model)
+    gamma_model = am.get("gamma", model)
+    leader_model = am.get("leader", model)
+
     if len(videos) != len(learning_md_bodies):
         return SynthesisStageResult(
             error=f"length mismatch: {len(videos)} videos vs {len(learning_md_bodies)} bodies"
@@ -149,14 +162,14 @@ def run_stage_synthesis(
 
     try:
         topics, alpha_res = call_alpha(
-            videos, learning_md_bodies, model=model, playlist_title=playlist_title
+            videos, learning_md_bodies, model=alpha_model, playlist_title=playlist_title
         )
     except SynthesisParseError as e:
         return SynthesisStageResult(error=f"alpha_parse_failed: {e}")
     agent_results.append(alpha_res)
 
     try:
-        chapters, beta_res = call_beta(topics, model=model, max_chapters=max_chapters)
+        chapters, beta_res = call_beta(topics, model=beta_model, max_chapters=max_chapters)
     except SynthesisParseError as e:
         return SynthesisStageResult(
             topics=topics, agent_results=agent_results, error=f"beta_parse_failed: {e}"
@@ -164,7 +177,7 @@ def run_stage_synthesis(
     agent_results.append(beta_res)
 
     try:
-        coverage, gamma_res = call_gamma(topics, chapters, model=model)
+        coverage, gamma_res = call_gamma(topics, chapters, model=gamma_model)
     except SynthesisParseError as e:
         return SynthesisStageResult(
             topics=topics,
@@ -181,7 +194,7 @@ def run_stage_synthesis(
             topics,
             chapters,
             coverage,
-            model=model,
+            model=leader_model,
             playlist_title=playlist_title,
         )
     except SynthesisParseError as e:
@@ -206,12 +219,15 @@ def run_stage_synthesis(
     # Write files
     playlist_dir.mkdir(parents=True, exist_ok=True)
 
+    allowed_assets = extract_allowed_embeds(learning_md_bodies)
+
     moc_path = playlist_dir / "00_MOC.md"
     write_moc(
         leader_output.moc,
         moc_path,
         run_time=run_time,
         playlist_title=playlist_title,
+        allowed_assets=allowed_assets,
     )
 
     chapter_paths: list[Path] = []
@@ -221,6 +237,7 @@ def run_stage_synthesis(
             playlist_dir,
             run_time=run_time,
             playlist_title=playlist_title,
+            allowed_assets=allowed_assets,
         )
         chapter_paths.append(path)
 
