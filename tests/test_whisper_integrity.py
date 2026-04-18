@@ -21,8 +21,10 @@ from unittest.mock import patch
 
 import pytest
 
-from pipeline_youtube.transcript.base import TranscriptNotAvailable
-from pipeline_youtube.transcript.whisper_fallback import (
+pytest.importorskip("whisper", reason="whisper optional extra not installed")
+
+from pipeline_youtube.transcript.base import TranscriptNotAvailable  # noqa: E402
+from pipeline_youtube.transcript.whisper_fallback import (  # noqa: E402
     _expected_sha256_for_model,
     _sha256_of_file,
     verify_whisper_model_integrity,
@@ -39,11 +41,7 @@ def _write_cached_model(cache_root: Path, name: str, contents: bytes) -> Path:
 
 
 def _fake_models_dict(name: str, sha: str) -> dict[str, str]:
-    return {
-        name: (
-            f"https://openaipublic.azureedge.net/main/whisper/models/{sha}/{name}.pt"
-        )
-    }
+    return {name: (f"https://openaipublic.azureedge.net/main/whisper/models/{sha}/{name}.pt")}
 
 
 class TestExpectedSha256:
@@ -63,9 +61,7 @@ class TestExpectedSha256:
     def test_returns_none_for_malformed_url(self, monkeypatch):
         import whisper
 
-        monkeypatch.setattr(
-            whisper, "_MODELS", {"weird": "not-a-valid-url"}, raising=False
-        )
+        monkeypatch.setattr(whisper, "_MODELS", {"weird": "not-a-valid-url"}, raising=False)
         assert _expected_sha256_for_model("weird") is None
 
 
@@ -108,9 +104,7 @@ class TestVerifyIntegrity:
 
         import whisper
 
-        monkeypatch.setattr(
-            whisper, "_MODELS", _fake_models_dict("tiny", wrong_sha), raising=False
-        )
+        monkeypatch.setattr(whisper, "_MODELS", _fake_models_dict("tiny", wrong_sha), raising=False)
 
         with pytest.raises(TranscriptNotAvailable) as exc_info:
             verify_whisper_model_integrity("tiny")
@@ -125,9 +119,7 @@ class TestVerifyIntegrity:
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
         import whisper
 
-        monkeypatch.setattr(
-            whisper, "_MODELS", _fake_models_dict("tiny", "a" * 64), raising=False
-        )
+        monkeypatch.setattr(whisper, "_MODELS", _fake_models_dict("tiny", "a" * 64), raising=False)
         # No file at tmp_path/whisper/tiny.pt → skip, don't raise.
         verify_whisper_model_integrity("tiny")
 
