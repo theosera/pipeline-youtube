@@ -60,7 +60,7 @@ class TestLayer1FrontmatterBlock:
     def test_rejects_video_id_only_in_body(self):
         """`video_id:` found outside the frontmatter block must be ignored."""
         data = (
-            b"---\ntitle: \"no id here\"\n---\n\n"
+            b'---\ntitle: "no id here"\n---\n\n'
             b'Spoof payload: video_id: "' + _VALID.encode("utf-8") + b'"\n'
         )
         assert extract_trusted_video_id(data) is None
@@ -118,7 +118,7 @@ class TestLayer3UrlIntegrity:
 
 class TestRobustness:
     def test_handles_invalid_utf8_gracefully(self):
-        data = b"---\n\xff\xfe\nvideo_id: \"" + _VALID.encode("utf-8") + b"\"\n---\n"
+        data = b'---\n\xff\xfe\nvideo_id: "' + _VALID.encode("utf-8") + b'"\n---\n'
         # Non-UTF-8 bytes decode with 'replace' and the regex still works
         # only when the frontmatter structure survives — either way, no raise.
         result = extract_trusted_video_id(data)
