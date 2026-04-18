@@ -20,15 +20,17 @@ import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import click
 
 from .checkpoint import get_completed_video_ids
-from .config import set_dry_run, set_vault_root
+from .config import VaultRootError, set_dry_run, set_vault_root
 from .obsidian import format_playlist_folder_name
 from .path_safety import ensure_safe_path
 from .pipeline import LEARNING_BASE, UNIT_DIRS, compute_note_paths, create_placeholder_notes
 from .playlist import VideoMeta, fetch_metadata, validate_youtube_url
+from .providers.claude_cli import ClaudeBinaryError, get_resolved_claude_binary
 from .sanitize import configure_alert_sink
 from .stages.capture import prefetch_video_download, run_stage_capture, sweep_stale_tmp
 from .stages.learning import run_stage_learning
@@ -98,6 +100,11 @@ class VideoRunResult:
     learning_md_path: Path | None = None
     learning_md_body: str | None = None
     error: str | None = None
+    # Per-stage cost tracking (populated by `_process_video`).
+    summary_cost_usd: float | None = None
+    summary_model: str | None = None
+    learning_cost_usd: float | None = None
+    learning_model: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -166,6 +173,41 @@ def _find_summary_md(video_id: str, playlist_title: str, run_date: datetime) -> 
             if m and m.group(1) == video_id:
                 return md
     return None
+
+
+def _print_cost_breakdown(
+    video_results: list[VideoRunResult],
+    synthesis_result: Any = None,
+) -> None:
+    """Print a per-stage / per-agent cost table summing across all videos."""
+    stage_totals: dict[str, tuple[str, float]] = {}
+
+    def _add(label: str, model: str | None, cost: float | None) -> None:
+        if cost is None:
+            return
+        existing = stage_totals.get(label)
+        prev_model = existing[0] if existing else (model or "?")
+        prev_cost = existing[1] if existing else 0.0
+        stage_totals[label] = (prev_model or model or "?", prev_cost + cost)
+
+    for r in video_results:
+        _add("stage_02", r.summary_model, r.summary_cost_usd)
+        _add("stage_04", r.learning_model, r.learning_cost_usd)
+
+    if synthesis_result is not None and getattr(synthesis_result, "agent_results", None):
+        roles = ("alpha", "beta", "gamma", "leader")
+        for role, agent_res in zip(roles, synthesis_result.agent_results, strict=False):
+            _add(role, agent_res.response.model, agent_res.total_cost_usd)
+
+    if not stage_totals:
+        return
+
+    click.echo("\n=== Cost breakdown ===")
+    total = 0.0
+    for label, (model, cost) in stage_totals.items():
+        click.echo(f"  {label:<9} ({model:<7}) ${cost:>7.3f}")
+        total += cost
+    click.echo(f"  {'total':<9} {'':<9} ${total:>7.3f}")
 
 
 def _filter_to_reviewed(
@@ -361,7 +403,12 @@ def _process_video(
             click.echo(
                 "  [stop-after-capture] review 02_Summary.md then re-run with --resume-reviewed"
             )
-            return VideoRunResult(video=video, learning_md_body=None)
+            return VideoRunResult(
+                video=video,
+                learning_md_body=None,
+                summary_cost_usd=summary_resp.total_cost_usd,
+                summary_model=summary_resp.model,
+            )
 
         click.echo(f"  [04] learning (model={models['stage_04']})...", nl=False)
         learning_resp = run_stage_learning(
@@ -388,6 +435,10 @@ def _process_video(
             video=video,
             learning_md_path=paths["learning"],
             learning_md_body=body,
+            summary_cost_usd=summary_resp.total_cost_usd,
+            summary_model=summary_resp.model,
+            learning_cost_usd=learning_resp.total_cost_usd,
+            learning_model=learning_resp.model,
         )
     except Exception as e:
         traceback.print_exc()
@@ -527,7 +578,10 @@ def cli(
 
     cfg_path = config_path or DEFAULT_CONFIG_PATH
     cfg = _load_config(cfg_path, fallback_model=model)
-    set_vault_root(cfg.vault_root)
+    try:
+        set_vault_root(cfg.vault_root, strict=True)
+    except VaultRootError as exc:
+        raise click.UsageError(str(exc)) from exc
     set_dry_run(dry_run)
     vault_root = cfg.vault_root
     models = cfg.models
@@ -541,6 +595,12 @@ def cli(
     swept = sweep_stale_tmp(project_root / "tmp")
     if swept:
         click.echo(f"swept {swept} stale tmp video file(s)")
+
+    try:
+        claude_bin, claude_ver = get_resolved_claude_binary()
+        click.echo(f"claude: {claude_bin} ({claude_ver})")
+    except ClaudeBinaryError as exc:
+        raise click.UsageError(str(exc)) from exc
 
     click.echo(f"vault_root: {vault_root}")
     click.echo(f"dry_run: {dry_run}")
@@ -693,6 +753,9 @@ def cli(
         )
         click.echo(f"cost:      ${synthesis_result.total_cost_usd:.3f}")
         click.echo(f"duration:  {synthesis_result.total_duration_ms / 1000:.1f}s")
+
+    if not synthesis_only:
+        _print_cost_breakdown(results, synthesis_result)
 
 
 if __name__ == "__main__":

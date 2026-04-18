@@ -24,14 +24,19 @@ mode preserves Claude Code's default instructions with no cache cost.
 
 from __future__ import annotations
 
+import logging
+import re
 from pathlib import Path
 
 from ..obsidian import upsert_frontmatter_field
 from ..playlist import VideoMeta
 from ..providers.claude_cli import ClaudeResponse, invoke_claude
 from ..sanitize import sanitize_untrusted_text, wrap_untrusted
+from ..synthesis.body_validator import validate_chapter_body
 from ..transcript.base import TranscriptResult
 from ..transcript.chunking import Chunk, chunk_by_window
+
+_log = logging.getLogger(__name__)
 
 SUMMARY_SYSTEM_PROMPT = """あなたは卓越した情報アーキテクト兼インサイト・アナリストです。
 不完全な音声認識データ（YouTube等の生データ）のノイズを補正し、論理構造を復元した上で、
@@ -119,6 +124,25 @@ MAX_INPUT_CHARS = 200_000
 _ONE_LINER_PREFIX = "ONE_LINER:"
 _ONE_LINER_MAX_LEN = 60  # generous; prompt says 20 chars but allow slack
 
+# Safety caps on the validated body. A well-formed output should be
+# well under 50k chars; anything larger points at a runaway model or
+# injected padding.
+_MAX_OUTPUT_CHARS = 50_000
+
+# Required H2 headings that downstream stages depend on.
+_REQUIRED_H2 = ("## 全体サマリ", "## 要点タイムライン")
+
+# The capture stage parses `### [MM:SS ~ MM:SS] heading` lines. At
+# least one must be present for Stage 03 to extract any clip.
+_RANGE_HEADING_RE = re.compile(
+    r"^###\s*\[\s*\d{1,2}:\d{2}\s*[~〜～]\s*\d{1,2}:\d{2}\s*\]\s*.+$", re.MULTILINE
+)
+
+
+class SummaryOutputError(ValueError):
+    """Raised when Stage 02 LLM output fails structural validation."""
+
+
 _EMPTY_BODY = "## 全体サマリ\n\n字幕を取得できませんでした。\n\n## 要点タイムライン\n\n(該当なし)\n"
 
 
@@ -155,11 +179,40 @@ def run_stage_summary(
     body = response.text.strip()
     if body and not dry_run:
         one_liner, body_without_marker = _extract_one_liner(body)
-        _append_body(summary_md_path, body_without_marker)
+        validated = _validate_summary_output(body_without_marker)
+        _append_body(summary_md_path, validated)
         if one_liner is not None:
             _persist_one_liner(summary_md_path, one_liner)
 
     return response
+
+
+def _validate_summary_output(body: str) -> str:
+    """Enforce structural invariants on Stage 02 LLM output.
+
+    Raises `SummaryOutputError` if required sections are missing or the
+    body is absurdly long. Strips disallowed HTML / Templater tokens
+    and unknown `![[...]]` embeds before writing.
+    """
+    if len(body) > _MAX_OUTPUT_CHARS:
+        raise SummaryOutputError(f"summary body exceeds {_MAX_OUTPUT_CHARS} chars: {len(body)}")
+
+    missing = [h for h in _REQUIRED_H2 if h not in body]
+    if missing:
+        raise SummaryOutputError(f"summary missing required sections: {missing}")
+
+    if not _RANGE_HEADING_RE.search(body):
+        raise SummaryOutputError(
+            "summary has no `### [MM:SS ~ MM:SS] ...` heading; Stage 03 would have no ranges"
+        )
+
+    # Stage 02 output never legitimately embeds images; pass empty
+    # `allowed_assets` so any `![[...]]` is replaced with a dropped-
+    # embed comment. HTML tags and Templater syntax are always stripped.
+    cleaned = validate_chapter_body(body, frozenset())
+    if cleaned != body:
+        _log.info("summary body passed structural validation with content stripped")
+    return cleaned
 
 
 def _extract_one_liner(body: str) -> tuple[str | None, str]:

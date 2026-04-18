@@ -181,7 +181,9 @@ class TestPromptBuilding:
 
         def fake_invoke(**kw):
             captured.update(kw)
-            return _fake_claude_response("## 全体サマリ\n\ntest\n\n## 要点タイムライン\n\n")
+            return _fake_claude_response(
+                "## 全体サマリ\n\ntest\n\n## 要点タイムライン\n\n### [00:00 ~ 00:30] intro\n本文\n"
+            )
 
         monkeypatch.setattr(summary_stage, "invoke_claude", fake_invoke)
 
@@ -211,7 +213,9 @@ class TestPromptBuilding:
             "invoke_claude",
             lambda **kw: (
                 captured.update(kw),
-                _fake_claude_response("## 全体サマリ\n\nok\n\n## 要点タイムライン\n\n"),
+                _fake_claude_response(
+                    "## 全体サマリ\n\nok\n\n## 要点タイムライン\n\n### [00:00 ~ 00:30] intro\n本文\n"
+                ),
             )[1],
         )
 
@@ -233,7 +237,9 @@ class TestPromptBuilding:
             "invoke_claude",
             lambda **kw: (
                 captured.update(kw),
-                _fake_claude_response("## 全体サマリ\n\nok\n\n## 要点タイムライン\n\n"),
+                _fake_claude_response(
+                    "## 全体サマリ\n\nok\n\n## 要点タイムライン\n\n### [00:00 ~ 00:30] intro\n本文\n"
+                ),
             )[1],
         )
 
@@ -259,7 +265,9 @@ class TestPromptBuilding:
             "invoke_claude",
             lambda **kw: (
                 captured.update(kw),
-                _fake_claude_response("## 全体サマリ\n\nok\n\n## 要点タイムライン\n\n"),
+                _fake_claude_response(
+                    "## 全体サマリ\n\nok\n\n## 要点タイムライン\n\n### [00:00 ~ 00:30] intro\n本文\n"
+                ),
             )[1],
         )
 
