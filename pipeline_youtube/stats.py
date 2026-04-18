@@ -27,7 +27,17 @@ from datetime import date
 from pathlib import Path
 
 from .playlist import VideoMeta
+from .sanitize import sanitize_untrusted_text
 from .transcript.base import TranscriptResult
+
+_MAX_FIELD_LEN = 500
+
+
+def _safe(s: str | None, context: str) -> str | None:
+    """Preserve None; sanitize actual strings with context for alerts."""
+    if s is None:
+        return None
+    return sanitize_untrusted_text(s, _MAX_FIELD_LEN, context=context)
 
 
 def _default_stats_path() -> Path:
@@ -45,6 +55,11 @@ def record_transcript_stat(
 ) -> Path:
     """Append a single JSONL line describing a transcript fetch outcome.
 
+    Untrusted string fields (channel, title, playlist_title,
+    fallback_reason, error) pass through `sanitize_untrusted_text` to
+    strip ANSI / control / zero-width sequences that could attack a
+    terminal reading the log back (CVE-2024-22423 class).
+
     Returns the path actually written to (useful for tests that pass an
     explicit `stats_path`).
     """
@@ -53,15 +68,15 @@ def record_transcript_stat(
 
     record = {
         "video_id": video.video_id,
-        "channel": video.channel,
-        "title": video.title,
-        "playlist_title": video.playlist_title,
+        "channel": _safe(video.channel, "stats.channel"),
+        "title": _safe(video.title, "stats.title"),
+        "playlist_title": _safe(video.playlist_title, "stats.playlist_title"),
         "transcript_source": result.source.value,
         "language": result.language,
         "retrieved_at": result.retrieved_at,
-        "fallback_reason": result.fallback_reason,
+        "fallback_reason": _safe(result.fallback_reason, "stats.fallback_reason"),
         "snippet_count": len(result.snippets),
-        "error": result.error,
+        "error": _safe(result.error, "stats.error"),
     }
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")

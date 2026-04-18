@@ -65,6 +65,87 @@ DEFAULT_RESOLUTION = "480"
 
 CaptureFormat = Literal["auto", "webp", "gif"]
 
+_TMP_SWEEP_EXTENSIONS = (".mp4", ".webm", ".m4a", ".mkv")
+
+
+def _tmp_video_path(video: VideoMeta) -> Path:
+    """Canonical temp path for a video's downloaded mp4."""
+    project_root = Path(__file__).resolve().parent.parent.parent
+    tmp_dir = project_root / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    return tmp_dir / f"{video.video_id}.mp4"
+
+
+@dataclass
+class VideoPrefetch:
+    """Handle for a background video download started before Stage 02."""
+
+    path: Path
+    future: Any  # concurrent.futures.Future[None]
+
+    def wait(self, timeout: float = 600.0) -> Exception | None:
+        """Block until the download finishes. Returns the exception (if any)."""
+        try:
+            self.future.result(timeout=timeout)
+            return None
+        except Exception as exc:  # noqa: BLE001 — propagate as return value
+            return exc
+
+
+def prefetch_video_download(
+    video: VideoMeta, resolution: str = DEFAULT_RESOLUTION
+) -> VideoPrefetch:
+    """Kick off a video download on a daemon thread and return the handle.
+
+    The caller should `wait()` on the handle before calling
+    `run_stage_capture(..., prefetched_video_path=handle.path)`.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = _tmp_video_path(video)
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"pyt-dl-{video.video_id}")
+    future = executor.submit(_download_video, video.watch_url, path, resolution)
+    executor.shutdown(wait=False)  # thread keeps running until task completes
+    return VideoPrefetch(path=path, future=future)
+
+
+def _assert_not_flaglike(path: Path) -> None:
+    """Guard against path arguments whose *string form* starts with `-`.
+
+    ffmpeg (and other CLIs) would interpret a leading dash as a flag.
+    Our paths are always absolute (built from `project_root / ...`) so
+    the string form starts with `/` — this check catches regressions if
+    a relative path ever slips in.
+    """
+    arg = str(path)
+    if arg.startswith("-"):
+        raise ValueError(f"path argument starts with '-' (flag-like): {arg!r}")
+
+
+def sweep_stale_tmp(tmp_dir: Path, *, older_than_hours: float = 24.0) -> int:
+    """Remove stale video tempfiles left behind by OOM-killed runs.
+
+    Called at CLI startup. Returns the number of files removed.
+    Missing dir is a no-op (returns 0).
+    """
+    if not tmp_dir.exists():
+        return 0
+    import time
+
+    cutoff = time.time() - older_than_hours * 3600.0
+    removed = 0
+    for entry in tmp_dir.iterdir():
+        if not entry.is_file() or entry.suffix.lower() not in _TMP_SWEEP_EXTENSIONS:
+            continue
+        try:
+            if entry.stat().st_mtime < cutoff:
+                entry.unlink(missing_ok=True)
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 # Match '### [MM:SS ~ MM:SS] 見出し' — tolerates full-width ~ and ASCII ~.
 _RANGE_PATTERN = re.compile(
     r"^###\s*\[\s*(\d{1,2}):(\d{2})\s*[~〜～]\s*(\d{1,2}):(\d{2})\s*\]\s*(.+?)\s*$",
@@ -231,6 +312,7 @@ def run_stage_capture(
     resolution: str = DEFAULT_RESOLUTION,
     capture_format: CaptureFormat = "auto",
     dry_run: bool = False,
+    prefetched_video_path: Path | None = None,
 ) -> CaptureResult:
     """Download the video, extract animated frames, update the 03 md.
 
@@ -245,6 +327,10 @@ def run_stage_capture(
         `"auto"` (default): WebP if ffmpeg has libwebp, else GIF.
         `"webp"`: force WebP, error if missing encoder.
         `"gif"`: force GIF (2-pass palette).
+    prefetched_video_path:
+        Optional existing mp4 file prepared by a background thread
+        (see `prefetch_video_download`). When supplied and present,
+        the internal yt-dlp download is skipped.
     """
     if not summary_md_path.exists():
         return CaptureResult(ranges=[], error="summary_md_not_found")
@@ -271,20 +357,17 @@ def run_stage_capture(
     assets_dir = vault_root / assets_rel
     assets_dir.mkdir(parents=True, exist_ok=True)
 
-    # Temp video dir lives inside pipeline-youtube/tmp/ (gitignored)
-    project_root = Path(__file__).resolve().parent.parent.parent
-    tmp_dir = project_root / "tmp"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_video_path = tmp_dir / f"{video.video_id}.mp4"
+    tmp_video_path = prefetched_video_path or _tmp_video_path(video)
 
-    try:
-        _download_video(video.watch_url, tmp_video_path, resolution=resolution)
-    except Exception as e:
-        return CaptureResult(
-            ranges=ranges,
-            capture_format=ext,
-            error=f"download_failed: {type(e).__name__}: {e}",
-        )
+    if prefetched_video_path is None or not prefetched_video_path.exists():
+        try:
+            _download_video(video.watch_url, tmp_video_path, resolution=resolution)
+        except Exception as e:
+            return CaptureResult(
+                ranges=ranges,
+                capture_format=ext,
+                error=f"download_failed: {type(e).__name__}: {e}",
+            )
 
     extractor = _dispatch_extractor(choice.strategy)
 
@@ -421,6 +504,8 @@ def _extract_webp_direct(
 
     `scale=-2:H` preserves aspect ratio and ensures even width.
     """
+    _assert_not_flaglike(video_path)
+    _assert_not_flaglike(output_path)
     cmd = [
         "ffmpeg",
         "-ss",
@@ -507,6 +592,8 @@ def _extract_gif(
     """
     vf = f"fps={fps},scale=-2:{scale_height}:flags=lanczos"
 
+    _assert_not_flaglike(video_path)
+    _assert_not_flaglike(output_path)
     # Pass 1: generate optimized palette
     palette_path = output_path.with_suffix(".palette.png")
     palettegen_cmd = [

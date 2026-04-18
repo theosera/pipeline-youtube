@@ -43,7 +43,7 @@ from .scoring import (
 ALPHA_SYSTEM_PROMPT = """あなたは複数の YouTube 動画から抽出された学習ノート群を分析し、横断的なトピックを抽出するトピックエクストラクターです。
 
 ## 入力
-`<untrusted_content>` タグ内に、プレイリスト内の各動画の 04_Lerning_Material md が
+`<untrusted_content>` タグ内に、プレイリスト内の各動画の 04_Learning_Material md が
 `## VIDEO: {video_id}: {title}` で区切られた形式で与えられます。
 
 ## タスク
@@ -165,7 +165,7 @@ LEADER_SYSTEM_PROMPT = """あなたはプレイリスト横断の学習ハンズ
 - α の `topics` 配列 (全トピック)
 - β の `chapters` 配列 (章立てプラン)
 - γ の `CoverageReport` (カバレッジ + notes)
-- 各動画の 04_Lerning_Material md 本文 (`## VIDEO: {video_id}: {title}` 区切り)
+- 各動画の 04_Learning_Material md 本文 (`## VIDEO: {video_id}: {title}` 区切り)
 
 ## タスク
 β の章立て通りに、各章の本文 markdown を生成する。さらに全体の目次となる **MOC
@@ -304,8 +304,14 @@ def format_learning_materials(
 
     parts: list[str] = []
     for video, body in zip(videos, learning_md_bodies, strict=True):
-        safe_title = sanitize_untrusted_text(video.title or "Untitled", 200)
-        safe_body = sanitize_untrusted_text(body, _MAX_INPUT_CHARS // max(len(videos), 1))
+        safe_title = sanitize_untrusted_text(
+            video.title or "Untitled", 200, context="synthesis.agents.video_title"
+        )
+        safe_body = sanitize_untrusted_text(
+            body,
+            _MAX_INPUT_CHARS // max(len(videos), 1),
+            context="synthesis.agents.learning_body",
+        )
         parts.append(f"## VIDEO: {video.video_id}: {safe_title}\n\n{safe_body}")
     return "\n\n---\n\n".join(parts)
 

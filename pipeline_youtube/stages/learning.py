@@ -2,7 +2,7 @@
 
 Reads the 02_Summary md (semantic timeline) and 03_Capture md (image
 embeds with timestamp ranges), then asks `claude -p` to restructure
-the content into a learner-friendly 04_Lerning_Material md:
+the content into a learner-friendly 04_Learning_Material md:
 
     ## 概念: テーマ名
     [MM:SS ~ MM:SS]
@@ -182,9 +182,15 @@ def _build_prompt(
     capture_body: str,
     mappings: list[CaptureMapping],
 ) -> str:
-    safe_title = sanitize_untrusted_text(video.title or "Untitled", 200)
-    safe_summary = sanitize_untrusted_text(summary_body, _MAX_INPUT_CHARS // 2)
-    safe_capture = sanitize_untrusted_text(capture_body, _MAX_INPUT_CHARS // 2)
+    safe_title = sanitize_untrusted_text(
+        video.title or "Untitled", 200, context="learning.video_title"
+    )
+    safe_summary = sanitize_untrusted_text(
+        summary_body, _MAX_INPUT_CHARS // 2, context="learning.summary_body"
+    )
+    safe_capture = sanitize_untrusted_text(
+        capture_body, _MAX_INPUT_CHARS // 2, context="learning.capture_body"
+    )
     mapping_table = _format_mapping_table(mappings)
 
     return (

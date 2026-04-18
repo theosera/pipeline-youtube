@@ -10,12 +10,25 @@ NotebookLM に動画 URL を 1 本ずつ手動で貼り付けて要約を Obsidi
 - **01_Scripts**: タイムスタンプ付き文字起こし (YouTube 純正字幕 → 自動生成字幕 → ローカル Whisper の 3 段フォールバック)
 - **02_Summary**: 意味単位タイムスタンプ範囲付き要約
 - **03_Capture**: 要点タイムスタンプに対応する動画フレーム抽出 (WebP アニメーション)
-- **04_Lerning_Material**: 上記 3 工程を「時系列 → キャプチャ画像 → 要点」3 点セットでテーマ単位に再構成
+- **04_Learning_Material**: 上記 3 工程を「時系列 → キャプチャ画像 → 要点」3 点セットでテーマ単位に再構成
 
 **プレイリスト単位 (05)**
 - **05_Synthesis**: プレイリストの動画数 ≥ 3 本の時、Agent Teams (α/β/γ/leader) で 04 全体を横断統合し、章別ハンズオン md 群 + 00_MOC.md + 重複度スコア JSON を出力する
 
 AI 呼び出し (stage 02/04/05) は **`claude -p` headless CLI を subprocess で呼び出し**、Claude Pro/Max の OAuth セッションを使います。`ANTHROPIC_API_KEY` は不要。`claude login` 済であればそのまま動作します。
+
+### 実行環境の前提 (重要)
+
+このパイプラインは **ローカル実行専用** の設計です。理由は:
+
+- stage 02/04/05 は `claude` CLI を subprocess で呼び、OAuth セッション (`~/.claude/`) に依存
+- GitHub Actions などの CI 環境では `claude login` できないため、これら 3 段は実行不可
+- API キー (`ANTHROPIC_API_KEY`) を使う設計には意図的に切り替えていません (Claude Pro/Max 定額を活かすため)
+
+CI で動かすのは lint / format / type-check / 単体テストのみです。
+プレイリスト処理は手元の macOS/Linux で `uv run python -m pipeline_youtube.main ...` を実行してください。
+
+このトレードオフを受け入れずにクラウド実行したい場合は、`pipeline_youtube/providers/claude_cli.py` を Anthropic SDK 呼び出しに差し替える必要があります (未実装)。
 
 ## セットアップ
 
@@ -30,10 +43,15 @@ uv sync
 uv pip install -e .
 
 cp config.example.json config.json
-# config.json の vault_root を編集 (Obsidian Vault のルートパス)
-# 備考: config.json から読み込まれるのは vault_root のみ。
-#       他のノブ (model / capture-format / concurrency / min-playlist-size /
-#       max-chapters 等) は CLI フラグで渡す。
+# config.json で設定できるフィールド:
+#   - vault_root (必須): Obsidian Vault のルートパス
+#   - models (任意): ステージ/エージェント別モデル
+#     {"stage_02","stage_04","alpha","beta","gamma","leader"} のキーを任意に設定。
+#     未設定キーは CLI の --model にフォールバック。
+#   - filler_words (任意): Stage 02 の transcript から除去する日本語フィラー語リスト。
+#     未設定ならデフォルト (えー/えっと/あのー/まあ/なんか 等) を使用。
+# 他のノブ (capture-format / concurrency / min-playlist-size / max-chapters 等) は
+# 都度変わる運用値なので CLI フラグで渡す設計。
 ```
 
 ## 使い方
@@ -72,6 +90,8 @@ uv run python -m pipeline_youtube.main "https://www.youtube.com/watch?v=VIDEO_ID
 | `--concurrency N` | 1〜5 本並列処理 (デフォルト 1)。Whisper 段は内部ロックで常に 1 本に保たれる |
 | `--force-video ID` | checkpoint 完了済み動画を強制再処理。繰り返し指定可 |
 | `--config PATH` | 代替 `config.json` パス |
+| `--stop-after-capture` | Phase 1 実行 (01〜03 のみ)。Obsidian で 02_Summary.md を校閲して `reviewed: true` に書き換えてから Phase 3 を回す運用 |
+| `--resume-reviewed` | Phase 3 実行。`reviewed: true` が付いた動画だけ Stage 04〜05 を走らせる |
 
 詳細は [`docs/cli.md`](docs/cli.md) と [`docs/sample-run.md`](docs/sample-run.md) を参照。
 
@@ -84,7 +104,7 @@ Permanent Note/08_YouTube学習/
 ├── 01_Scripts_Processing_Unit/{YYYY-MM-DD-HHmm} {playlist}/{YYYY-MM-DD-HHmm} {title}.md
 ├── 02_Summary_Processing_Unit/{YYYY-MM-DD-HHmm} {playlist}/{YYYY-MM-DD-HHmm} {title}.md
 ├── 03_Capture_Processing_Unit/{YYYY-MM-DD-HHmm} {playlist}/{YYYY-MM-DD-HHmm} {title}.md
-├── 04_Lerning_Material/{YYYY-MM-DD-HHmm} {playlist}/{YYYY-MM-DD-HHmm} {title}.md
+├── 04_Learning_Material/{YYYY-MM-DD-HHmm} {playlist}/{YYYY-MM-DD-HHmm} {title}.md
 └── 05_Synthesis/{YYYY-MM-DD-HHmm} {playlist}/
     ├── 00_MOC.md                      ← ハブノート (章構成・動画一覧・学習順序)
     ├── 01_{章名}.md 〜 NN_{章名}.md   ← β が動的に章数を決定
@@ -148,7 +168,7 @@ uv run mypy pipeline_youtube/ --ignore-missing-imports
 
 ```bash
 uv run pytest tests/ -q
-# 269 passed (2026-04-16 時点)
+# 352 passed (2026-04-18 時点)
 ```
 
 主な対象:

@@ -1,6 +1,6 @@
 """Tests for pipeline.py placeholder creation and path computation.
 
-Locks the behavior that 04_Lerning_Material is NOT pre-created as an
+Locks the behavior that 04_Learning_Material is NOT pre-created as an
 empty file, to prevent Templater folder-template hijacking.
 """
 
@@ -64,7 +64,7 @@ class TestDefaultPlaceholders:
         note_name = "2026-04-15-2123 Anthropicが公開したハーネス設計、全部解説します.md"
         ghost_04 = (
             vault
-            / "Permanent Note/08_YouTube学習/04_Lerning_Material"
+            / "Permanent Note/08_YouTube学習/04_Learning_Material"
             / playlist_folder
             / note_name
         )
@@ -112,7 +112,7 @@ class TestComputeNotePaths:
         paths = compute_note_paths(video, run_time, units=("learning",))
 
         assert set(paths.keys()) == {"learning"}
-        assert "04_Lerning_Material" in str(paths["learning"])
+        assert "04_Learning_Material" in str(paths["learning"])
         assert not paths["learning"].exists()
 
     def test_collision_resolution(self, vault):
@@ -133,4 +133,4 @@ class TestComputeNotePaths:
     def test_unit_dirs_still_has_learning(self, vault):
         """UNIT_DIRS must retain 'learning' so stage 04 can look it up."""
         assert "learning" in UNIT_DIRS
-        assert UNIT_DIRS["learning"] == "04_Lerning_Material"
+        assert UNIT_DIRS["learning"] == "04_Learning_Material"

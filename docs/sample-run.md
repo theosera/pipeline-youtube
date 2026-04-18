@@ -135,3 +135,76 @@ ffmpeg に libwebp も gif2webp も無い環境:
 ```
 
 自動で GIF にフォールバック。`--capture-format webp` を明示していたら `format_unavailable` で 03 だけ失敗し、04 には進みます (画像埋め込みが抜けるだけ)。
+
+## Phase 1 / Phase 3 分離実行 (`--stop-after-capture` / `--resume-reviewed`)
+
+### Phase 1: 01〜03 までで停止
+
+```bash
+uv run python -m pipeline_youtube.main \
+    "https://www.youtube.com/playlist?list=PLexample" \
+    --stop-after-capture
+```
+
+```
+[1/3] _h3decBW12Q Agent Teams とは何か
+  [01] scripts... source=official snippets=241 lang=ja
+  [02] summary (model=haiku)... in=8421 out=3102 cost=$0.008
+  [03] capture... 5/5 ranges fmt=webp
+  [stop-after-capture] review 02_Summary.md then re-run with --resume-reviewed
+
+[2/3] xyz456ABC01 Context Anxiety と Harness
+  [01] scripts... source=auto-generated snippets=188 lang=en
+  [02] summary (model=haiku)... in=6290 out=2480 cost=$0.006
+  [03] capture... 4/4 ranges fmt=webp
+  [stop-after-capture] review 02_Summary.md then re-run with --resume-reviewed
+
+[3/3] kJ9mXpqRsT2 α/β/γ/leader 設計パターン
+  [01] scripts... source=official snippets=309 lang=ja
+  [02] summary (model=haiku)... in=10201 out=3602 cost=$0.010
+  [03] capture... 6/6 ranges fmt=webp
+  [stop-after-capture] review 02_Summary.md then re-run with --resume-reviewed
+
+[stop-after-capture] Phase 1 complete. Review 02_Summary.md, set `reviewed: true`, then re-run with --resume-reviewed.
+```
+
+この間に Obsidian で `02_Summary_Processing_Unit/.../.md` を開き、校閲済み動画の frontmatter に `reviewed: "true"` をセットする。
+
+### Phase 3: reviewed:true だけ Stage 04〜05 を走らせる
+
+```bash
+uv run python -m pipeline_youtube.main \
+    "https://www.youtube.com/playlist?list=PLexample" \
+    --resume-reviewed
+```
+
+```
+checkpoint: 0 videos already complete, will skip
+  [skip] xyz456ABC01: reviewed='false'
+
+[1/3] _h3decBW12Q Agent Teams とは何か
+  [04] learning (model=sonnet)... in=12034 out=4211 cost=$0.045
+
+[3/3] kJ9mXpqRsT2 α/β/γ/leader 設計パターン
+  [04] learning (model=sonnet)... in=14800 out=4902 cost=$0.053
+
+=== Video processing summary ===
+succeeded: 2/3
+  SKIP xyz456ABC01: reviewed='false'
+
+=== Stage 05 Synthesis (Agent Teams) ===
+[skip] only 2 videos succeeded (< 3), stage 05 skipped
+```
+
+## モデルカスケード (config.json の `models`)
+
+`config.json` に `models` を設定していると、各 stage/agent の `claude -p` 呼び出しログがそのモデル名で出る。
+
+```
+  [02] summary (model=haiku)...
+  [04] learning (model=sonnet)...
+=== Stage 05 Synthesis (Agent Teams) ===
+  (α=haiku / β=sonnet / γ=haiku / leader=opus でそれぞれ発話)
+```
+
+未設定のキーは CLI `--model` (デフォルト `sonnet`) にフォールバック。

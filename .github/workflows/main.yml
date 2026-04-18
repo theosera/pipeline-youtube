@@ -41,3 +41,7 @@ jobs:
 
       - name: Run tests
         run: uv run pytest tests/ -q --tb=short
+
+      - name: Audit dependencies (pip-audit)
+        run: uv run --with pip-audit pip-audit
+        continue-on-error: true

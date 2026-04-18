@@ -138,3 +138,52 @@ def build_frontmatter(
     lines.append("---")
     lines.append("")  # trailing newline after the closing ---
     return "\n".join(lines)
+
+
+_FRONTMATTER_FIELD_TEMPLATE = '{key}: "{value}"'
+
+
+def read_frontmatter_field(md_path: Path, field_name: str) -> str | None:
+    """Return the string value of `field_name` from the YAML frontmatter.
+
+    Reads the first 500 bytes only (fast enough for batch scans). Matches
+    both quoted (`key: "value"`) and bare (`key: value`) forms. Returns
+    None when the field is absent or the file is unreadable.
+    """
+    try:
+        with md_path.open("rb") as f:
+            head = f.read(500).decode("utf-8", errors="ignore")
+    except OSError:
+        return None
+    if not head.startswith("---"):
+        return None
+    end = head.find("\n---", 3)
+    if end == -1:
+        return None
+    block = head[:end]
+    pattern = re.compile(rf'^{re.escape(field_name)}:\s*(?:"([^"]*)"|(\S.*))\s*$', re.MULTILINE)
+    m = pattern.search(block)
+    if not m:
+        return None
+    return (m.group(1) if m.group(1) is not None else m.group(2)).strip()
+
+
+def upsert_frontmatter_field(md_text: str, key: str, value: str) -> str:
+    """Insert or update `key: "value"` inside the leading `---` frontmatter.
+
+    If the text lacks a frontmatter block, the input is returned unchanged.
+    """
+    if not md_text.startswith("---"):
+        return md_text
+    end = md_text.find("\n---", 3)
+    if end == -1:
+        return md_text
+    head = md_text[: end + 1]
+    tail = md_text[end + 1 :]
+    line = _FRONTMATTER_FIELD_TEMPLATE.format(key=key, value=_escape_yaml(value))
+    existing = re.compile(rf"^{re.escape(key)}:.*$", re.MULTILINE)
+    if existing.search(head):
+        head = existing.sub(line, head, count=1)
+    else:
+        head = head.rstrip("\n") + "\n" + line + "\n"
+    return head + tail
