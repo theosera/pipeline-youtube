@@ -32,6 +32,13 @@ def _write_summary(path: Path, video_id: str, reviewed: str) -> None:
     )
 
 
+# 11-char YouTube-shaped IDs (matches the M3 hardened extractor format).
+_VID_A = "aaaaaaaaaaA"
+_VID_B = "bbbbbbbbbbB"
+_VID_C = "ccccccccccC"
+_VID_1 = "vid1xxxxxxA"
+
+
 class TestFindSummaryMd:
     def test_canonical_folder(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr("pipeline_youtube.main.get_vault_root", lambda: tmp_path, raising=False)
@@ -45,16 +52,16 @@ class TestFindSummaryMd:
             f"{main_mod.LEARNING_BASE}/{main_mod.UNIT_DIRS['summary']}/2026-04-18-0800 testlist"
         )
         summary = tmp_path / canonical / "note.md"
-        _write_summary(summary, "vid1", "true")
+        _write_summary(summary, _VID_1, "true")
 
-        found = _find_summary_md("vid1", "testlist", dt)
+        found = _find_summary_md(_VID_1, "testlist", dt)
         assert found == summary
 
     def test_missing_returns_none(self, tmp_path: Path):
         from pipeline_youtube import config
 
         config.set_vault_root(tmp_path)
-        assert _find_summary_md("missing", "testlist", datetime(2026, 4, 18)) is None
+        assert _find_summary_md("missingxxxx", "testlist", datetime(2026, 4, 18)) is None
 
 
 class TestFilterToReviewed:
@@ -71,18 +78,18 @@ class TestFilterToReviewed:
             / main_mod.UNIT_DIRS["summary"]
             / "2026-04-18-0800 testlist"
         )
-        _write_summary(folder / "a.md", "vid_a", "true")
-        _write_summary(folder / "b.md", "vid_b", "false")
-        _write_summary(folder / "c.md", "vid_c", "true")
+        _write_summary(folder / "a.md", _VID_A, "true")
+        _write_summary(folder / "b.md", _VID_B, "false")
+        _write_summary(folder / "c.md", _VID_C, "true")
         return dt
 
     def test_keeps_only_reviewed_true(self, vault):
-        to_process = [(1, _vid("vid_a")), (2, _vid("vid_b")), (3, _vid("vid_c"))]
+        to_process = [(1, _vid(_VID_A)), (2, _vid(_VID_B)), (3, _vid(_VID_C))]
         kept = _filter_to_reviewed(to_process, "testlist", vault)
-        assert [v.video_id for _, v in kept] == ["vid_a", "vid_c"]
+        assert [v.video_id for _, v in kept] == [_VID_A, _VID_C]
 
     def test_videos_without_summary_are_skipped(self, vault):
-        to_process = [(1, _vid("unknown"))]
+        to_process = [(1, _vid("unknownXXXX"))]
         kept = _filter_to_reviewed(to_process, "testlist", vault)
         assert kept == []
 
@@ -98,6 +105,6 @@ class TestFilterToReviewed:
             / main_mod.UNIT_DIRS["summary"]
             / "2026-04-18-0800 testlist"
         )
-        _write_summary(folder / "a.md", "vid_a", "TRUE")
-        kept = _filter_to_reviewed([(1, _vid("vid_a"))], "testlist", dt)
+        _write_summary(folder / "a.md", _VID_A, "TRUE")
+        kept = _filter_to_reviewed([(1, _vid(_VID_A))], "testlist", dt)
         assert len(kept) == 1

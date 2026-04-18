@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import re
 import sys
 import traceback
 from dataclasses import dataclass
@@ -24,7 +23,11 @@ from typing import Any
 
 import click
 
-from .checkpoint import get_completed_video_ids
+from .checkpoint import (
+    extract_trusted_video_id,
+    get_completed_video_ids,
+    read_trusted_video_id,
+)
 from .config import VaultRootError, set_dry_run, set_vault_root
 from .obsidian import format_playlist_folder_name
 from .path_safety import ensure_safe_path
@@ -120,13 +123,11 @@ def _strip_frontmatter(text: str) -> str:
     return text[end + 4 :].lstrip()
 
 
-_VIDEO_ID_IN_FRONTMATTER = re.compile(r'^video_id:\s*"([^"]+)"', re.MULTILINE)
-
-
 def _load_existing_04_body(video_id: str, playlist_title: str, run_date: datetime) -> str | None:
     """Read the stage 04 body for a checkpoint-skipped video.
 
     Returns the frontmatter-stripped body, or None if the file can't be found.
+    Uses the same M3 hardened frontmatter validation as `is_video_complete`.
     """
     from .checkpoint import _find_learning_folder
 
@@ -134,13 +135,13 @@ def _load_existing_04_body(video_id: str, playlist_title: str, run_date: datetim
     if folder is None:
         return None
     for md in folder.glob("*.md"):
+        if read_trusted_video_id(md) != video_id:
+            continue
         try:
             text = md.read_text(encoding="utf-8")
         except OSError:
             continue
-        m = _VIDEO_ID_IN_FRONTMATTER.search(text)
-        if m and m.group(1) == video_id:
-            return _strip_frontmatter(text)
+        return _strip_frontmatter(text)
     return None
 
 
@@ -165,12 +166,7 @@ def _find_summary_md(video_id: str, playlist_title: str, run_date: datetime) -> 
         if not candidate_folder.exists():
             continue
         for md in candidate_folder.glob("*.md"):
-            try:
-                head = md.read_bytes()[:500].decode("utf-8", errors="replace")
-            except OSError:
-                continue
-            m = _VIDEO_ID_IN_FRONTMATTER.search(head)
-            if m and m.group(1) == video_id:
+            if read_trusted_video_id(md) == video_id:
                 return md
     return None
 
@@ -310,11 +306,15 @@ def _collect_existing_learning_bodies(
 
     by_video_id: dict[str, str] = {}
     for md in sorted(learning_dir.glob("*.md")):
-        text = md.read_text(encoding="utf-8")
-        m = _VIDEO_ID_IN_FRONTMATTER.search(text)
-        if not m:
+        try:
+            data = md.read_bytes()
+        except OSError:
             continue
-        by_video_id[m.group(1)] = _strip_frontmatter(text)
+        vid = extract_trusted_video_id(data)
+        if vid is None:
+            continue
+        text = data.decode("utf-8", errors="replace")
+        by_video_id[vid] = _strip_frontmatter(text)
 
     matched_videos: list[VideoMeta] = []
     matched_bodies: list[str] = []

@@ -9,6 +9,24 @@ done).
 Design note (ミノ駆動本 ch8 単一責任):
     This module does ONE thing — answer "is this video already done?"
     It does not decide what to do about it; that's the caller's job.
+
+Trust model (M3 hardening)
+--------------------------
+The vault directory is treated as semi-trusted: a user with write access
+to the vault could in principle plant a crafted md file to make the
+pipeline skip real videos (self-DoS). `extract_trusted_video_id` applies
+three defensive layers before accepting a checkpoint marker:
+
+  1. Requires a well-formed YAML frontmatter block (`---...---`) at the
+     top of the file. `video_id:` anywhere else is ignored.
+  2. Validates the video_id matches YouTube's canonical format
+     (11 chars from `[A-Za-z0-9_-]`). Arbitrary strings, partial IDs,
+     and path-like values are rejected.
+  3. If a `URL:` field is also present in the frontmatter, enforces
+     that it references the same video_id (integrity cross-check).
+
+On failure the file is silently skipped — same safe fallback as
+"no matching file found".
 """
 
 from __future__ import annotations
@@ -22,7 +40,62 @@ from .obsidian import format_playlist_folder_name, sanitize_title_for_filename
 from .path_safety import ensure_safe_path
 from .pipeline import LEARNING_BASE, LEGACY_LEARNING_DIR, UNIT_DIRS
 
-_VIDEO_ID_RE = re.compile(r'^video_id:\s*"([^"]+)"', re.MULTILINE)
+# YouTube video IDs are always 11 chars from [A-Za-z0-9_-].
+_YT_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+# Match a YAML frontmatter block that opens the file: `---\n...\n---`.
+_FRONTMATTER_BLOCK_RE = re.compile(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", re.DOTALL)
+
+# Inside-frontmatter field lines.
+_VIDEO_ID_LINE_RE = re.compile(r'^video_id:\s*"([^"\n]+)"\s*$', re.MULTILINE)
+_URL_LINE_RE = re.compile(r'^URL:\s*"([^"\n]+)"\s*$', re.MULTILINE)
+
+# Cap the frontmatter scan — long titles/playlists still fit comfortably.
+_FRONTMATTER_SCAN_BYTES = 2048
+
+
+def extract_trusted_video_id(md_bytes: bytes) -> str | None:
+    """Extract a validated video_id from a pipeline-produced md file.
+
+    Returns the 11-char YouTube video_id on success, else `None`. See
+    module docstring for the three defense layers this enforces.
+    Never raises — any I/O or parse failure returns `None`.
+    """
+    try:
+        head = md_bytes[:_FRONTMATTER_SCAN_BYTES].decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+    fm_match = _FRONTMATTER_BLOCK_RE.match(head)
+    if fm_match is None:
+        return None
+    block = fm_match.group(1)
+
+    vid_match = _VIDEO_ID_LINE_RE.search(block)
+    if vid_match is None:
+        return None
+    video_id = vid_match.group(1)
+
+    if _YT_VIDEO_ID_RE.match(video_id) is None:
+        return None
+
+    # Integrity cross-check: if URL is present, it must embed the same video_id.
+    url_match = _URL_LINE_RE.search(block)
+    if url_match is not None:
+        url = url_match.group(1)
+        if f"v={video_id}" not in url and f"/{video_id}" not in url:
+            return None
+
+    return video_id
+
+
+def read_trusted_video_id(md_path: Path) -> str | None:
+    """Read an md file and return its validated video_id, or None on any failure."""
+    try:
+        data = md_path.read_bytes()
+    except OSError:
+        return None
+    return extract_trusted_video_id(data)
 
 
 def _find_learning_folder(playlist_title: str, run_date: datetime) -> Path | None:
@@ -85,16 +158,7 @@ def is_video_complete(
     if folder is None or not folder.exists():
         return False
 
-    for md in folder.glob("*.md"):
-        try:
-            # Only read the first 500 bytes — frontmatter is at the top
-            head = md.read_bytes()[:500].decode("utf-8", errors="replace")
-        except OSError:
-            continue
-        m = _VIDEO_ID_RE.search(head)
-        if m and m.group(1) == video_id:
-            return True
-    return False
+    return any(read_trusted_video_id(md) == video_id for md in folder.glob("*.md"))
 
 
 def get_completed_video_ids(
@@ -112,11 +176,7 @@ def get_completed_video_ids(
 
     ids: set[str] = set()
     for md in folder.glob("*.md"):
-        try:
-            head = md.read_bytes()[:500].decode("utf-8", errors="replace")
-        except OSError:
-            continue
-        m = _VIDEO_ID_RE.search(head)
-        if m:
-            ids.add(m.group(1))
+        vid = read_trusted_video_id(md)
+        if vid is not None:
+            ids.add(vid)
     return ids
