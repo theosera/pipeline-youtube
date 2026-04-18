@@ -115,6 +115,100 @@ class TestLayer3UrlIntegrity:
         )
         assert extract_trusted_video_id(data) == _VALID
 
+    # --- substring-bypass regression cases --------------------------------
+    # Previously the check was `f"v={video_id}" in url` / `f"/{video_id}"
+    # in url`, which passed whenever the legit ID appeared ANYWHERE in the
+    # URL string — even inside another query param's value. These cases
+    # exercise that bypass to confirm the structural parser blocks it.
+
+    def test_rejects_legit_id_smuggled_in_unrelated_query_param(self):
+        """`?v=EVILVIDID11&x=v=<legit>` used to pass because the substring
+        `v=<legit>` appears in the `x` param's value. Structural parse
+        sees only `v=EVILVIDID11` and rejects the mismatch."""
+        data = _fm(
+            f'URL: "https://www.youtube.com/watch?v=EVILVIDID11&x=v={_VALID}"',
+            f'video_id: "{_VALID}"',
+        )
+        assert extract_trusted_video_id(data) is None
+
+    def test_rejects_legit_id_smuggled_in_fragment(self):
+        data = _fm(
+            f'URL: "https://www.youtube.com/watch?v=EVILVIDID11#/{_VALID}"',
+            f'video_id: "{_VALID}"',
+        )
+        assert extract_trusted_video_id(data) is None
+
+    def test_rejects_legit_id_smuggled_in_path_after_evil_id(self):
+        """`youtu.be/EVILVIDID11/<legit>` — only the FIRST path segment
+        is the canonical ID; previous substring check let the trailing
+        `/<legit>` slip through."""
+        data = _fm(
+            f'URL: "https://youtu.be/EVILVIDID11/{_VALID}"',
+            f'video_id: "{_VALID}"',
+        )
+        assert extract_trusted_video_id(data) is None
+
+    def test_rejects_ambiguous_multiple_v_params(self):
+        """Multiple `v` query values are never emitted by this pipeline,
+        so treat them as suspicious and reject outright."""
+        data = _fm(
+            f'URL: "https://www.youtube.com/watch?v={_VALID}&v=EVILVIDID11"',
+            f'video_id: "{_VALID}"',
+        )
+        assert extract_trusted_video_id(data) is None
+
+    def test_rejects_non_youtube_host_even_with_matching_path(self):
+        """`attacker.example/?v=<legit>` passed the old substring check."""
+        data = _fm(
+            f'URL: "https://attacker.example/watch?v={_VALID}"',
+            f'video_id: "{_VALID}"',
+        )
+        assert extract_trusted_video_id(data) is None
+
+    def test_rejects_file_scheme_url(self):
+        data = _fm(
+            f'URL: "file:///etc/passwd?v={_VALID}"',
+            f'video_id: "{_VALID}"',
+        )
+        assert extract_trusted_video_id(data) is None
+
+    # --- accepted canonical shapes ---------------------------------------
+
+    def test_accepts_shorts_path_form(self):
+        data = _fm(
+            f'URL: "https://www.youtube.com/shorts/{_VALID}"',
+            f'video_id: "{_VALID}"',
+        )
+        assert extract_trusted_video_id(data) == _VALID
+
+    def test_accepts_live_path_form(self):
+        data = _fm(
+            f'URL: "https://www.youtube.com/live/{_VALID}"',
+            f'video_id: "{_VALID}"',
+        )
+        assert extract_trusted_video_id(data) == _VALID
+
+    def test_accepts_embed_path_form(self):
+        data = _fm(
+            f'URL: "https://www.youtube.com/embed/{_VALID}"',
+            f'video_id: "{_VALID}"',
+        )
+        assert extract_trusted_video_id(data) == _VALID
+
+    def test_accepts_m_youtube_host(self):
+        data = _fm(
+            f'URL: "https://m.youtube.com/watch?v={_VALID}"',
+            f'video_id: "{_VALID}"',
+        )
+        assert extract_trusted_video_id(data) == _VALID
+
+    def test_accepts_youtu_be_with_trailing_query(self):
+        data = _fm(
+            f'URL: "https://youtu.be/{_VALID}?t=42"',
+            f'video_id: "{_VALID}"',
+        )
+        assert extract_trusted_video_id(data) == _VALID
+
 
 class TestRobustness:
     def test_handles_invalid_utf8_gracefully(self):

@@ -34,6 +34,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from .config import get_vault_root
 from .obsidian import format_playlist_folder_name, sanitize_title_for_filename
@@ -52,6 +53,60 @@ _URL_LINE_RE = re.compile(r'^URL:\s*"([^"\n]+)"\s*$', re.MULTILINE)
 
 # Cap the frontmatter scan — long titles/playlists still fit comfortably.
 _FRONTMATTER_SCAN_BYTES = 2048
+
+# Hostnames and path prefixes that carry a video ID in canonical YouTube URLs.
+_YT_HOSTS = frozenset({"www.youtube.com", "youtube.com", "m.youtube.com"})
+_YT_PATH_PREFIXES = frozenset({"shorts", "live", "embed", "v"})
+
+
+def _extract_youtube_video_id(url: str) -> str | None:
+    """Parse a URL and return its YouTube video ID token, or None.
+
+    Structural extraction — does NOT do substring matching. The ID must
+    be in one of the canonical YouTube URL shapes:
+
+      - `https://www.youtube.com/watch?v=<ID>` (single `v` query param)
+      - `https://youtu.be/<ID>[/...]`
+      - `https://www.youtube.com/{shorts,live,embed,v}/<ID>[/...]`
+
+    A URL with multiple `v` query params, with `v` in a nested param
+    (e.g. `?x=v=<ID>`), or with a non-conforming ID is rejected. This
+    closes the substring-bypass attack the previous implementation had
+    (`?v=EVIL&x=v=<legit>` no longer slips through).
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+
+    if parsed.scheme not in ("http", "https"):
+        return None
+
+    host = (parsed.hostname or "").lower()
+
+    if host == "youtu.be":
+        first_seg = parsed.path.lstrip("/").split("/", 1)[0]
+        return first_seg if _YT_VIDEO_ID_RE.match(first_seg) else None
+
+    if host in _YT_HOSTS:
+        # Prefer the single `v` query param (canonical watch URL).
+        query = parse_qs(parsed.query, keep_blank_values=False)
+        v_values = query.get("v")
+        if v_values is not None:
+            # Require exactly one `v` param — multiple values are ambiguous
+            # and never emitted by this pipeline, so rejecting is safe.
+            if len(v_values) == 1 and _YT_VIDEO_ID_RE.match(v_values[0]):
+                return v_values[0]
+            return None
+
+        # Path-based forms: /shorts/<id>, /live/<id>, /embed/<id>, /v/<id>.
+        path_parts = [p for p in parsed.path.split("/") if p]
+        if len(path_parts) >= 2 and path_parts[0] in _YT_PATH_PREFIXES:
+            candidate = path_parts[1]
+            if _YT_VIDEO_ID_RE.match(candidate):
+                return candidate
+
+    return None
 
 
 def extract_trusted_video_id(md_bytes: bytes) -> str | None:
@@ -79,11 +134,14 @@ def extract_trusted_video_id(md_bytes: bytes) -> str | None:
     if _YT_VIDEO_ID_RE.match(video_id) is None:
         return None
 
-    # Integrity cross-check: if URL is present, it must embed the same video_id.
+    # Integrity cross-check: if URL is present, parse it structurally and
+    # require the extracted ID token to match the frontmatter video_id
+    # exactly. Substring matching here would be bypassable via crafted
+    # query strings like `?v=EVIL&x=v=<video_id>`.
     url_match = _URL_LINE_RE.search(block)
     if url_match is not None:
-        url = url_match.group(1)
-        if f"v={video_id}" not in url and f"/{video_id}" not in url:
+        url_video_id = _extract_youtube_video_id(url_match.group(1))
+        if url_video_id != video_id:
             return None
 
     return video_id
