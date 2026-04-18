@@ -41,10 +41,92 @@ JSON output schema (verified at runtime on claude-code 2.1.109)
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import shutil
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+# Resolved absolute path to the `claude` binary, cached after the first
+# lookup. Fixed at call time to defeat PATH-hijack attempts that place
+# a malicious `claude` earlier in PATH between CLI startup and later
+# invocations.
+_CLAUDE_BIN: str | None = None
+_CLAUDE_VERSION: str | None = None
+
+
+class ClaudeBinaryError(RuntimeError):
+    """Raised when the `claude` binary is missing, unverifiable, or overridden to a bad path."""
+
+
+def _resolve_claude_binary() -> str:
+    """Find and validate the `claude` binary. Cache + return its absolute path.
+
+    Override path: set `PIPELINE_YOUTUBE_CLAUDE_BIN` to force a specific
+    absolute path (useful for packaged Claude Code installs like
+    `/opt/homebrew/bin/claude` where the user wants to pin exactly one
+    binary). The override is still validated as existing + executable.
+    """
+    global _CLAUDE_BIN, _CLAUDE_VERSION
+    if _CLAUDE_BIN is not None:
+        return _CLAUDE_BIN
+
+    override = os.environ.get("PIPELINE_YOUTUBE_CLAUDE_BIN")
+    if override:
+        p = Path(override)
+        if not p.is_absolute():
+            raise ClaudeBinaryError(
+                f"PIPELINE_YOUTUBE_CLAUDE_BIN must be an absolute path: {override!r}"
+            )
+        if not p.is_file() or not os.access(p, os.X_OK):
+            raise ClaudeBinaryError(
+                f"PIPELINE_YOUTUBE_CLAUDE_BIN is not an executable file: {override!r}"
+            )
+        resolved = str(p.resolve())
+    else:
+        which = shutil.which("claude")
+        if which is None:
+            raise ClaudeBinaryError(
+                "`claude` CLI not found in PATH. Install Claude Code or run `claude login`."
+            )
+        resolved = str(Path(which).resolve())
+
+    # Probe --version so we fail fast on a non-`claude` impostor.
+    try:
+        result = subprocess.run(
+            [resolved, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+        raise ClaudeBinaryError(f"`{resolved} --version` failed: {type(e).__name__}: {e}") from e
+
+    version = (result.stdout + result.stderr).strip()
+    if "claude" not in version.lower():
+        raise ClaudeBinaryError(
+            f"`{resolved} --version` output does not mention 'claude': {version[:120]!r}"
+        )
+
+    _CLAUDE_BIN = resolved
+    _CLAUDE_VERSION = version
+    return resolved
+
+
+def get_resolved_claude_binary() -> tuple[str, str]:
+    """Return (absolute_path, version) for introspection/logging."""
+    path = _resolve_claude_binary()
+    return path, _CLAUDE_VERSION or ""
+
+
+def _reset_claude_binary_cache_for_tests() -> None:
+    """Clear the module cache so each test can point at a different fake."""
+    global _CLAUDE_BIN, _CLAUDE_VERSION
+    _CLAUDE_BIN = None
+    _CLAUDE_VERSION = None
 
 
 @dataclass(frozen=True)
@@ -136,8 +218,9 @@ def invoke_claude(
     if system_prompt is not None and append_system_prompt is not None:
         raise ValueError("system_prompt and append_system_prompt are mutually exclusive")
 
+    claude_bin = _resolve_claude_binary()
     cmd: list[str] = [
-        "claude",
+        claude_bin,
         "-p",
         "--output-format",
         "json",
@@ -172,8 +255,6 @@ def invoke_claude(
     # Strip ANTHROPIC_API_KEY from the subprocess environment so
     # `claude -p` uses OAuth (Pro/Max plan quota) instead of API
     # credit billing. This prevents accidental API credit consumption.
-    import os
-
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
 
     try:
@@ -189,7 +270,8 @@ def invoke_claude(
         raise ClaudeCliError(f"claude -p timeout after {timeout}s (cmd: {shlex.join(cmd)})") from e
     except FileNotFoundError as e:
         raise ClaudeCliError(
-            "`claude` CLI not found in PATH. Install Claude Code or run `claude login`."
+            f"claude binary vanished at call time: {claude_bin!r}. "
+            "Re-run after `claude login` or set PIPELINE_YOUTUBE_CLAUDE_BIN."
         ) from e
 
     if result.returncode != 0:

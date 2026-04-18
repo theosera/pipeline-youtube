@@ -113,6 +113,23 @@ def _escape_yaml(s: str | None) -> str:
     )
 
 
+# Allowlist of `extra` keys accepted by `build_frontmatter`. Every
+# caller in this codebase uses only these keys; locking them down
+# prevents future refactors from accidentally forwarding attacker-
+# controlled keys (e.g. a hypothetical `extra[user_input] = ...`).
+_ALLOWED_EXTRA_KEYS = frozenset(
+    {
+        "playlist",
+        "video_id",
+        "reviewed",
+        "one_liner",
+        "chapter",
+        "category",
+        "sources",
+    }
+)
+
+
 def build_frontmatter(
     dt: datetime,
     title: str | None,
@@ -120,9 +137,20 @@ def build_frontmatter(
     tags: list[str] | None = None,
     extra: dict[str, str] | None = None,
 ) -> str:
-    """Build YAML frontmatter matching Template_Memo.md output format."""
+    """Build YAML frontmatter matching Template_Memo.md output format.
+
+    `extra` keys must be in `_ALLOWED_EXTRA_KEYS`; unknown keys raise
+    ValueError so no caller can silently forward attacker-controlled
+    keys into the YAML block.
+    """
     tags = tags if tags is not None else ["memo", "youtube"]
     extra = extra or {}
+    unknown = set(extra) - _ALLOWED_EXTRA_KEYS
+    if unknown:
+        raise ValueError(
+            f"build_frontmatter: disallowed `extra` keys {sorted(unknown)!r}; "
+            f"allowed: {sorted(_ALLOWED_EXTRA_KEYS)!r}"
+        )
     date_str = dt.strftime("%Y-%m-%d %H:%M")
 
     lines = [

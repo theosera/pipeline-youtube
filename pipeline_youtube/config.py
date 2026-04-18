@@ -7,15 +7,46 @@ loading is layered on top in later steps.
 
 from __future__ import annotations
 
+import os
+import warnings
 from pathlib import Path
 
 _vault_root: Path | None = None
 _dry_run: bool = False
 
 
-def set_vault_root(path: str | Path) -> None:
+class VaultRootError(ValueError):
+    """Raised when vault_root fails safety checks."""
+
+
+def set_vault_root(path: str | Path, *, strict: bool = False) -> None:
+    """Set the vault root after symlink resolution + safety checks.
+
+    `strict=True` (production path — `main.cli()`):
+      - Rejects the user's home directory itself (too broad).
+      - Rejects the filesystem root.
+      - Warns if `.obsidian/` is missing (likely a misconfiguration).
+
+    `strict=False` (tests, library callers): only `expanduser` +
+    `resolve` so symlinks/realpath are still normalized. This preserves
+    the legacy behavior for callers that assign a fresh `tmp_path`.
+    """
     global _vault_root
-    _vault_root = Path(path).expanduser().resolve()
+    resolved = Path(path).expanduser().resolve()
+
+    if strict:
+        if resolved == Path(os.path.expanduser("~")).resolve():
+            raise VaultRootError(f"vault_root may not be the user's home directory: {resolved}")
+        if resolved == resolved.root or str(resolved) in ("/", "C:\\"):
+            raise VaultRootError(f"vault_root may not be the filesystem root: {resolved}")
+        if not (resolved / ".obsidian").is_dir():
+            warnings.warn(
+                f"vault_root {resolved!s} does not contain `.obsidian/` "
+                "(not recognized as an Obsidian vault)",
+                stacklevel=2,
+            )
+
+    _vault_root = resolved
 
 
 def get_vault_root() -> Path:

@@ -44,4 +44,3 @@ jobs:
 
       - name: Audit dependencies (pip-audit)
         run: uv run --with pip-audit pip-audit
-        continue-on-error: true

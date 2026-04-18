@@ -8,11 +8,24 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from pipeline_youtube.providers import claude_cli as claude_cli_mod
 from pipeline_youtube.providers.claude_cli import (
     ClaudeCliError,
     ClaudeResponse,
     invoke_claude,
 )
+
+_FAKE_CLAUDE_BIN = "/opt/test/bin/claude"
+
+
+@pytest.fixture(autouse=True)
+def _seed_resolved_claude_bin(monkeypatch):
+    """Skip the real `_resolve_claude_binary` --version probe in these unit tests."""
+    monkeypatch.setattr(claude_cli_mod, "_CLAUDE_BIN", _FAKE_CLAUDE_BIN)
+    monkeypatch.setattr(claude_cli_mod, "_CLAUDE_VERSION", "claude 2.1.109")
+    yield
+    claude_cli_mod._reset_claude_binary_cache_for_tests()
+
 
 # =====================================================
 # Helpers
@@ -92,7 +105,7 @@ class TestSuccessfulInvocation:
 
         call_args = run.call_args
         cmd = call_args.args[0]
-        assert cmd[0] == "claude"
+        assert cmd[0] == _FAKE_CLAUDE_BIN
         assert cmd[1] == "-p"
         # Prompt must NOT appear as positional in cmd
         assert "my prompt text" not in cmd
@@ -265,7 +278,7 @@ class TestErrorHandling:
     def test_file_not_found_raises(self):
         with patch("subprocess.run") as run:
             run.side_effect = FileNotFoundError("claude binary missing")
-            with pytest.raises(ClaudeCliError, match="`claude` CLI not found"):
+            with pytest.raises(ClaudeCliError, match="vanished at call time"):
                 invoke_claude("hi")
 
     def test_missing_usage_fields_graceful(self):

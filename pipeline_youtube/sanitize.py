@@ -81,6 +81,23 @@ def wrap_untrusted(content: str) -> str:
     return f"{UNTRUSTED_OPEN}\n{content}\n{UNTRUSTED_CLOSE}"
 
 
+def _redact(sample: str, max_len: int = 24) -> str:
+    """Return a short, non-leaky fingerprint of `sample` for alert logs.
+
+    Keeps the first `max_len // 2` chars + a hash tail. The full string
+    stays out of disk so transcript/title fragments don't leak via
+    shared log files (see top-10 #10).
+    """
+    import hashlib
+
+    if not sample:
+        return ""
+    half = max(max_len // 2, 4)
+    head = sample[:half]
+    digest = hashlib.sha1(sample.encode("utf-8", errors="replace")).hexdigest()[:8]
+    return f"{head}…[{digest}]"
+
+
 def _emit_alert(context: str, before_len: int, after_len: int, sample: str) -> None:
     if _alert_sink is None:
         return
@@ -92,7 +109,7 @@ def _emit_alert(context: str, before_len: int, after_len: int, sample: str) -> N
             "before_len": before_len,
             "after_len": after_len,
             "removed": before_len - after_len,
-            "sample": sample,
+            "sample": _redact(sample),
         }
         with _alert_sink.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")

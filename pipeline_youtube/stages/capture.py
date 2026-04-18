@@ -69,11 +69,29 @@ _TMP_SWEEP_EXTENSIONS = (".mp4", ".webm", ".m4a", ".mkv")
 
 
 def _tmp_video_path(video: VideoMeta) -> Path:
-    """Canonical temp path for a video's downloaded mp4."""
+    """Canonical temp path for a video's downloaded mp4.
+
+    Directory permissions are tightened to 0o700 (owner-only) at
+    creation and on every call so the video binary never becomes
+    world-readable on shared hosts.
+    """
+    import os
+
     project_root = Path(__file__).resolve().parent.parent.parent
     tmp_dir = project_root / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        # Non-POSIX filesystems (e.g. FAT) silently ignore — best-effort.
+        os.chmod(tmp_dir, 0o700)
     return tmp_dir / f"{video.video_id}.mp4"
+
+
+def _restrict_tmp_video(path: Path) -> None:
+    """Set owner-only permissions on a downloaded temp video file."""
+    import os
+
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o600)
 
 
 @dataclass
@@ -476,6 +494,9 @@ def _download_video(url: str, dest: Path, resolution: str = "480") -> None:
         if not candidates:
             raise FileNotFoundError(f"yt-dlp produced no file for {dest}")
         candidates[0].rename(dest)
+
+    # Restrict the downloaded file to owner read/write only.
+    _restrict_tmp_video(dest)
 
 
 ExtractorFn = Callable[..., None]
