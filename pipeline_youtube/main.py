@@ -44,7 +44,10 @@ from .stats import record_transcript_stat
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
-_MODEL_KEYS = frozenset({"stage_02", "stage_04", "alpha", "beta", "gamma", "leader"})
+_MODEL_KEYS = frozenset({"stage_02", "stage_04", "alpha", "beta", "leader"})
+# "gamma" accepted silently for backward-compat with existing config.json,
+# but the γ LLM role has been replaced by a Python set diff — the value is ignored.
+_DEPRECATED_MODEL_KEYS = frozenset({"gamma"})
 
 
 @dataclass(frozen=True)
@@ -76,7 +79,7 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
     models_raw = data.get("models") or {}
     if not isinstance(models_raw, dict):
         raise click.UsageError("config.json: 'models' must be an object")
-    unknown = set(models_raw) - _MODEL_KEYS
+    unknown = set(models_raw) - _MODEL_KEYS - _DEPRECATED_MODEL_KEYS
     if unknown:
         raise click.UsageError(
             f"config.json: unknown model keys {sorted(unknown)!r}; "
@@ -191,7 +194,7 @@ def _print_cost_breakdown(
         _add("stage_04", r.learning_model, r.learning_cost_usd)
 
     if synthesis_result is not None and getattr(synthesis_result, "agent_results", None):
-        roles = ("alpha", "beta", "gamma", "leader")
+        roles = ("alpha", "beta", "leader")
         for role, agent_res in zip(roles, synthesis_result.agent_results, strict=False):
             _add(role, agent_res.response.model, agent_res.total_cost_usd)
 
@@ -728,7 +731,7 @@ def cli(
         run_time=run_time,
         playlist_title=playlist_title,
         model=model,
-        agent_models={k: models[k] for k in ("alpha", "beta", "gamma", "leader")},
+        agent_models={k: models[k] for k in ("alpha", "beta", "leader")},
         min_playlist_size=min_playlist_size,
         max_chapters=max_chapters,
         dry_run=dry_run,

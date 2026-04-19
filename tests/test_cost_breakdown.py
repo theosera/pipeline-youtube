@@ -49,21 +49,23 @@ class TestCostBreakdown:
 
     def test_synthesis_adds_agents(self, capsys):
         results = [_result("a", 0.01, "haiku", 0.05, "sonnet")]
+        # γ was removed (Python set diff replaces the LLM call), so synthesis
+        # agent_results is now alpha + beta + leader = 3 entries.
         synth = SimpleNamespace(
             agent_results=[
                 SimpleNamespace(response=SimpleNamespace(model="haiku"), total_cost_usd=0.02),
                 SimpleNamespace(response=SimpleNamespace(model="sonnet"), total_cost_usd=0.03),
-                SimpleNamespace(response=SimpleNamespace(model="haiku"), total_cost_usd=0.01),
                 SimpleNamespace(response=SimpleNamespace(model="opus"), total_cost_usd=0.15),
             ]
         )
         _print_cost_breakdown(results, synthesis_result=synth)
         out = capsys.readouterr().out
-        for role in ("alpha", "beta", "gamma", "leader"):
+        for role in ("alpha", "beta", "leader"):
             assert role in out
+        assert "gamma" not in out
         assert "opus" in out
-        # total = 0.01 + 0.05 + 0.02 + 0.03 + 0.01 + 0.15 = 0.27
-        assert "$  0.270" in out
+        # total = 0.01 + 0.05 + 0.02 + 0.03 + 0.15 = 0.26
+        assert "$  0.260" in out
 
     def test_empty_noop(self, capsys):
         _print_cost_breakdown([], synthesis_result=None)

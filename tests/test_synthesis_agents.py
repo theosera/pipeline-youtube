@@ -12,8 +12,8 @@ from pipeline_youtube.synthesis import agents as agents_mod
 from pipeline_youtube.synthesis.agents import (
     call_alpha,
     call_beta,
-    call_gamma,
     call_leader,
+    compute_coverage,
     format_learning_materials,
 )
 from pipeline_youtube.synthesis.scoring import (
@@ -270,27 +270,12 @@ class TestCallBeta:
 
 
 # =====================================================
-# call_gamma
+# compute_coverage (replaces call_gamma)
 # =====================================================
 
 
-class TestCallGamma:
-    def test_happy_path(self, monkeypatch):
-        captured: dict = {}
-        gamma_json = json.dumps(
-            {
-                "covered_topic_ids": ["t001", "t002"],
-                "missing_topic_ids": [],
-                "notes": "全てカバー済み",
-            },
-            ensure_ascii=False,
-        )
-        monkeypatch.setattr(
-            agents_mod,
-            "invoke_claude",
-            lambda **kw: (captured.update(kw), _fake_response(gamma_json))[1],
-        )
-
+class TestComputeCoverage:
+    def test_all_covered(self):
         topics = [
             Topic(topic_id="t001", label="x", duplication_count=3, category="core"),
             Topic(topic_id="t002", label="y", duplication_count=2, category="supporting"),
@@ -300,15 +285,71 @@ class TestCallGamma:
                 index=1, label="ch1", category="core", topic_ids=["t001", "t002"], source_videos=[]
             ),
         ]
-        report, result = call_gamma(topics, chapters)
-
+        report = compute_coverage(topics, chapters)
         assert report.covered_topic_ids == ["t001", "t002"]
         assert report.missing_topic_ids == []
-        assert "カバー" in report.notes
+        assert report.notes == ""
 
-        prompt = captured["prompt"]
-        assert "t001" in prompt
-        assert "ch1" in prompt
+    def test_missing_topic(self):
+        topics = [
+            Topic(topic_id="t001", label="a", duplication_count=1, category="unique"),
+            Topic(topic_id="t002", label="b", duplication_count=1, category="unique"),
+            Topic(topic_id="t003", label="c", duplication_count=1, category="unique"),
+        ]
+        chapters = [
+            ChapterPlan(
+                index=1, label="ch1", category="unique", topic_ids=["t001"], source_videos=[]
+            ),
+            ChapterPlan(
+                index=2, label="ch2", category="unique", topic_ids=["t002"], source_videos=[]
+            ),
+        ]
+        report = compute_coverage(topics, chapters)
+        assert report.covered_topic_ids == ["t001", "t002"]
+        assert report.missing_topic_ids == ["t003"]
+
+    def test_chapter_references_unknown_topic_is_not_covered(self):
+        """Chapter topic_ids not in α topics must not appear in covered_topic_ids."""
+        topics = [
+            Topic(topic_id="t001", label="x", duplication_count=1, category="unique"),
+        ]
+        chapters = [
+            ChapterPlan(
+                index=1,
+                label="ch1",
+                category="unique",
+                topic_ids=["t001", "t999"],  # t999 is a hallucinated id
+                source_videos=[],
+            ),
+        ]
+        report = compute_coverage(topics, chapters)
+        assert report.covered_topic_ids == ["t001"]
+        assert report.missing_topic_ids == []
+
+    def test_empty_inputs(self):
+        report = compute_coverage([], [])
+        assert report.covered_topic_ids == []
+        assert report.missing_topic_ids == []
+
+    def test_sorted_output(self):
+        """Output lists are sorted for deterministic downstream diffs."""
+        topics = [
+            Topic(topic_id="t003", label="c", duplication_count=1, category="unique"),
+            Topic(topic_id="t001", label="a", duplication_count=1, category="unique"),
+            Topic(topic_id="t002", label="b", duplication_count=1, category="unique"),
+        ]
+        chapters = [
+            ChapterPlan(
+                index=1,
+                label="ch1",
+                category="unique",
+                topic_ids=["t002", "t001"],
+                source_videos=[],
+            ),
+        ]
+        report = compute_coverage(topics, chapters)
+        assert report.covered_topic_ids == ["t001", "t002"]
+        assert report.missing_topic_ids == ["t003"]
 
 
 # =====================================================

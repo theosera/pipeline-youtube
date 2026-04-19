@@ -6,12 +6,14 @@ Each agent role produces JSON with a well-defined shape:
     Extracts concepts, calculates duplication scores, assigns category.
 - **β (ChapterArchitect)** outputs `ChapterPlan[]`:
     Designs hand-on chapter structure from topics.
-- **γ (CoverageReviewer)** outputs `CoverageReport`:
-    Flags missing concepts or structural issues.
 - **Leader** outputs `SynthesisOutput` with MOC + chapter bodies.
 
-All agents go through `claude -p` via providers.claude_cli. Strict JSON
-parsing with a regex fallback (find the first `{...}` block) handles
+Coverage (`CoverageReport`) is computed deterministically in Python —
+see `synthesis.agents.compute_coverage()`. No LLM parsing needed for
+a simple set diff.
+
+α / β / leader go through `claude -p` via providers.claude_cli. Strict
+JSON parsing with a regex fallback (find the first `{...}` block) handles
 occasional prose leaks around the JSON payload.
 """
 
@@ -268,16 +270,6 @@ def parse_beta_chapters(raw: str) -> list[ChapterPlan]:
             )
         )
     return chapters
-
-
-def parse_gamma_coverage(raw: str) -> CoverageReport:
-    """Parse γ's coverage report output."""
-    data = extract_json(raw)
-    return CoverageReport(
-        covered_topic_ids=[str(t) for t in (data.get("covered_topic_ids") or []) if t],
-        missing_topic_ids=[str(t) for t in (data.get("missing_topic_ids") or []) if t],
-        notes=str(data.get("notes") or ""),
-    )
 
 
 def parse_leader_output(raw: str) -> LeaderOutput:

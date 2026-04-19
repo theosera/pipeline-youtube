@@ -35,6 +35,18 @@ class TestFillerStripping:
         assert "the dog" in chunks[0].text
 
     def test_empty_filler_word_ignored(self):
-        snips = [_s("あ え え い う", 0.0)]
+        snips = [_s("alpha beta gamma delta", 0.0)]
         chunks = chunk_by_window(snips, window_seconds=30.0, filler_words=("",))
-        assert chunks[0].text == "あ え え い う"
+        assert chunks[0].text == "alpha beta gamma delta"
+
+    def test_collapses_short_jp_doubled(self):
+        """2-token repeat of short Japanese tokens (ASR stutter) gets collapsed."""
+        snips = [_s("これ これ は テスト", 0.0)]
+        chunks = chunk_by_window(snips, window_seconds=30.0, filler_words=())
+        assert chunks[0].text == "これ は テスト"
+
+    def test_preserves_english_doubles(self):
+        """Legitimate English repetition like 'very very' must NOT be collapsed."""
+        snips = [_s("very very good", 0.0)]
+        chunks = chunk_by_window(snips, window_seconds=30.0, filler_words=())
+        assert chunks[0].text == "very very good"

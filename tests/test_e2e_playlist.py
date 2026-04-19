@@ -73,10 +73,6 @@ BETA_OUT = json.dumps(
     },
     ensure_ascii=False,
 )
-GAMMA_OUT = json.dumps(
-    {"covered_topic_ids": ["t1"], "missing_topic_ids": [], "notes": "ok"},
-    ensure_ascii=False,
-)
 LEADER_OUT = json.dumps(
     {
         "moc": {
@@ -150,7 +146,7 @@ def _stub_invoke_claude_factory():
     """Each call routes to the right canned body based on prompt content."""
 
     def _route(prompt: str, **kw):
-        # Stage 05 agents are dispatched in sequence α→β→γ→leader; detect by
+        # Stage 05 agents are dispatched in sequence α→β→Leader; detect by
         # what the prompt/append system prompt contains.
         sp = kw.get("append_system_prompt") or kw.get("system_prompt") or ""
         if "トピック" in sp or "alpha" in sp.lower() or "topic_id" in prompt:
@@ -169,7 +165,7 @@ def _stub_invoke_claude_factory():
         _fake_response(LEARNING_OUTPUT, model="sonnet", cost=0.05),  # vid3 learning
         _fake_response(ALPHA_OUT, model="haiku", cost=0.02),
         _fake_response(BETA_OUT, model="sonnet", cost=0.03),
-        _fake_response(GAMMA_OUT, model="haiku", cost=0.01),
+        # γ removed — coverage is now a Python set diff, no LLM call.
         _fake_response(LEADER_OUT, model="opus", cost=0.15),
     ]
 

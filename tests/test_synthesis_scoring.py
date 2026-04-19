@@ -13,7 +13,6 @@ from pipeline_youtube.synthesis.scoring import (
     extract_json,
     parse_alpha_topics,
     parse_beta_chapters,
-    parse_gamma_coverage,
     parse_leader_output,
 )
 
@@ -199,21 +198,6 @@ class TestParseBetaChapters:
         raw = json.dumps({"chapters": [{"label": "x", "category": "bogus"}]})
         chapters = parse_beta_chapters(raw)
         assert chapters[0].category == "unique"
-
-
-class TestParseGammaCoverage:
-    def test_parses_coverage(self):
-        raw = json.dumps(
-            {
-                "covered_topic_ids": ["t001", "t002"],
-                "missing_topic_ids": ["t003"],
-                "notes": "コア概念の順序を改善すべき",
-            }
-        )
-        report = parse_gamma_coverage(raw)
-        assert report.covered_topic_ids == ["t001", "t002"]
-        assert report.missing_topic_ids == ["t003"]
-        assert "コア概念" in report.notes
 
 
 class TestParseLeaderOutput:

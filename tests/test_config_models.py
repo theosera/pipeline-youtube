@@ -40,7 +40,6 @@ class TestLoadConfig:
             "stage_04": "sonnet",
             "alpha": "sonnet",
             "beta": "sonnet",
-            "gamma": "sonnet",
             "leader": "sonnet",
         }
 
@@ -58,7 +57,6 @@ class TestLoadConfig:
         assert result.models["alpha"] == "haiku"
         assert result.models["leader"] == "opus"
         assert result.models["beta"] == "sonnet"
-        assert result.models["gamma"] == "sonnet"
         assert result.models["stage_02"] == "sonnet"
         assert result.models["stage_04"] == "sonnet"
 
@@ -74,7 +72,6 @@ class TestLoadConfig:
                     "stage_04": "sonnet",
                     "alpha": "haiku",
                     "beta": "sonnet",
-                    "gamma": "haiku",
                     "leader": "opus",
                 },
             },
@@ -82,7 +79,22 @@ class TestLoadConfig:
         result = _load_config(cfg, fallback_model="sonnet")
         assert result.models["stage_02"] == "haiku"
         assert result.models["leader"] == "opus"
-        assert result.models["gamma"] == "haiku"
+        assert result.models["alpha"] == "haiku"
+
+    def test_deprecated_gamma_key_accepted_silently(self, tmp_path: Path):
+        """Existing config.json with `gamma` key must not break after γ removal."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        cfg = _write_config(
+            tmp_path / "config.json",
+            {
+                "vault_root": str(vault),
+                "models": {"gamma": "haiku", "alpha": "sonnet"},
+            },
+        )
+        result = _load_config(cfg, fallback_model="sonnet")
+        assert "gamma" not in result.models
+        assert result.models["alpha"] == "sonnet"
 
     def test_unknown_model_key_rejected(self, tmp_path: Path):
         vault = tmp_path / "vault"
