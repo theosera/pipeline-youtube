@@ -37,19 +37,16 @@ from __future__ import annotations
 
 import contextlib
 import re
-import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
-
-import yt_dlp  # type: ignore[import-untyped]
 
 from ..config import get_vault_root
 from ..path_safety import ensure_safe_path
 from ..playlist import VideoMeta
+from .capture_backend import CaptureBackend, HostCaptureBackend
 
 # Pipeline-managed subfolder separate from Obsidian's default _assets/2026/img/.
 # Reason: Obsidian's Attachment Management plugin treats img/ as an auto-managed
@@ -86,14 +83,6 @@ def _tmp_video_path(video: VideoMeta) -> Path:
     return tmp_dir / f"{video.video_id}.mp4"
 
 
-def _restrict_tmp_video(path: Path) -> None:
-    """Set owner-only permissions on a downloaded temp video file."""
-    import os
-
-    with contextlib.suppress(OSError):
-        os.chmod(path, 0o600)
-
-
 @dataclass
 class VideoPrefetch:
     """Handle for a background video download started before Stage 02."""
@@ -111,18 +100,26 @@ class VideoPrefetch:
 
 
 def prefetch_video_download(
-    video: VideoMeta, resolution: str = DEFAULT_RESOLUTION
+    video: VideoMeta,
+    resolution: str = DEFAULT_RESOLUTION,
+    *,
+    backend: CaptureBackend | None = None,
 ) -> VideoPrefetch:
     """Kick off a video download on a daemon thread and return the handle.
 
     The caller should `wait()` on the handle before calling
     `run_stage_capture(..., prefetched_video_path=handle.path)`.
+
+    `backend` defaults to `HostCaptureBackend()` for backward compat.
+    Pass a `DockerCaptureBackend` instance to download inside the
+    hardened container (slower per-call due to docker start overhead,
+    but eliminates the R1 residual risk).
     """
     from concurrent.futures import ThreadPoolExecutor
 
     path = _tmp_video_path(video)
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"pyt-dl-{video.video_id}")
-    future = executor.submit(_download_video, video.watch_url, path, resolution)
+    future = executor.submit(_download_video, video.watch_url, path, resolution, backend=backend)
     executor.shutdown(wait=False)  # thread keeps running until task completes
     return VideoPrefetch(path=path, future=future)
 
@@ -238,41 +235,16 @@ class _FormatChoice:
     strategy: ExtractStrategy
 
 
-@lru_cache(maxsize=1)
-def _ffmpeg_encoders() -> frozenset[str]:
-    """Return the set of ffmpeg encoder names on this host (cached)."""
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-encoders"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=True,
-        )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        return frozenset()
-
-    encoders: set[str] = set()
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and parts[0] and parts[0][0] in {"V", "A", "S"}:
-            encoders.add(parts[1])
-    return frozenset(encoders)
-
-
-@lru_cache(maxsize=1)
-def _has_gif2webp() -> bool:
-    return shutil.which("gif2webp") is not None
-
-
-def _resolve_capture_format(requested: CaptureFormat) -> _FormatChoice:
+def _resolve_capture_format(requested: CaptureFormat, backend: CaptureBackend) -> _FormatChoice:
     """Decide the output extension + extraction strategy.
 
     Priority for `auto`: libwebp encoder > gif2webp > native GIF.
+    Capability probes are delegated to the backend (host or docker) so
+    the decision reflects what will actually execute the capture.
     """
-    encoders = _ffmpeg_encoders()
+    encoders = backend.ffmpeg_encoders()
     has_libwebp = "libwebp" in encoders or "libwebp_anim" in encoders
-    has_gif2webp = _has_gif2webp()
+    has_gif2webp = backend.has_gif2webp()
 
     if requested == "webp":
         if has_libwebp:
@@ -331,6 +303,7 @@ def run_stage_capture(
     capture_format: CaptureFormat = "auto",
     dry_run: bool = False,
     prefetched_video_path: Path | None = None,
+    backend: CaptureBackend | None = None,
 ) -> CaptureResult:
     """Download the video, extract animated frames, update the 03 md.
 
@@ -362,8 +335,13 @@ def run_stage_capture(
     if dry_run:
         return CaptureResult(ranges=ranges, capture_format=capture_format)
 
+    if backend is None:
+        active_backend: CaptureBackend = HostCaptureBackend()
+    else:
+        active_backend = backend
+
     try:
-        choice = _resolve_capture_format(capture_format)
+        choice = _resolve_capture_format(capture_format, active_backend)
     except RuntimeError as e:
         return CaptureResult(ranges=ranges, error=f"format_unavailable: {e}")
 
@@ -379,7 +357,12 @@ def run_stage_capture(
 
     if prefetched_video_path is None or not prefetched_video_path.exists():
         try:
-            _download_video(video.watch_url, tmp_video_path, resolution=resolution)
+            _download_video(
+                video.watch_url,
+                tmp_video_path,
+                resolution=resolution,
+                backend=active_backend,
+            )
         except Exception as e:
             return CaptureResult(
                 ranges=ranges,
@@ -405,6 +388,7 @@ def run_stage_capture(
                     duration=window_seconds,
                     fps=fps,
                     scale_height=scale_height,
+                    backend=active_backend,
                 )
             except subprocess.CalledProcessError as e:
                 stderr = (e.stderr or b"").decode("utf-8", errors="replace")[-200:]
@@ -460,43 +444,24 @@ def _capture_image_name(video_id: str, idx: int, ext: str = "webp") -> str:
     return f"pyt_{video_id}_{idx:02d}.{ext}"
 
 
-def _download_video(url: str, dest: Path, resolution: str = "480") -> None:
+def _download_video(
+    url: str,
+    dest: Path,
+    resolution: str = "480",
+    *,
+    backend: CaptureBackend | None = None,
+) -> None:
     """Download a single video at <= `resolution` height to `dest`.
 
-    Deletes any existing destination first so yt-dlp won't error on
-    collisions. Post-run, verifies the expected output path exists —
-    yt-dlp sometimes appends the actual extension, so we rename any
-    matching file to the canonical dest path.
+    Delegates the actual yt-dlp call to the configured backend (host
+    subprocess or hardened container). `backend=None` preserves the
+    prefetch-thread signature that existed before R1 hardening and
+    defaults to the host backend.
     """
     if dest.exists():
         dest.unlink()
 
-    fmt = (
-        f"bestvideo[height<={resolution}][ext=mp4]+bestaudio[ext=m4a]/"
-        f"best[height<={resolution}][ext=mp4]/"
-        f"best[height<={resolution}]"
-    )
-    ydl_opts: dict[str, Any] = {
-        "format": fmt,
-        "outtmpl": str(dest.with_suffix("")) + ".%(ext)s",
-        "quiet": True,
-        "no_warnings": True,
-        "noprogress": True,
-        "merge_output_format": "mp4",
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
-
-    if not dest.exists():
-        # yt-dlp may have written with a different extension (e.g. .mkv)
-        stem = dest.stem
-        candidates = sorted(dest.parent.glob(f"{stem}.*"))
-        if not candidates:
-            raise FileNotFoundError(f"yt-dlp produced no file for {dest}")
-        candidates[0].rename(dest)
-
-    # Restrict the downloaded file to owner read/write only.
-    _restrict_tmp_video(dest)
+    (backend or HostCaptureBackend()).download_video(url, dest, resolution=resolution)
 
 
 ExtractorFn = Callable[..., None]
@@ -520,6 +485,7 @@ def _extract_webp_direct(
     duration: float,
     fps: int,
     scale_height: int,
+    backend: CaptureBackend,
 ) -> None:
     """Strategy 1: ffmpeg with -c:v libwebp (1-pass, requires libwebp encoder).
 
@@ -527,8 +493,7 @@ def _extract_webp_direct(
     """
     _assert_not_flaglike(video_path)
     _assert_not_flaglike(output_path)
-    cmd = [
-        "ffmpeg",
+    args = [
         "-ss",
         f"{start_sec:.2f}",
         "-t",
@@ -545,7 +510,7 @@ def _extract_webp_direct(
         "-y",
         str(output_path),
     ]
-    subprocess.run(cmd, capture_output=True, check=True, timeout=180)
+    backend.ffmpeg(args, timeout=180)
 
 
 def _extract_webp_via_gif2webp(
@@ -556,6 +521,7 @@ def _extract_webp_via_gif2webp(
     duration: float,
     fps: int,
     scale_height: int,
+    backend: CaptureBackend,
 ) -> None:
     """Strategy 2: ffmpeg 2-pass GIF then gif2webp conversion.
 
@@ -573,13 +539,13 @@ def _extract_webp_via_gif2webp(
             duration=duration,
             fps=fps,
             scale_height=scale_height,
+            backend=backend,
         )
         # Step B: gif2webp converts animated GIF -> animated WebP
         #   -q 75: quality (lossy) — good balance for UI/code captures
         #   -mt: multi-threaded (faster)
         #   -m 6: compression method 6 = max quality/size tradeoff
-        cmd = [
-            "gif2webp",
+        args = [
             "-q",
             "75",
             "-m",
@@ -590,7 +556,7 @@ def _extract_webp_via_gif2webp(
             "-o",
             str(output_path),
         ]
-        subprocess.run(cmd, capture_output=True, check=True, timeout=120)
+        backend.gif2webp(args, timeout=120)
     finally:
         with contextlib.suppress(OSError):
             tmp_gif.unlink(missing_ok=True)
@@ -604,6 +570,7 @@ def _extract_gif(
     duration: float,
     fps: int,
     scale_height: int,
+    backend: CaptureBackend,
 ) -> None:
     """Extract an animated GIF via 2-pass palette (palettegen + paletteuse).
 
@@ -617,8 +584,7 @@ def _extract_gif(
     _assert_not_flaglike(output_path)
     # Pass 1: generate optimized palette
     palette_path = output_path.with_suffix(".palette.png")
-    palettegen_cmd = [
-        "ffmpeg",
+    palettegen_args = [
         "-ss",
         f"{start_sec:.2f}",
         "-t",
@@ -630,12 +596,11 @@ def _extract_gif(
         "-y",
         str(palette_path),
     ]
-    subprocess.run(palettegen_cmd, capture_output=True, check=True, timeout=120)
+    backend.ffmpeg(palettegen_args, timeout=120)
 
     try:
         # Pass 2: apply palette to produce the final GIF
-        paletteuse_cmd = [
-            "ffmpeg",
+        paletteuse_args = [
             "-ss",
             f"{start_sec:.2f}",
             "-t",
@@ -652,7 +617,7 @@ def _extract_gif(
             "-y",
             str(output_path),
         ]
-        subprocess.run(paletteuse_cmd, capture_output=True, check=True, timeout=180)
+        backend.ffmpeg(paletteuse_args, timeout=180)
     finally:
         with contextlib.suppress(OSError):
             palette_path.unlink(missing_ok=True)
