@@ -401,7 +401,7 @@ def call_alpha(
         prompt=prompt,
         append_system_prompt=ALPHA_SYSTEM_PROMPT,
         model=model,
-        timeout=900,
+        timeout=1800,
     )
     topics = parse_alpha_topics(response.text)
     return topics, _wrap_result(response)
@@ -434,7 +434,7 @@ def call_beta(
         prompt=prompt,
         append_system_prompt=BETA_SYSTEM_PROMPT,
         model=model,
-        timeout=900,
+        timeout=1800,
     )
     chapters = parse_beta_chapters(response.text)
     return chapters, _wrap_result(response)
@@ -458,7 +458,7 @@ def call_gamma(
         prompt=prompt,
         append_system_prompt=GAMMA_SYSTEM_PROMPT,
         model=model,
-        timeout=900,
+        timeout=1800,
     )
     report = parse_gamma_coverage(response.text)
     return report, _wrap_result(response)
@@ -495,7 +495,7 @@ def call_leader(
         prompt=prompt,
         append_system_prompt=LEADER_SYSTEM_PROMPT,
         model=model,
-        timeout=1200,  # leader call is the largest
+        timeout=1800,
     )
     leader_output = parse_leader_output(response.text)
     return leader_output, _wrap_result(response)
