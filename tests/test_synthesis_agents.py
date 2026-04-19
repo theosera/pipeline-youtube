@@ -268,6 +268,37 @@ class TestCallBeta:
         assert "最大" not in prompt
         assert "追加制約" not in prompt
 
+    def test_missing_topic_ids_appends_reflexion_block(self, monkeypatch):
+        captured: dict = {}
+        monkeypatch.setattr(
+            agents_mod,
+            "invoke_claude",
+            lambda **kw: (captured.update(kw), _fake_response(SAMPLE_BETA_OUTPUT))[1],
+        )
+
+        topics = [Topic(topic_id="t001", label="A", duplication_count=1, category="unique")]
+        call_beta(topics, missing_topic_ids=["t005", "t009"])
+
+        prompt = captured["prompt"]
+        assert "エラー: 前回の章立てに漏れがあります" in prompt
+        assert "t005" in prompt
+        assert "t009" in prompt
+        assert "全トピックを必ずどこかの章がカバーする" in prompt
+
+    def test_empty_missing_topic_ids_omits_reflexion(self, monkeypatch):
+        captured: dict = {}
+        monkeypatch.setattr(
+            agents_mod,
+            "invoke_claude",
+            lambda **kw: (captured.update(kw), _fake_response(SAMPLE_BETA_OUTPUT))[1],
+        )
+
+        topics = [Topic(topic_id="t001", label="A", duplication_count=1, category="unique")]
+        call_beta(topics, missing_topic_ids=[])
+
+        prompt = captured["prompt"]
+        assert "エラー" not in prompt
+
 
 # =====================================================
 # compute_coverage (replaces call_gamma)
