@@ -27,7 +27,7 @@ def _video() -> VideoMeta:
 
 class TestPrefetchHandle:
     def test_wait_returns_none_on_success(self, tmp_path: Path):
-        def fake_download(url: str, dest: Path, resolution: str = "480") -> None:
+        def fake_download(url: str, dest: Path, resolution: str = "480", **kw: Any) -> None:
             dest.write_bytes(b"fake mp4")
 
         with patch("pipeline_youtube.stages.capture._download_video", fake_download):
@@ -38,7 +38,7 @@ class TestPrefetchHandle:
             handle.path.unlink(missing_ok=True)
 
     def test_wait_returns_exception_on_failure(self):
-        def fake_download(url: str, dest: Path, resolution: str = "480") -> None:
+        def fake_download(url: str, dest: Path, resolution: str = "480", **kw: Any) -> None:
             raise RuntimeError("boom")
 
         with patch("pipeline_youtube.stages.capture._download_video", fake_download):
@@ -53,7 +53,7 @@ class TestParallelOverlap:
     async def test_download_overlaps_with_llm(self, tmp_path: Path, monkeypatch):
         """If download and LLM each take 0.5s, sequential is ~1s, parallel is ~0.5s."""
 
-        def slow_download(url: str, dest: Path, resolution: str = "480") -> None:
+        def slow_download(url: str, dest: Path, resolution: str = "480", **kw: Any) -> None:
             time.sleep(0.5)
             dest.write_bytes(b"x")
 
@@ -101,7 +101,7 @@ class TestPrefetchedPathConsumed:
         monkeypatch.setattr(
             cap_mod,
             "_resolve_capture_format",
-            lambda _req: cap_mod._FormatChoice(ext="webp", strategy="direct"),
+            lambda _req, _backend: cap_mod._FormatChoice(ext="webp", strategy="direct"),
         )
         monkeypatch.setattr(cap_mod, "get_vault_root", lambda: tmp_path)
         monkeypatch.setattr(cap_mod, "ensure_safe_path", lambda p: p)

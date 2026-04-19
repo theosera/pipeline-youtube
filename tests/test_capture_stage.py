@@ -175,7 +175,7 @@ class TestRunStageCapture:
         video, paths = _setup_case(vault)
 
         # Mock yt-dlp download to create an empty mp4
-        def fake_download(url, dest, resolution="480"):
+        def fake_download(url, dest, resolution="480", *, backend=None):
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(b"\x00\x00\x00\x20ftypmp42")  # mp4 magic
 
@@ -184,14 +184,14 @@ class TestRunStageCapture:
         monkeypatch.setattr(
             capture_stage,
             "_resolve_capture_format",
-            lambda _fmt: _FormatChoice(ext="webp", strategy="direct"),
+            lambda _fmt, _backend: _FormatChoice(ext="webp", strategy="direct"),
         )
         monkeypatch.setattr(subprocess, "run", _fake_successful_ffmpeg)
         # Pin format to WebP so test is deterministic regardless of host ffmpeg capabilities
         monkeypatch.setattr(
             capture_stage,
             "_resolve_capture_format",
-            lambda _fmt: _FormatChoice(ext="webp", strategy="direct"),
+            lambda _fmt, _backend: _FormatChoice(ext="webp", strategy="direct"),
         )
 
         result = run_stage_capture(
@@ -299,7 +299,7 @@ class TestRunStageCapture:
         """Range 1 fails → successful names remain contiguous: _00, _01, _02."""
         video, paths = _setup_case(vault)
 
-        def fake_download(url, dest, resolution="480"):
+        def fake_download(url, dest, resolution="480", *, backend=None):
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(b"stub")
 
@@ -308,7 +308,7 @@ class TestRunStageCapture:
         monkeypatch.setattr(
             capture_stage,
             "_resolve_capture_format",
-            lambda _fmt: _FormatChoice(ext="webp", strategy="direct"),
+            lambda _fmt, _backend: _FormatChoice(ext="webp", strategy="direct"),
         )
 
         call_count = {"n": 0}
@@ -344,7 +344,7 @@ class TestRunStageCapture:
         video, paths = _setup_case(vault)
         recorded_paths: list[Path] = []
 
-        def fake_download(url, dest, resolution="480"):
+        def fake_download(url, dest, resolution="480", *, backend=None):
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(b"stub")
             recorded_paths.append(dest)
@@ -354,14 +354,14 @@ class TestRunStageCapture:
         monkeypatch.setattr(
             capture_stage,
             "_resolve_capture_format",
-            lambda _fmt: _FormatChoice(ext="webp", strategy="direct"),
+            lambda _fmt, _backend: _FormatChoice(ext="webp", strategy="direct"),
         )
         monkeypatch.setattr(subprocess, "run", _fake_successful_ffmpeg)
         # Pin format to WebP so test is deterministic regardless of host ffmpeg capabilities
         monkeypatch.setattr(
             capture_stage,
             "_resolve_capture_format",
-            lambda _fmt: _FormatChoice(ext="webp", strategy="direct"),
+            lambda _fmt, _backend: _FormatChoice(ext="webp", strategy="direct"),
         )
 
         run_stage_capture(

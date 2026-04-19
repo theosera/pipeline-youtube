@@ -35,7 +35,13 @@ from .pipeline import LEARNING_BASE, UNIT_DIRS, compute_note_paths, create_place
 from .playlist import VideoMeta, fetch_metadata, validate_youtube_url
 from .providers.claude_cli import ClaudeBinaryError, get_resolved_claude_binary
 from .sanitize import configure_alert_sink
-from .stages.capture import prefetch_video_download, run_stage_capture, sweep_stale_tmp
+from .stages.capture import (
+    ASSETS_REL_PATH,
+    prefetch_video_download,
+    run_stage_capture,
+    sweep_stale_tmp,
+)
+from .stages.capture_backend import DockerBackendNotReady, DockerCaptureBackend
 from .stages.learning import run_stage_learning
 from .stages.scripts import run_stage_scripts
 from .stages.summary import run_stage_summary
@@ -50,11 +56,19 @@ _MODEL_KEYS = frozenset({"stage_02", "stage_04", "alpha", "beta", "leader"})
 _DEPRECATED_MODEL_KEYS = frozenset({"gamma"})
 
 
+_CAPTURE_BACKENDS = frozenset({"host", "docker"})
+
+
 @dataclass(frozen=True)
 class CliConfig:
     vault_root: Path
     models: dict[str, str]
     filler_words: tuple[str, ...]
+    # Stage 03 execution backend. "host" runs yt-dlp/ffmpeg directly;
+    # "docker" isolates them in the hardened image built from
+    # docker/Dockerfile.capture. See docs/docker.md.
+    capture_backend: str = "host"
+    capture_docker_image: str = "pipeline-youtube-capture:latest"
 
 
 def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
@@ -97,7 +111,23 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
             raise click.UsageError("config.json: 'filler_words' must be a list of strings")
         filler = tuple(filler_raw)
 
-    return CliConfig(vault_root=path, models=models, filler_words=filler)
+    capture_backend = str(data.get("capture_backend") or "host").lower()
+    if capture_backend not in _CAPTURE_BACKENDS:
+        raise click.UsageError(
+            f"config.json: capture_backend must be one of {sorted(_CAPTURE_BACKENDS)!r}, "
+            f"got {capture_backend!r}"
+        )
+    capture_docker_image = str(
+        data.get("capture_docker_image") or "pipeline-youtube-capture:latest"
+    )
+
+    return CliConfig(
+        vault_root=path,
+        models=models,
+        filler_words=filler,
+        capture_backend=capture_backend,
+        capture_docker_image=capture_docker_image,
+    )
 
 
 @dataclass
@@ -338,6 +368,7 @@ def _process_video(
     models: dict[str, str],
     filler_words: tuple[str, ...] = (),
     stop_after_capture: bool = False,
+    capture_backend: Any = None,
 ) -> VideoRunResult:
     try:
         paths = compute_note_paths(video, run_time)
@@ -362,7 +393,7 @@ def _process_video(
         prefetch = None
         if not dry_run:
             with contextlib.suppress(Exception):
-                prefetch = prefetch_video_download(video)
+                prefetch = prefetch_video_download(video, backend=capture_backend)
 
         click.echo(f"  [02] summary (model={models['stage_02']})...", nl=False)
         summary_resp = run_stage_summary(
@@ -393,6 +424,7 @@ def _process_video(
             capture_format=capture_format,  # type: ignore[arg-type]
             dry_run=dry_run,
             prefetched_video_path=prefetched_path,
+            backend=capture_backend,
         )
         if capture_result.error and not capture_result.outcomes:
             click.echo(f" FAILED: {capture_result.error}")
@@ -458,6 +490,7 @@ async def _run_videos_concurrent(
     models: dict[str, str],
     filler_words: tuple[str, ...] = (),
     stop_after_capture: bool = False,
+    capture_backend: Any = None,
 ) -> list[VideoRunResult]:
     """Process multiple videos concurrently with bounded parallelism."""
     sem = asyncio.Semaphore(concurrency)
@@ -474,6 +507,7 @@ async def _run_videos_concurrent(
                 models=models,
                 filler_words=filler_words,
                 stop_after_capture=stop_after_capture,
+                capture_backend=capture_backend,
             )
 
     tasks = [_task(i, v) for i, v in enumerate(videos, 1)]
@@ -547,6 +581,17 @@ async def _run_videos_concurrent(
         "frontmatter has `reviewed: true`. Runs stages 04 and 05 on the filtered set."
     ),
 )
+@click.option(
+    "--capture-backend",
+    type=click.Choice(["host", "docker"]),
+    default=None,
+    help=(
+        "Stage 03 execution backend. 'host' (default) runs yt-dlp/ffmpeg directly. "
+        "'docker' runs them inside the hardened pipeline-youtube-capture image — "
+        "build it first via `docker build -f docker/Dockerfile.capture -t "
+        "pipeline-youtube-capture:latest .`. Overrides config.json."
+    ),
+)
 def cli(
     url: str | None,
     dry_run: bool,
@@ -561,6 +606,7 @@ def cli(
     config_path: Path | None,
     stop_after_capture: bool,
     resume_reviewed: bool,
+    capture_backend: str | None,
 ) -> None:
     """Process a YouTube playlist or single-video URL end-to-end."""
     if not url:
@@ -604,6 +650,29 @@ def cli(
         click.echo(f"claude: {claude_bin} ({claude_ver})")
     except ClaudeBinaryError as exc:
         raise click.UsageError(str(exc)) from exc
+
+    # Resolve the Stage 03 capture backend. CLI flag beats config.json; both
+    # default to "host". Docker backend preflights now so the user sees one
+    # clear error up front instead of per-video download failures.
+    active_capture_backend: Any = None
+    backend_choice = capture_backend or cfg.capture_backend
+    if backend_choice == "docker":
+        assets_dir = vault_root / ASSETS_REL_PATH
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        tmp_dir = project_root / "tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        active_capture_backend = DockerCaptureBackend(
+            tmp_dir=tmp_dir,
+            assets_dir=assets_dir,
+            image=cfg.capture_docker_image,
+        )
+        try:
+            active_capture_backend.preflight()
+        except DockerBackendNotReady as exc:
+            raise click.UsageError(str(exc)) from exc
+        click.echo(f"capture_backend: docker ({cfg.capture_docker_image})")
+    else:
+        click.echo("capture_backend: host")
 
     click.echo(f"vault_root: {vault_root}")
     click.echo(f"dry_run: {dry_run}")
@@ -679,6 +748,7 @@ def cli(
                     models=models,
                     filler_words=filler_words,
                     stop_after_capture=stop_after_capture,
+                    capture_backend=active_capture_backend,
                 )
             )
             results.extend(concurrent_results)
@@ -693,6 +763,7 @@ def cli(
                     models=models,
                     filler_words=filler_words,
                     stop_after_capture=stop_after_capture,
+                    capture_backend=active_capture_backend,
                 )
                 results.append(result)
 

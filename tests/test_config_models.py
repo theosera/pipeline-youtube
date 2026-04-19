@@ -109,6 +109,39 @@ class TestLoadConfig:
         with pytest.raises(click.UsageError, match="unknown model keys"):
             _load_config(cfg, fallback_model="sonnet")
 
+    def test_capture_backend_default_host(self, tmp_path: Path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        cfg = _write_config(tmp_path / "config.json", {"vault_root": str(vault)})
+        result = _load_config(cfg, fallback_model="sonnet")
+        assert result.capture_backend == "host"
+        assert result.capture_docker_image == "pipeline-youtube-capture:latest"
+
+    def test_capture_backend_docker_accepted(self, tmp_path: Path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        cfg = _write_config(
+            tmp_path / "config.json",
+            {
+                "vault_root": str(vault),
+                "capture_backend": "docker",
+                "capture_docker_image": "custom-image:v2",
+            },
+        )
+        result = _load_config(cfg, fallback_model="sonnet")
+        assert result.capture_backend == "docker"
+        assert result.capture_docker_image == "custom-image:v2"
+
+    def test_invalid_capture_backend_rejected(self, tmp_path: Path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        cfg = _write_config(
+            tmp_path / "config.json",
+            {"vault_root": str(vault), "capture_backend": "kubernetes"},
+        )
+        with pytest.raises(click.UsageError, match="capture_backend must be one of"):
+            _load_config(cfg, fallback_model="sonnet")
+
     def test_models_must_be_object(self, tmp_path: Path):
         vault = tmp_path / "vault"
         vault.mkdir()

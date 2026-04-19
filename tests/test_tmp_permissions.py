@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import os
 import stat
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from pipeline_youtube.stages.capture import _restrict_tmp_video, _tmp_video_path
+from pipeline_youtube.stages.capture import _tmp_video_path
+from pipeline_youtube.stages.capture_backend import HostCaptureBackend
 
 
 def _video(video_id: str = "abc1234567"):
@@ -33,13 +34,18 @@ class TestTmpDirPermissions:
         mode = stat.S_IMODE(path.parent.stat().st_mode)
         assert mode == 0o700, f"expected 0o700, got {oct(mode)}"
 
-    def test_restrict_tmp_video_sets_600(self, tmp_path: Path):
-        f = tmp_path / "v.mp4"
-        f.write_bytes(b"x")
-        os.chmod(f, 0o644)  # start wide-open
-        _restrict_tmp_video(f)
-        mode = stat.S_IMODE(f.stat().st_mode)
-        assert mode == 0o600, f"expected 0o600, got {oct(mode)}"
+    def test_host_backend_chmods_download_to_600(self, tmp_path: Path):
+        """HostCaptureBackend must tighten downloaded file perms to 0o600."""
+        dest = tmp_path / "v.mp4"
 
-    def test_restrict_missing_file_is_noop(self, tmp_path: Path):
-        _restrict_tmp_video(tmp_path / "missing.mp4")  # must not raise
+        def fake_download(urls):
+            dest.write_bytes(b"x")  # mimic yt-dlp writing the file
+
+        with patch("yt_dlp.YoutubeDL") as mock_ydl:
+            mock_ydl.return_value.__enter__.return_value.download = fake_download
+            HostCaptureBackend().download_video(
+                "https://youtube.com/watch?v=x", dest, resolution="480"
+            )
+
+        mode = stat.S_IMODE(dest.stat().st_mode)
+        assert mode == 0o600, f"expected 0o600, got {oct(mode)}"
