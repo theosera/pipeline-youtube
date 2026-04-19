@@ -253,7 +253,6 @@ def _coverage_to_json_block(report: CoverageReport) -> str:
         {
             "covered_topic_ids": report.covered_topic_ids,
             "missing_topic_ids": report.missing_topic_ids,
-            "notes": report.notes,
         },
         ensure_ascii=False,
         indent=2,
