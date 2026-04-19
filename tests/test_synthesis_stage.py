@@ -373,3 +373,92 @@ class TestErrorHandling:
         assert "beta_parse_failed" in result.error
         # alpha result is still recorded
         assert len(result.topics) == 2
+
+
+# =====================================================
+# Reflexion loop (β re-run on missing coverage)
+# =====================================================
+
+
+# β produces chapters that miss t002. After the retry prompt is added,
+# β's second attempt covers both.
+BETA_OUT_MISSING_T002 = json.dumps(
+    {
+        "chapters": [
+            {
+                "index": 1,
+                "label": "コンテキスト管理の基礎",
+                "category": "core",
+                "topic_ids": ["t001"],
+                "source_videos": ["vid001"],
+                "rationale": "r",
+            }
+        ]
+    },
+    ensure_ascii=False,
+)
+
+
+class TestReflexionLoop:
+    def test_rerun_beta_when_topics_missing(self, vault, monkeypatch):
+        """α finds t001+t002, β's first attempt only uses t001, β retry covers both."""
+        captured_prompts: list[str] = []
+
+        def spy_invoke(**kw):
+            captured_prompts.append(kw.get("prompt", ""))
+            return _fake(
+                [ALPHA_OUT, BETA_OUT_MISSING_T002, BETA_OUT, LEADER_OUT][len(captured_prompts) - 1]
+            )
+
+        monkeypatch.setattr(agents_mod, "invoke_claude", spy_invoke)
+
+        videos = [_video(i) for i in range(1, 4)]
+        bodies = [f"body{i}" for i in range(1, 4)]
+        result = run_stage_synthesis(
+            videos,
+            bodies,
+            run_time=datetime(2026, 4, 15),
+            playlist_title="Test Playlist",
+        )
+
+        assert result.error is None
+        # α + β-first + β-retry + Leader = 4 agent calls (usually 3)
+        assert len(result.agent_results) == 4
+        # Final coverage must be complete
+        assert result.coverage.missing_topic_ids == []
+        # The retry prompt must include the missing-IDs reflexion block
+        retry_prompt = captured_prompts[2]
+        assert "エラー: 前回の章立てに漏れがあります" in retry_prompt
+        assert "t002" in retry_prompt
+
+    def test_no_rerun_when_first_attempt_covers_all(self, vault, monkeypatch):
+        """Happy path should still issue only 3 LLM calls."""
+        _mock_all_agents(monkeypatch)  # ALPHA + BETA (full coverage) + LEADER
+        videos = [_video(i) for i in range(1, 4)]
+        result = run_stage_synthesis(
+            videos,
+            [f"body{i}" for i in range(1, 4)],
+            run_time=datetime(2026, 4, 15),
+            playlist_title="Test Playlist",
+        )
+        assert result.error is None
+        assert len(result.agent_results) == 3
+
+    def test_retry_parse_failure_is_swallowed(self, vault, monkeypatch):
+        """If the β retry returns garbage, keep first-attempt chapters and proceed to Leader."""
+        _mock_all_agents(
+            monkeypatch,
+            responses=[ALPHA_OUT, BETA_OUT_MISSING_T002, "not json", LEADER_OUT],
+        )
+        videos = [_video(i) for i in range(1, 4)]
+        result = run_stage_synthesis(
+            videos,
+            [f"body{i}" for i in range(1, 4)],
+            run_time=datetime(2026, 4, 15),
+            playlist_title="Test Playlist",
+        )
+        # Pipeline completes; coverage still shows the miss so Leader can handle it.
+        assert result.error is None
+        assert result.coverage.missing_topic_ids == ["t002"]
+        # 4 calls were made (α, β-first, β-retry-garbage, Leader)
+        assert len(result.agent_results) >= 3

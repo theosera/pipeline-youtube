@@ -181,6 +181,27 @@ def run_stage_synthesis(
 
     coverage = compute_coverage(topics, chapters)
 
+    # Reflexion retry: if β missed any α-extracted topics, re-run β once
+    # with the missing IDs fed back as an error instruction. One retry is
+    # enough in practice — β either fixes it or is confused in a way
+    # more retries won't help. The Leader still gets whatever β produces
+    # on the final attempt, so this is a quality improvement, not a hard
+    # gate (Gemini 2026-04-20 proposal approach A: 確定的自己修復).
+    if coverage.missing_topic_ids:
+        try:
+            chapters, retry_res = call_beta(
+                topics,
+                model=beta_model,
+                max_chapters=max_chapters,
+                missing_topic_ids=coverage.missing_topic_ids,
+            )
+            agent_results.append(retry_res)
+            coverage = compute_coverage(topics, chapters)
+        except SynthesisParseError:
+            # Retry parse fail: keep the first-attempt chapters and let
+            # the Leader handle the residual miss. Don't abort the stage.
+            pass
+
     try:
         leader_output, leader_res = call_leader(
             videos,

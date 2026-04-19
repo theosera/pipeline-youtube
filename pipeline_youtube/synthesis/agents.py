@@ -291,11 +291,18 @@ def call_beta(
     *,
     model: str = "sonnet",
     max_chapters: int | None = None,
+    missing_topic_ids: list[str] | None = None,
 ) -> tuple[list[ChapterPlan], AgentCallResult]:
     """Run the ChapterArchitect agent.
 
     `max_chapters` (if set) caps the number of chapters β may produce.
     Enforced via a prompt constraint — the caller does not post-filter.
+
+    `missing_topic_ids` is the deterministic-Python coverage-diff output
+    from a prior β attempt. When present, a reflexion instruction is
+    appended asking β to regenerate the chapters with those IDs
+    incorporated. The orchestrator in `stages/synthesis.py` drives the
+    retry loop (Gemini 2026-04-20 proposal: "確定的自己修復").
     """
     constraint = ""
     if max_chapters is not None and max_chapters >= 1:
@@ -303,11 +310,23 @@ def call_beta(
             f"\n\n## 追加制約\n章数は **最大 {max_chapters} 章** までに収めてください。"
             "それを超える場合は関連トピックをまとめて章数を減らしてください。"
         )
+    reflexion = ""
+    if missing_topic_ids:
+        # Include only IDs so the feedback is compact; β already has the
+        # full topic context in the primary prompt block.
+        ids_txt = ", ".join(missing_topic_ids)
+        reflexion = (
+            "\n\n## エラー: 前回の章立てに漏れがあります\n"
+            f"以下のトピック ID がどの章にも含まれていません: **{ids_txt}**。\n"
+            "関連性の高い既存の章にこれらを統合するか、必要であれば新しい章を追加して、"
+            "**全トピックを必ずどこかの章がカバーする** JSON を再出力してください。"
+        )
     prompt = (
         "α (TopicExtractor) が抽出したトピック群です。"
         "これを基に学習ハンズオンの章立てを設計してください。\n\n"
         f"{wrap_untrusted(_topics_to_json_block(topics))}"
         f"{constraint}"
+        f"{reflexion}"
     )
     response = invoke_claude(
         prompt=prompt,
