@@ -25,17 +25,17 @@ RUN apt-get update \
 
 RUN pip install --no-cache-dir "yt-dlp==${YT_DLP_VERSION}"
 
-RUN groupadd --gid 1000 capture \
- && useradd --uid 1000 --gid 1000 --shell /usr/sbin/nologin --home-dir /home/capture --create-home capture
+# /work is the bind-mount target for the host's tmp/ directory
+# (downloaded mp4 lives here). /assets is the bind-mount for Vault's
+# pipeline-youtube image folder (extracted WebP / GIF outputs land
+# here). DockerCaptureBackend passes `--user=<caller-uid>:<caller-gid>`
+# at runtime so the container runs as the same UID that owns the host
+# bind-mounted directories — writes land correctly regardless of what
+# UID that happens to be (this image does not need its own named user).
+# The bind mounts at runtime mask the in-image directories entirely,
+# so perms set here are cosmetic.
+RUN mkdir -p /work /assets
 
-# /work is the bind-mount target for the host's tmp/ directory (downloaded
-# mp4 lives here). /assets is the bind-mount for Vault's pipeline-youtube
-# image folder (extracted WebP / GIF outputs land here). Both are created
-# writable by UID 1000.
-RUN mkdir -p /work /assets \
- && chown capture:capture /work /assets
-
-USER 1000:1000
 WORKDIR /work
 
 # Entrypoint intentionally left as the invoked binary so callers can

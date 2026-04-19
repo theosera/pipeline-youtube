@@ -652,10 +652,13 @@ def cli(
         raise click.UsageError(str(exc)) from exc
 
     # Resolve the Stage 03 capture backend. CLI flag beats config.json; both
-    # default to "host". Docker backend preflights now so the user sees one
-    # clear error up front instead of per-video download failures.
+    # default to "host". The preflight for Docker mode is deferred until we
+    # know Stage 03 will actually run — workflows that skip capture
+    # (`--synthesis-only`, `--resume-reviewed`) must not fail just because
+    # the docker daemon happens to be unavailable at that moment.
     active_capture_backend: Any = None
     backend_choice = capture_backend or cfg.capture_backend
+    will_run_capture = not (synthesis_only or resume_reviewed)
     if backend_choice == "docker":
         assets_dir = vault_root / ASSETS_REL_PATH
         assets_dir.mkdir(parents=True, exist_ok=True)
@@ -666,11 +669,17 @@ def cli(
             assets_dir=assets_dir,
             image=cfg.capture_docker_image,
         )
-        try:
-            active_capture_backend.preflight()
-        except DockerBackendNotReady as exc:
-            raise click.UsageError(str(exc)) from exc
-        click.echo(f"capture_backend: docker ({cfg.capture_docker_image})")
+        if will_run_capture:
+            try:
+                active_capture_backend.preflight()
+            except DockerBackendNotReady as exc:
+                raise click.UsageError(str(exc)) from exc
+            click.echo(f"capture_backend: docker ({cfg.capture_docker_image})")
+        else:
+            click.echo(
+                f"capture_backend: docker ({cfg.capture_docker_image}) "
+                "[preflight deferred: capture not needed this run]"
+            )
     else:
         click.echo("capture_backend: host")
 

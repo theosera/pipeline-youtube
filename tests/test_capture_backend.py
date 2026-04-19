@@ -131,9 +131,29 @@ class TestDockerBackendCommandShape:
         assert "--read-only" in cmd
         assert "--cap-drop=ALL" in cmd
         assert "--security-opt=no-new-privileges:true" in cmd
-        assert "--user=1000:1000" in cmd
+        # --user is derived from caller UID/GID (see _caller_uid_gid).
+        assert any(a.startswith("--user=") for a in cmd)
         # tmpfs is required for ffmpeg scratch space
         assert any("--tmpfs=/tmp" in a for a in cmd)
+
+    def test_user_flag_uses_caller_uid_gid(self, docker_backend):
+        """--user must mirror the host process UID/GID, not a hard-coded 1000."""
+        with (
+            patch(
+                "pipeline_youtube.stages.capture_backend.os.getuid",
+                return_value=4242,
+                create=True,
+            ),
+            patch(
+                "pipeline_youtube.stages.capture_backend.os.getgid",
+                return_value=5353,
+                create=True,
+            ),
+            patch("subprocess.run") as run,
+        ):
+            docker_backend.ffmpeg(["-version"], timeout=5)
+            cmd = self._extract_cmd(run)
+        assert "--user=4242:5353" in cmd
 
     def test_ffmpeg_network_is_none(self, docker_backend):
         with patch("subprocess.run") as run:

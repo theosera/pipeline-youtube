@@ -164,9 +164,24 @@ def _host_ffmpeg_encoders() -> frozenset[str]:
 
 DEFAULT_DOCKER_IMAGE = "pipeline-youtube-capture:latest"
 
-# Fixed uid/gid baked into the image. Must match the Dockerfile.
-_CONTAINER_UID = 1000
-_CONTAINER_GID = 1000
+
+def _caller_uid_gid() -> tuple[int, int]:
+    """Return the host process's effective UID/GID for `--user` mapping.
+
+    Bind-mounted `tmp/` and `_assets/pipeline-youtube/` are created on
+    the host with the caller's ownership, so the container must run as
+    the same UID/GID to be able to write them back. Hard-coding
+    1000:1000 breaks on hosts where the pipeline runs as a different
+    user (including root-owned CI environments); use the caller's IDs
+    instead. Windows (where `os.getuid` is missing) falls back to
+    1000:1000 — Docker Desktop on Windows doesn't enforce host-side
+    ownership on bind mounts so the fallback is benign.
+    """
+    getuid = getattr(os, "getuid", None)
+    getgid = getattr(os, "getgid", None)
+    if getuid is None or getgid is None:
+        return 1000, 1000
+    return getuid(), getgid()
 
 
 class DockerBackendNotReady(CaptureBackendError):
@@ -233,13 +248,14 @@ class DockerCaptureBackend:
           --read-only                  : root FS is read-only
           --cap-drop=ALL               : no kernel capabilities
           --security-opt=no-new-privs  : no setuid escalation
-          --user {uid}:{gid}           : never runs as root
+          --user {uid}:{gid}           : caller's UID/GID, never root
           --tmpfs /tmp:...             : writable scratch for yt-dlp/ffmpeg
           --network=none | bridge      : off for ffmpeg, on for yt-dlp
           -v tmp:/work                 : mp4 lives here
           -v assets:/assets            : extracted images land here
         """
         net = "bridge" if network else "none"
+        uid, gid = _caller_uid_gid()
         return [
             self.docker_bin,
             "run",
@@ -247,7 +263,7 @@ class DockerCaptureBackend:
             "--read-only",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges:true",
-            f"--user={_CONTAINER_UID}:{_CONTAINER_GID}",
+            f"--user={uid}:{gid}",
             "--tmpfs=/tmp:rw,size=512m,nosuid,nodev",
             f"--network={net}",
             "-v",

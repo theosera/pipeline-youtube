@@ -54,7 +54,7 @@ flags (baked into `DockerCaptureBackend` — not user-configurable):
 - `--read-only` — root filesystem is immutable
 - `--cap-drop=ALL` — no kernel capabilities (no ptrace, no mount, etc.)
 - `--security-opt=no-new-privileges:true` — setuid blocked
-- `--user=1000:1000` — never runs as root
+- `--user=<caller-uid>:<caller-gid>` — container runs as the same UID/GID that owns the host bind mounts, so writes to `tmp/` and `_assets/pipeline-youtube/` land with correct ownership. The caller's actual IDs are used (not a hard-coded 1000), which is required on hosts where the pipeline runs as root, a CI agent, or any non-1000 user
 - `--tmpfs=/tmp:rw,size=512m,nosuid,nodev` — scratch space that vanishes on exit
 - `--network=none` for `ffmpeg` / `gif2webp`, `--network=bridge` only for `yt-dlp`
 - Bind mounts:
@@ -68,8 +68,9 @@ directories.
 
 ## Preflight
 
-When `capture_backend="docker"` is active, the CLI runs a single
-preflight before any video is processed:
+When `capture_backend="docker"` is active **and** Stage 03 will actually
+run this invocation, the CLI runs a single preflight before any video
+is processed:
 
 1. `docker` CLI present in `PATH`
 2. `docker image inspect pipeline-youtube-capture:latest` succeeds
@@ -77,6 +78,10 @@ preflight before any video is processed:
 
 If any check fails the CLI exits with a clear error and tells the user
 how to fix it (build the image, start the daemon, or switch to `host`).
+
+`--synthesis-only` and `--resume-reviewed` skip Stage 03, so the
+preflight is deferred in those modes — you can run those workflows
+even if Docker Desktop happens to be down.
 
 ## Trade-offs
 
