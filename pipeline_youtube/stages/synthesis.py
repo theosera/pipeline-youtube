@@ -2,7 +2,7 @@
 
 Runs after all per-video stages (01-04) complete for a playlist with
 ≥3 successful videos. Reads every 04_Learning_Material md in the
-playlist folder and orchestrates the α→β→γ→leader agent chain to
+playlist folder and orchestrates the α→β→Leader agent chain to
 produce:
 
     {vault}/Permanent Note/08_YouTube学習/05_Synthesis/
@@ -14,10 +14,12 @@ produce:
             _meta/
                 duplicate_score.json
 
-Execution is **sequential** (α→β→γ→leader) because the roles depend on
-each other's output. Claude's server-side cache shares context across
-consecutive calls within ~5 minutes, so the cumulative cache-creation
-overhead is paid only once in practice.
+Execution is **sequential** (α→β→Leader) because the roles depend on
+each other's output. Coverage (α topics vs β chapter topic_ids) is
+computed deterministically in Python via `compute_coverage()` — no
+LLM call. Claude's server-side cache shares context across consecutive
+calls within ~5 minutes, so the cumulative cache-creation overhead is
+paid only once in practice.
 
 Skipping rules
 --------------
@@ -41,8 +43,8 @@ from ..synthesis.agents import (
     AgentCallResult,
     call_alpha,
     call_beta,
-    call_gamma,
     call_leader,
+    compute_coverage,
 )
 from ..synthesis.body_validator import extract_allowed_embeds
 from ..synthesis.chapter import write_chapter
@@ -130,13 +132,14 @@ def run_stage_synthesis(
     model:
         Default model used for any agent not explicitly overridden.
     agent_models:
-        Optional `{"alpha", "beta", "gamma", "leader"}` override map.
-        Missing keys fall back to `model`.
+        Optional `{"alpha", "beta", "leader"}` override map.
+        Missing keys fall back to `model`. (`gamma` accepted for
+        config backward-compat but ignored — coverage is now a Python
+        set diff, no LLM.)
     """
     am = agent_models or {}
     alpha_model = am.get("alpha", model)
     beta_model = am.get("beta", model)
-    gamma_model = am.get("gamma", model)
     leader_model = am.get("leader", model)
 
     if len(videos) != len(learning_md_bodies):
@@ -176,16 +179,7 @@ def run_stage_synthesis(
         )
     agent_results.append(beta_res)
 
-    try:
-        coverage, gamma_res = call_gamma(topics, chapters, model=gamma_model)
-    except SynthesisParseError as e:
-        return SynthesisStageResult(
-            topics=topics,
-            chapters=chapters,
-            agent_results=agent_results,
-            error=f"gamma_parse_failed: {e}",
-        )
-    agent_results.append(gamma_res)
+    coverage = compute_coverage(topics, chapters)
 
     try:
         leader_output, leader_res = call_leader(

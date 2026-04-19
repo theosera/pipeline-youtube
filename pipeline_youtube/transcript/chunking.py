@@ -26,13 +26,18 @@ DEFAULT_FILLER_WORDS: tuple[str, ...] = (
     "えー",
     "えっと",
     "えーと",
+    "えーっと",
     "あのー",
     "あの",
     "そのー",
     "まあ",
+    "まー",
+    "まぁ",
     "なんか",
     "みたいな",
     "っていう",
+    "ていう",
+    "という感じ",
 )
 
 
@@ -110,9 +115,21 @@ def _join_texts(texts: list[str]) -> str:
 
 _DUP_WORD_RE = re.compile(r"(\S+?)(?:\s+\1){2,}")
 
+# 2-token immediate repeat (e.g. ASR stutter "これ これ"), scoped to
+# short Japanese tokens so legitimate English repetitions like
+# "very very" are preserved.
+_DUP_JP_SHORT_RE = re.compile(r"([\u3040-\u30FF\u4E00-\u9FFF]{1,4})\s+\1(?=\s|$)")
+
 
 def _compress(text: str, fillers: tuple[str, ...]) -> str:
-    """Strip filler words and collapse 3+ immediate repeats of the same token."""
+    """Strip filler words and collapse ASR-style token repeats.
+
+    Steps:
+      1. Remove filler tokens listed in `fillers`
+      2. Collapse 3+ immediate repeats of any token (language-agnostic)
+      3. Collapse 2-token immediate repeats of short Japanese tokens
+         only (ASR stutter; leaves English like "very very" alone)
+    """
     if not text:
         return text
     if fillers:
@@ -122,4 +139,5 @@ def _compress(text: str, fillers: tuple[str, ...]) -> str:
             text = text.replace(word, " ")
         text = " ".join(text.split())
     text = _DUP_WORD_RE.sub(r"\1", text)
+    text = _DUP_JP_SHORT_RE.sub(r"\1", text)
     return text

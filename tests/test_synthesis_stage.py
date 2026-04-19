@@ -99,11 +99,6 @@ BETA_OUT = json.dumps(
     ensure_ascii=False,
 )
 
-GAMMA_OUT = json.dumps(
-    {"covered_topic_ids": ["t001", "t002"], "missing_topic_ids": [], "notes": "ok"},
-    ensure_ascii=False,
-)
-
 LEADER_OUT = json.dumps(
     {
         "moc": {
@@ -132,8 +127,12 @@ LEADER_OUT = json.dumps(
 
 
 def _mock_all_agents(monkeypatch, responses: list[str] | None = None):
-    """Monkeypatch invoke_claude to return queued responses in order."""
-    queue = list(responses or [ALPHA_OUT, BETA_OUT, GAMMA_OUT, LEADER_OUT])
+    """Monkeypatch invoke_claude to return queued responses in order.
+
+    γ was removed (replaced by deterministic Python set diff), so only
+    α / β / Leader are LLM-backed.
+    """
+    queue = list(responses or [ALPHA_OUT, BETA_OUT, LEADER_OUT])
 
     def fake_invoke(**kw):
         return _fake(queue.pop(0))
@@ -320,10 +319,10 @@ class TestHappyPath:
             playlist_title="Test Playlist",
         )
 
-        # 4 agent calls (alpha + beta + gamma + leader)
-        assert len(result.agent_results) == 4
-        assert result.total_output_tokens == 500 * 4
-        assert result.total_cache_creation_tokens == 24000 * 4
+        # 3 agent calls (alpha + beta + leader); γ was replaced by a Python set diff.
+        assert len(result.agent_results) == 3
+        assert result.total_output_tokens == 500 * 3
+        assert result.total_cache_creation_tokens == 24000 * 3
 
     def test_dry_run_does_not_write(self, vault, monkeypatch):
         _mock_all_agents(monkeypatch)
@@ -350,7 +349,7 @@ class TestHappyPath:
 
 class TestErrorHandling:
     def test_alpha_parse_error(self, vault, monkeypatch):
-        _mock_all_agents(monkeypatch, responses=["not json", BETA_OUT, GAMMA_OUT, LEADER_OUT])
+        _mock_all_agents(monkeypatch, responses=["not json", BETA_OUT, LEADER_OUT])
         videos = [_video(i) for i in range(1, 4)]
         result = run_stage_synthesis(
             videos,
@@ -362,7 +361,7 @@ class TestErrorHandling:
         assert "alpha_parse_failed" in result.error
 
     def test_beta_parse_error_after_alpha_ok(self, vault, monkeypatch):
-        _mock_all_agents(monkeypatch, responses=[ALPHA_OUT, "not json", GAMMA_OUT, LEADER_OUT])
+        _mock_all_agents(monkeypatch, responses=[ALPHA_OUT, "not json", LEADER_OUT])
         videos = [_video(i) for i in range(1, 4)]
         result = run_stage_synthesis(
             videos,
