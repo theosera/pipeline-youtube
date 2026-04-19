@@ -215,6 +215,23 @@ class TestDockerBackendPathTranslation:
         for flag in ("-loop", "0", "-an", "-y"):
             assert flag in cmd
 
+    def test_relative_paths_not_translated(self, docker_backend):
+        """Only absolute paths should be candidates for rewriting.
+
+        Relative paths like ``./foo.mp4`` must pass through unchanged;
+        production never sends them (capture.py always builds absolute
+        paths) but the heuristic should not silently rewrite anyway.
+        """
+        with patch("subprocess.run") as run:
+            docker_backend.ffmpeg(
+                ["-i", "./foo.mp4", "-vf", "fps=5,scale=-2:480", "-y", "out.gif"],
+                timeout=5,
+            )
+            cmd = run.call_args.args[0]
+        assert "./foo.mp4" in cmd
+        assert "out.gif" in cmd
+        assert "fps=5,scale=-2:480" in cmd
+
 
 class TestDockerBackendErrorPropagation:
     def test_yt_dlp_failure_wrapped(self, docker_backend):

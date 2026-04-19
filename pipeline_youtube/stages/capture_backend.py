@@ -282,12 +282,17 @@ class DockerCaptureBackend:
     def _translate_args(self, args: list[str]) -> list[str]:
         """Replace host absolute paths in args with their container paths.
 
-        Detection: any arg whose resolved path is under tmp_dir or
-        assets_dir gets rewritten. Flags (leading `-`) pass through.
+        Detection: only **absolute** paths are candidates for rewriting;
+        flags (leading `-`) and everything else (option values like
+        ``"libwebp"``, format strings like ``"fps=5,scale=..."``,
+        relative paths) pass through unchanged. Stage 03 always hands
+        us absolute paths — ``_assert_not_flaglike`` upstream ensures
+        they start with ``/`` — so there is no production path where a
+        relative path needs container translation.
         """
         translated: list[str] = []
         for a in args:
-            if a.startswith("-") or "/" not in a:
+            if a.startswith("-") or not Path(a).is_absolute():
                 translated.append(a)
                 continue
             try:
@@ -379,6 +384,14 @@ class DockerCaptureBackend:
         return frozenset(encoders)
 
     def has_gif2webp(self) -> bool:
-        # gif2webp is always installed in the image (see Dockerfile.capture).
-        # Preflight already verified the image, so this is safe to return True.
+        """Assumes the image was built from `docker/Dockerfile.capture`.
+
+        The shipped Dockerfile installs the `webp` apt package, which
+        provides `gif2webp`. Users who point `capture_docker_image` at
+        a custom image without that package will see this method lie
+        and hit a ``gif2webp: command not found`` at capture time.
+        If that becomes a real operational issue, probe the binary
+        inside the container (``docker run ... which gif2webp``) on
+        first use and cache the result.
+        """
         return True
