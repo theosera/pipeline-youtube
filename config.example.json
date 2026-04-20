@@ -8,5 +8,6 @@
     "leader": "opus"
   },
   "capture_backend": "host",
-  "capture_docker_image": "pipeline-youtube-capture:latest"
+  "capture_docker_image": "pipeline-youtube-capture:latest",
+  "synthesis_timeout": "auto"
 }

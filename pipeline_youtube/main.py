@@ -45,8 +45,9 @@ from .stages.capture_backend import DockerBackendNotReady, DockerCaptureBackend
 from .stages.learning import run_stage_learning
 from .stages.scripts import run_stage_scripts
 from .stages.summary import run_stage_summary
-from .stages.synthesis import MIN_PLAYLIST_SIZE, run_stage_synthesis
+from .stages.synthesis import MIN_PLAYLIST_SIZE, log_synthesis_preflight, run_stage_synthesis
 from .stats import record_transcript_stat
+from .synthesis.agents import compute_synthesis_timeouts
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
@@ -69,6 +70,7 @@ class CliConfig:
     # docker/Dockerfile.capture. See docs/docker.md.
     capture_backend: str = "host"
     capture_docker_image: str = "pipeline-youtube-capture:latest"
+    synthesis_timeout: int | None = None
 
 
 def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
@@ -121,12 +123,24 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
         data.get("capture_docker_image") or "pipeline-youtube-capture:latest"
     )
 
+    synthesis_timeout_raw = data.get("synthesis_timeout")
+    if synthesis_timeout_raw is None or synthesis_timeout_raw == "auto":
+        synthesis_timeout: int | None = None
+    elif isinstance(synthesis_timeout_raw, int) and synthesis_timeout_raw > 0:
+        synthesis_timeout = synthesis_timeout_raw
+    else:
+        raise click.UsageError(
+            f"config.json: synthesis_timeout must be a positive integer or \"auto\", "
+            f"got {synthesis_timeout_raw!r}"
+        )
+
     return CliConfig(
         vault_root=path,
         models=models,
         filler_words=filler,
         capture_backend=capture_backend,
         capture_docker_image=capture_docker_image,
+        synthesis_timeout=synthesis_timeout,
     )
 
 
@@ -592,6 +606,15 @@ async def _run_videos_concurrent(
         "pipeline-youtube-capture:latest .`. Overrides config.json."
     ),
 )
+@click.option(
+    "--synthesis-timeout",
+    type=click.IntRange(60),
+    default=None,
+    help=(
+        "Per-agent timeout for Stage 05 in seconds. "
+        "Default: auto (300 + 60 × video_count). Overrides config.json."
+    ),
+)
 def cli(
     url: str | None,
     dry_run: bool,
@@ -607,6 +630,7 @@ def cli(
     stop_after_capture: bool,
     resume_reviewed: bool,
     capture_backend: str | None,
+    synthesis_timeout: int | None,
 ) -> None:
     """Process a YouTube playlist or single-video URL end-to-end."""
     if not url:
@@ -683,6 +707,8 @@ def cli(
     else:
         click.echo("capture_backend: host")
 
+    effective_synthesis_timeout = synthesis_timeout or cfg.synthesis_timeout
+
     click.echo(f"vault_root: {vault_root}")
     click.echo(f"dry_run: {dry_run}")
     click.echo(f"model: {model}")
@@ -690,6 +716,11 @@ def cli(
     click.echo(f"concurrency: {concurrency}")
     click.echo(f"min_playlist_size: {min_playlist_size}")
     click.echo(f"max_chapters: {max_chapters if max_chapters is not None else 'auto'}")
+    click.echo(
+        f"synthesis_timeout: {effective_synthesis_timeout}s"
+        if effective_synthesis_timeout
+        else "synthesis_timeout: auto"
+    )
 
     click.echo("fetching metadata...")
     videos = fetch_metadata(url)
@@ -700,6 +731,17 @@ def cli(
     playlist_title = videos[0].playlist_title or videos[0].title or "single video"
     click.echo(f"playlist: {playlist_title!r}")
     click.echo(f"videos: {len(videos)}")
+
+    est_timeouts = compute_synthesis_timeouts(
+        len(videos), override=effective_synthesis_timeout
+    )
+    total_duration = sum(v.duration or 0 for v in videos)
+    click.echo(
+        f"synthesis_estimate: {len(videos)} videos"
+        f" → timeout α={est_timeouts['alpha']}s β={est_timeouts['beta']}s"
+        f" leader={est_timeouts['leader']}s"
+        + (f", total_duration={total_duration // 60}min" if total_duration else "")
+    )
 
     run_time = datetime.now()
     click.echo(f"run_time: {run_time.isoformat(timespec='seconds')}")
@@ -805,6 +847,12 @@ def cli(
         synthesis_bodies = [r.learning_md_body or "" for r in succeeded]
 
     click.echo("\n=== Stage 05 Synthesis (Agent Teams) ===")
+    synth_timeouts = compute_synthesis_timeouts(
+        len(synthesis_videos), override=effective_synthesis_timeout
+    )
+    click.echo(log_synthesis_preflight(
+        len(synthesis_videos), synthesis_bodies, synth_timeouts
+    ))
     synthesis_result = run_stage_synthesis(
         synthesis_videos,
         synthesis_bodies,
@@ -816,6 +864,7 @@ def cli(
         max_chapters=max_chapters,
         dry_run=dry_run,
         folder_name_override=folder_override,
+        synthesis_timeout=effective_synthesis_timeout,
     )
 
     if synthesis_result.skipped:

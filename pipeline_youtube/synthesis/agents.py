@@ -34,6 +34,41 @@ from .scoring import (
 )
 
 # =====================================================
+# Dynamic timeout computation
+# =====================================================
+
+SYNTHESIS_TIMEOUT_BASE = 300
+SYNTHESIS_TIMEOUT_PER_VIDEO = 60
+_BETA_TIMEOUT_CAP = 600
+
+
+def compute_synthesis_timeouts(
+    n_videos: int,
+    *,
+    override: int | None = None,
+) -> dict[str, int]:
+    """Return per-agent timeouts keyed by role name.
+
+    When *override* is given (from CLI / config.json) it is used for
+    α and Leader directly; β is capped at ``_BETA_TIMEOUT_CAP`` because
+    it only receives compact topic JSON — never the full learning
+    materials.
+
+    When *override* is ``None`` the formula
+    ``base(300) + 60 × n_videos`` applies to α/Leader.
+    """
+    if override is not None:
+        heavy = override
+    else:
+        heavy = SYNTHESIS_TIMEOUT_BASE + SYNTHESIS_TIMEOUT_PER_VIDEO * n_videos
+    return {
+        "alpha": heavy,
+        "beta": min(heavy, _BETA_TIMEOUT_CAP),
+        "leader": heavy,
+    }
+
+
+# =====================================================
 # System prompts (one per role)
 # =====================================================
 
@@ -270,6 +305,7 @@ def call_alpha(
     *,
     model: str = "sonnet",
     playlist_title: str | None = None,
+    timeout: int = 1800,
 ) -> tuple[list[Topic], AgentCallResult]:
     """Run the TopicExtractor agent."""
     materials = format_learning_materials(videos, learning_md_bodies)
@@ -280,7 +316,7 @@ def call_alpha(
         prompt=prompt,
         append_system_prompt=ALPHA_SYSTEM_PROMPT,
         model=model,
-        timeout=1800,
+        timeout=timeout,
     )
     topics = parse_alpha_topics(response.text)
     return topics, _wrap_result(response)
@@ -292,6 +328,7 @@ def call_beta(
     model: str = "sonnet",
     max_chapters: int | None = None,
     missing_topic_ids: list[str] | None = None,
+    timeout: int = 600,
 ) -> tuple[list[ChapterPlan], AgentCallResult]:
     """Run the ChapterArchitect agent.
 
@@ -332,7 +369,7 @@ def call_beta(
         prompt=prompt,
         append_system_prompt=BETA_SYSTEM_PROMPT,
         model=model,
-        timeout=1800,
+        timeout=timeout,
     )
     chapters = parse_beta_chapters(response.text)
     return chapters, _wrap_result(response)
@@ -369,6 +406,7 @@ def call_leader(
     *,
     model: str = "sonnet",
     playlist_title: str | None = None,
+    timeout: int = 1800,
 ) -> tuple[LeaderOutput, AgentCallResult]:
     """Run the Leader agent to produce the final MOC + chapter bodies."""
     materials = format_learning_materials(videos, learning_md_bodies)
@@ -391,7 +429,7 @@ def call_leader(
         prompt=prompt,
         append_system_prompt=LEADER_SYSTEM_PROMPT,
         model=model,
-        timeout=1800,
+        timeout=timeout,
     )
     leader_output = parse_leader_output(response.text)
     return leader_output, _wrap_result(response)

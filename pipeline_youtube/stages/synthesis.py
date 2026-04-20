@@ -40,11 +40,13 @@ from ..obsidian import format_playlist_folder_name
 from ..path_safety import ensure_safe_path
 from ..playlist import VideoMeta
 from ..synthesis.agents import (
+    _MAX_INPUT_CHARS,
     AgentCallResult,
     call_alpha,
     call_beta,
     call_leader,
     compute_coverage,
+    compute_synthesis_timeouts,
 )
 from ..synthesis.body_validator import extract_allowed_embeds
 from ..synthesis.chapter import write_chapter
@@ -102,6 +104,34 @@ class SynthesisStageResult:
         return sum(r.duration_ms or 0 for r in self.agent_results)
 
 
+def log_synthesis_preflight(
+    n_videos: int,
+    learning_md_bodies: list[str],
+    timeouts: dict[str, int],
+) -> str:
+    """Build a preflight summary string for Stage 05.
+
+    Compares actual input sizes against ``_MAX_INPUT_CHARS`` and reports
+    whether any per-video truncation will occur.
+    """
+    per_video_limit = _MAX_INPUT_CHARS // max(n_videos, 1)
+    total_chars = sum(len(b) for b in learning_md_bodies)
+    truncated = sum(1 for b in learning_md_bodies if len(b) > per_video_limit)
+    fill_pct = total_chars / _MAX_INPUT_CHARS * 100
+
+    lines = [
+        f"  videos: {n_videos}",
+        f"  timeout: α={timeouts['alpha']}s β={timeouts['beta']}s leader={timeouts['leader']}s",
+        f"  input: {total_chars:,}/{_MAX_INPUT_CHARS:,} chars ({fill_pct:.0f}%)",
+        f"  per_video_limit: {per_video_limit:,} chars",
+    ]
+    if truncated:
+        lines.append(f"  truncated: {truncated}/{n_videos} videos exceed per-video limit")
+    else:
+        lines.append("  truncation: none")
+    return "\n".join(lines)
+
+
 def run_stage_synthesis(
     videos: list[VideoMeta],
     learning_md_bodies: list[str],
@@ -114,8 +144,9 @@ def run_stage_synthesis(
     max_chapters: int | None = None,
     dry_run: bool = False,
     folder_name_override: str | None = None,
+    synthesis_timeout: int | None = None,
 ) -> SynthesisStageResult:
-    """Orchestrate α→β→γ→leader and write MOC + chapter md files.
+    """Orchestrate α→β→Leader and write MOC + chapter md files.
 
     Parameters
     ----------
@@ -136,11 +167,16 @@ def run_stage_synthesis(
         Missing keys fall back to `model`. (`gamma` accepted for
         config backward-compat but ignored — coverage is now a Python
         set diff, no LLM.)
+    synthesis_timeout:
+        Per-agent timeout override in seconds. ``None`` = auto-compute
+        from video count (``300 + 60 × n_videos``).
     """
     am = agent_models or {}
     alpha_model = am.get("alpha", model)
     beta_model = am.get("beta", model)
     leader_model = am.get("leader", model)
+
+    timeouts = compute_synthesis_timeouts(len(videos), override=synthesis_timeout)
 
     if len(videos) != len(learning_md_bodies):
         return SynthesisStageResult(
@@ -165,14 +201,20 @@ def run_stage_synthesis(
 
     try:
         topics, alpha_res = call_alpha(
-            videos, learning_md_bodies, model=alpha_model, playlist_title=playlist_title
+            videos,
+            learning_md_bodies,
+            model=alpha_model,
+            playlist_title=playlist_title,
+            timeout=timeouts["alpha"],
         )
     except SynthesisParseError as e:
         return SynthesisStageResult(error=f"alpha_parse_failed: {e}")
     agent_results.append(alpha_res)
 
     try:
-        chapters, beta_res = call_beta(topics, model=beta_model, max_chapters=max_chapters)
+        chapters, beta_res = call_beta(
+            topics, model=beta_model, max_chapters=max_chapters, timeout=timeouts["beta"]
+        )
     except SynthesisParseError as e:
         return SynthesisStageResult(
             topics=topics, agent_results=agent_results, error=f"beta_parse_failed: {e}"
@@ -194,6 +236,7 @@ def run_stage_synthesis(
                 model=beta_model,
                 max_chapters=max_chapters,
                 missing_topic_ids=coverage.missing_topic_ids,
+                timeout=timeouts["beta"],
             )
             agent_results.append(retry_res)
             coverage = compute_coverage(topics, chapters)
@@ -211,6 +254,7 @@ def run_stage_synthesis(
             coverage,
             model=leader_model,
             playlist_title=playlist_title,
+            timeout=timeouts["leader"],
         )
     except SynthesisParseError as e:
         return SynthesisStageResult(
