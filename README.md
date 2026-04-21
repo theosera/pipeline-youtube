@@ -216,7 +216,7 @@ uv run mypy pipeline_youtube/ --ignore-missing-imports
 
 ```bash
 uv run pytest tests/ -q
-# 553 passed (2026-04-21 時点)
+# 561 passed (2026-04-21 時点)
 ```
 
 主な対象:
@@ -232,6 +232,7 @@ uv run pytest tests/ -q
 - `test_genres.py` — Router ジャンル分類 (JSON 解析 / エラー fallback / プロンプト形状)
 - `test_code_fetch.py` — GitHub URL 抽出 + raw コード取得 (yt-dlp / urllib モック)
 - `test_learning_code_bearing.py` — Stage 04 の `# 概念` / `# 実践` プロンプト分割
+- `test_synthesis_prompt_rules.py` — Leader/β プロンプトの品質ルール回帰 (核心要素出典必須、矢印圧縮禁止、章最低 5 トピック、MOC 概念索引、時間別学習コース)
 
 ## トラブルシューティング
 
