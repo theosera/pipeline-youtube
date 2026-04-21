@@ -130,7 +130,7 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
         synthesis_timeout = synthesis_timeout_raw
     else:
         raise click.UsageError(
-            f"config.json: synthesis_timeout must be a positive integer or \"auto\", "
+            f'config.json: synthesis_timeout must be a positive integer or "auto", '
             f"got {synthesis_timeout_raw!r}"
         )
 
@@ -732,9 +732,7 @@ def cli(
     click.echo(f"playlist: {playlist_title!r}")
     click.echo(f"videos: {len(videos)}")
 
-    est_timeouts = compute_synthesis_timeouts(
-        len(videos), override=effective_synthesis_timeout
-    )
+    est_timeouts = compute_synthesis_timeouts(len(videos), override=effective_synthesis_timeout)
     total_duration = sum(v.duration or 0 for v in videos)
     click.echo(
         f"synthesis_estimate: {len(videos)} videos"
@@ -850,9 +848,7 @@ def cli(
     synth_timeouts = compute_synthesis_timeouts(
         len(synthesis_videos), override=effective_synthesis_timeout
     )
-    click.echo(log_synthesis_preflight(
-        len(synthesis_videos), synthesis_bodies, synth_timeouts
-    ))
+    click.echo(log_synthesis_preflight(len(synthesis_videos), synthesis_bodies, synth_timeouts))
     synthesis_result = run_stage_synthesis(
         synthesis_videos,
         synthesis_bodies,
