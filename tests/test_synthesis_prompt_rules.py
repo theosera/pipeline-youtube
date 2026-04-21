@@ -10,19 +10,8 @@ P2: 矢印圧縮禁止 (Leader)
 P3: 章あたり最低 5 トピック (β)
 P4: MOC に概念別索引テーブル (Leader)
 P5: 学習順序は時間別コース (Leader)
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
 
 Plus residual-miss policy (Leader) and the legacy "γ" label cleanup.
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
-
-Plus residual-miss policy (Leader) and the legacy "γ" label cleanup.
->>>>>>> theirs
 """
 
 from __future__ import annotations
@@ -37,9 +26,6 @@ class TestP1InlineCitations:
     def test_core_elements_require_inline_citations(self):
         """Leader prompt must force `(出典: [[...]])` on every 核心要素 item."""
         assert "核心要素" in LEADER_SYSTEM_PROMPT
-        # The exact phrasing must include both `各項目末尾` (every item's end)
-        # and the citation template so claude can't weasel out to "only 1-2
-        # items get citations".
         assert "各項目末尾" in LEADER_SYSTEM_PROMPT
         assert "出典: [[<動画 note 名>#^MM-SS]]" in LEADER_SYSTEM_PROMPT
 
@@ -47,7 +33,6 @@ class TestP1InlineCitations:
 class TestP2ArrowExpansion:
     def test_arrow_chains_must_be_expanded(self):
         """Leader prompt must forbid `A→B→C→D` style step compression."""
-        # Looking for the 3-step arrow ban instruction verbatim.
         assert "工程列挙の展開" in LEADER_SYSTEM_PROMPT
         assert "矢印" in LEADER_SYSTEM_PROMPT
         assert "3 ステップ以上" in LEADER_SYSTEM_PROMPT
@@ -58,8 +43,6 @@ class TestP3MinTopicsPerChapter:
     def test_beta_requires_five_topics_per_chapter(self):
         """β must refuse to emit chapters with < 5 topics, even for `unique`."""
         assert "5 トピック" in BETA_SYSTEM_PROMPT
-        # Explicitly mentions unique so the model doesn't excuse thin
-        # single-video chapters.
         assert "unique 章でも 5 以上" in BETA_SYSTEM_PROMPT
 
 
@@ -67,7 +50,6 @@ class TestP4ConceptIndexInMoc:
     def test_moc_must_include_concept_index_table(self):
         """MOC gets a `## 概念別索引` table so readers can cross-look topics."""
         assert "## 概念別索引" in LEADER_SYSTEM_PROMPT
-        # Table columns must be explicit; a prose list doesn't count.
         assert "| 概念 | 章 |" in LEADER_SYSTEM_PROMPT
 
 
@@ -79,11 +61,6 @@ class TestP5LearningPaths:
         assert "深掘りコース" in LEADER_SYSTEM_PROMPT
 
 
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
-=======
->>>>>>> theirs
 class TestResidualMissPolicy:
     """Leader must not silently drop missing_topic_ids after β retry exhaustion."""
 
@@ -93,7 +70,6 @@ class TestResidualMissPolicy:
     def test_policy_gated_on_missing_topic_ids_nonempty(self):
         """Explicitly: no-op when missing_topic_ids is empty."""
         assert "missing_topic_ids` が空でない場合のみ適用" in LEADER_SYSTEM_PROMPT
-        # And the no-op fallback is explicit so Leader doesn't invent behavior
         assert "missing_topic_ids` が空の場合、このポリシーは一切適用しない" in LEADER_SYSTEM_PROMPT
 
     def test_policy_does_not_mutate_chapter_structure(self):
@@ -110,10 +86,6 @@ class TestLegacyGammaLabelRemoved:
     """After γ removal (PR #10), no prompt should still call coverage 'γ'."""
 
     def test_no_gamma_coverage_report_label(self):
-        # The Leader user-prompt (in call_leader) should use a neutral
-        # label. The system prompt itself may still reference γ in
-        # historical context (e.g. docstrings) but the data section
-        # label must not.
         import inspect
 
         from pipeline_youtube.synthesis import agents as agents_mod
@@ -122,13 +94,6 @@ class TestLegacyGammaLabelRemoved:
         assert "## γ coverage report" not in source
 
 
-<<<<<<< ours
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
 class TestExistingConstraintsIntact:
     """Guard against regression of earlier prompt guarantees."""
 
@@ -139,6 +104,5 @@ class TestExistingConstraintsIntact:
         assert "JSON 単体" in LEADER_SYSTEM_PROMPT
 
     def test_beta_still_limits_title_filename_chars(self):
-        # The Obsidian-unsafe set must stay filtered.
         for ch in ("\\", "/", ":", "*", "?", '"', "<", ">", "|"):
             assert ch in BETA_SYSTEM_PROMPT

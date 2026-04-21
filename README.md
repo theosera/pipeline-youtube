@@ -216,19 +216,12 @@ uv run mypy pipeline_youtube/ --ignore-missing-imports
 
 ```bash
 uv run pytest tests/ -q
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
 # 572 passed (2026-04-21 時点)
-=======
-# 561 passed (2026-04-21 時点)
->>>>>>> theirs
-=======
-# 561 passed (2026-04-21 時点)
->>>>>>> theirs
-=======
 # 572 passed (2026-04-21 時点)
->>>>>>> theirs
+# 572 passed (2026-04-21 時点)
+# 572 passed (2026-04-21 時点)
+# 572 passed (2026-04-21 時点)
+# 572 passed (2026-04-21 時点)
 ```
 
 主な対象:
