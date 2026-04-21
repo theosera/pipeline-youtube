@@ -10,8 +10,11 @@ P2: 矢印圧縮禁止 (Leader)
 P3: 章あたり最低 5 トピック (β)
 P4: MOC に概念別索引テーブル (Leader)
 P5: 学習順序は時間別コース (Leader)
+<<<<<<< ours
 
 Plus residual-miss policy (Leader) and the legacy "γ" label cleanup.
+=======
+>>>>>>> theirs
 """
 
 from __future__ import annotations
@@ -68,6 +71,7 @@ class TestP5LearningPaths:
         assert "深掘りコース" in LEADER_SYSTEM_PROMPT
 
 
+<<<<<<< ours
 class TestResidualMissPolicy:
     """Leader must not silently drop missing_topic_ids after β retry exhaustion."""
 
@@ -106,6 +110,8 @@ class TestLegacyGammaLabelRemoved:
         assert "## γ coverage report" not in source
 
 
+=======
+>>>>>>> theirs
 class TestExistingConstraintsIntact:
     """Guard against regression of earlier prompt guarantees."""
 
