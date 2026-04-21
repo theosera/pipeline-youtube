@@ -45,6 +45,8 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -152,10 +154,45 @@ class ClaudeResponse:
 
 
 class ClaudeCliError(RuntimeError):
-    """Raised when `claude -p` exits non-zero or returns unparseable JSON."""
+    """Raised when `claude -p` exits non-zero or returns unparseable JSON.
+
+    `transient=True` marks errors that are worth retrying (network blips,
+    stream idle timeouts, temporary API unavailability). The retry loop
+    in `invoke_claude` checks this flag.
+    """
+
+    def __init__(self, msg: str, *, transient: bool = False) -> None:
+        super().__init__(msg)
+        self.transient = transient
 
 
-def invoke_claude(
+# Substrings in the claude CLI's `result` field (or stderr) that indicate
+# a transient, retry-safe failure. Matching is literal-substring to stay
+# robust against minor wording changes across CLI versions.
+_TRANSIENT_ERROR_PATTERNS = (
+    "Stream idle timeout",
+    "Unable to connect to API",
+    "ConnectionRefused",
+    "FailedToOpenSocket",
+    "Connection reset",
+    "ECONNRESET",
+    "ETIMEDOUT",
+    "ENETUNREACH",
+    "getaddrinfo EAI",
+    "socket hang up",
+    "503 Service Unavailable",
+    "502 Bad Gateway",
+    "504 Gateway Timeout",
+    "overloaded_error",
+)
+
+
+def _is_transient_error_text(text: str) -> bool:
+    """Return True if any known transient-error substring is present."""
+    return any(p in text for p in _TRANSIENT_ERROR_PATTERNS)
+
+
+def _invoke_claude_once(
     prompt: str,
     *,
     append_system_prompt: str | None = None,
@@ -267,6 +304,8 @@ def invoke_claude(
             env=env,
         )
     except subprocess.TimeoutExpired as e:
+        # Subprocess timeout is NOT transient — we already waited the full
+        # budget. Don't mark transient=True to avoid pointless retries.
         raise ClaudeCliError(f"claude -p timeout after {timeout}s (cmd: {shlex.join(cmd)})") from e
     except FileNotFoundError as e:
         raise ClaudeCliError(
@@ -274,10 +313,19 @@ def invoke_claude(
             "Re-run after `claude login` or set PIPELINE_YOUTUBE_CLAUDE_BIN."
         ) from e
 
+    # When claude CLI hits a network error it still writes a JSON body to
+    # stdout describing the failure (is_error=true + a "result" string),
+    # while the process itself exits with code 1. So check stdout FIRST
+    # for a transient-error signature before falling back to the generic
+    # returncode-nonzero path.
+    combined_output = (result.stdout or "") + "\n" + (result.stderr or "")
+    transient = _is_transient_error_text(combined_output)
+
     if result.returncode != 0:
         raise ClaudeCliError(
             f"claude -p exited {result.returncode}: "
-            f"stderr={result.stderr[:500]!r} stdout={result.stdout[:200]!r}"
+            f"stderr={result.stderr[:500]!r} stdout={result.stdout[:200]!r}",
+            transient=transient,
         )
 
     try:
@@ -288,9 +336,11 @@ def invoke_claude(
         ) from e
 
     if data.get("is_error"):
+        result_text = str(data.get("result", ""))
         raise ClaudeCliError(
             f"claude -p returned is_error=true: "
-            f"subtype={data.get('subtype')!r} result={str(data.get('result'))[:500]!r}"
+            f"subtype={data.get('subtype')!r} result={result_text[:500]!r}",
+            transient=_is_transient_error_text(result_text),
         )
 
     usage = data.get("usage") or {}
@@ -308,3 +358,78 @@ def invoke_claude(
         stop_reason=data.get("stop_reason"),
         raw=data,
     )
+
+
+# Defaults for the retry loop. Three retries with exponential backoff
+# (30s → 60s → 120s, max cumulative wait 210s) absorbs the common
+# "laptop resumed from sleep, network not yet up" scenario without
+# adding noticeable latency to a fully-healthy run.
+_DEFAULT_MAX_RETRIES = 3
+_DEFAULT_RETRY_BASE_DELAY = 30.0
+
+
+def invoke_claude(
+    prompt: str,
+    *,
+    append_system_prompt: str | None = None,
+    system_prompt: str | None = None,
+    model: str = "sonnet",
+    disallow_tools: bool = True,
+    timeout: int = 600,
+    resume_session: str | None = None,
+    persist_session: bool = False,
+    max_budget_usd: float | None = None,
+    extra_args: list[str] | None = None,
+    max_retries: int = _DEFAULT_MAX_RETRIES,
+    retry_base_delay: float = _DEFAULT_RETRY_BASE_DELAY,
+) -> ClaudeResponse:
+    """Call `claude -p` with automatic retry on transient network errors.
+
+    Wraps `_invoke_claude_once` in a retry loop for known-transient failure
+    modes (stream idle timeouts, connection refused, socket hang-ups, 5xx
+    responses). Other errors (subprocess timeout, bad JSON, auth issues)
+    bypass the loop and propagate immediately.
+
+    Parameters beyond those of `_invoke_claude_once`:
+
+    max_retries:
+        Maximum number of retries after the first attempt. Default 3 =
+        up to 4 total attempts.
+    retry_base_delay:
+        Seconds to sleep before the first retry. Doubles each subsequent
+        retry (30s → 60s → 120s by default). Set to 0 to disable waits
+        (tests).
+
+    Set `max_retries=0` to disable retry behavior entirely.
+    """
+    last_exc: ClaudeCliError | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            return _invoke_claude_once(
+                prompt,
+                append_system_prompt=append_system_prompt,
+                system_prompt=system_prompt,
+                model=model,
+                disallow_tools=disallow_tools,
+                timeout=timeout,
+                resume_session=resume_session,
+                persist_session=persist_session,
+                max_budget_usd=max_budget_usd,
+                extra_args=extra_args,
+            )
+        except ClaudeCliError as e:
+            if not e.transient or attempt >= max_retries:
+                raise
+            last_exc = e
+            delay = retry_base_delay * (2**attempt)
+            sys.stderr.write(
+                f"[claude_cli retry {attempt + 1}/{max_retries}] "
+                f"transient error, sleeping {delay:.0f}s: {str(e)[:200]}\n"
+            )
+            sys.stderr.flush()
+            time.sleep(delay)
+
+    # Unreachable — the loop either returns or raises. Kept for the type
+    # checker and as a guard against future logic edits.
+    assert last_exc is not None
+    raise last_exc
