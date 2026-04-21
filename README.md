@@ -13,7 +13,7 @@ NotebookLM に動画 URL を 1 本ずつ手動で貼り付けて要約を Obsidi
 - **04_Learning_Material**: 上記 3 工程を「時系列 → キャプチャ画像 → 要点」3 点セットでテーマ単位に再構成
 
 **プレイリスト単位 (05)**
-- **05_Synthesis**: プレイリストの動画数 ≥ 3 本の時、Agent Teams (α/β/γ/leader) で 04 全体を横断統合し、章別ハンズオン md 群 + 00_MOC.md + 重複度スコア JSON を出力する
+- **05_Synthesis**: プレイリストの動画数 ≥ 3 本の時、Agent Teams (α→β→Leader) で 04 全体を横断統合し、章別ハンズオン md 群 + 00_MOC.md + 重複度スコア JSON を出力する。カバレッジ検証は Python 集合演算で決定論的に実施し、β の漏れトピックは Reflexion リトライで自己修復する
 
 AI 呼び出し (stage 02/04/05) は **`claude -p` headless CLI を subprocess で呼び出し**、Claude Pro/Max の OAuth セッションを使います。`ANTHROPIC_API_KEY` は不要。`claude login` 済であればそのまま動作します。
 
@@ -46,10 +46,12 @@ cp config.example.json config.json
 # config.json で設定できるフィールド:
 #   - vault_root (必須): Obsidian Vault のルートパス
 #   - models (任意): ステージ/エージェント別モデル
-#     {"stage_02","stage_04","alpha","beta","gamma","leader"} のキーを任意に設定。
-#     未設定キーは CLI の --model にフォールバック。
+#     {"stage_02","stage_04","alpha","beta","leader"} のキーを任意に設定。
+#     未設定キーは CLI の --model にフォールバック。"gamma" は後方互換で受理するが無視。
 #   - filler_words (任意): Stage 02 の transcript から除去する日本語フィラー語リスト。
 #     未設定ならデフォルト (えー/えっと/あのー/まあ/なんか 等) を使用。
+#   - capture_backend (任意): "host" (デフォルト) または "docker"
+#   - synthesis_timeout (任意): "auto" (デフォルト, 300 + 60×動画数) または秒数の整数
 # 他のノブ (capture-format / concurrency / min-playlist-size / max-chapters 等) は
 # 都度変わる運用値なので CLI フラグで渡す設計。
 ```
@@ -72,8 +74,14 @@ uv run python -m pipeline_youtube.main "https://www.youtube.com/playlist?list=PL
 # キャプチャフォーマット指定 (デフォルトは auto = 可能なら WebP)
 uv run python -m pipeline_youtube.main "https://www.youtube.com/playlist?list=PLxxx" --capture-format gif
 
+# Stage 05 タイムアウトを固定指定 (デフォルトは auto = 300 + 60×動画数)
+uv run python -m pipeline_youtube.main "https://www.youtube.com/playlist?list=PLxxx" --synthesis-timeout 3600
+
 # 単一動画のみ (05 Synthesis は自動スキップ)
 uv run python -m pipeline_youtube.main "https://www.youtube.com/watch?v=VIDEO_ID"
+
+# macOS で長時間実行する場合は caffeinate で sleep 防止
+caffeinate -i uv run python -m pipeline_youtube.main "https://www.youtube.com/playlist?list=PLxxx"
 ```
 
 ### CLI フラグ一覧
@@ -92,6 +100,8 @@ uv run python -m pipeline_youtube.main "https://www.youtube.com/watch?v=VIDEO_ID
 | `--config PATH` | 代替 `config.json` パス |
 | `--stop-after-capture` | Phase 1 実行 (01〜03 のみ)。Obsidian で 02_Summary.md を校閲して `reviewed: true` に書き換えてから Phase 3 を回す運用 |
 | `--resume-reviewed` | Phase 3 実行。`reviewed: true` が付いた動画だけ Stage 04〜05 を走らせる |
+| `--capture-backend {host,docker}` | Stage 03 実行バックエンド。`docker` はハードニングしたコンテナで yt-dlp/ffmpeg を隔離実行 |
+| `--synthesis-timeout N` | Stage 05 の per-agent タイムアウト (秒)。未指定 = auto (`300 + 60 × 動画数`) |
 
 詳細は [`docs/cli.md`](docs/cli.md) と [`docs/sample-run.md`](docs/sample-run.md) を参照。
 
@@ -127,19 +137,29 @@ Permanent Note/08_YouTube学習/
 
 ## Stage 05 Agent Teams の内部構造
 
-Stage 05 はプレイリストに 3 本以上の動画があるときだけ自動起動する。4 つの Claude エージェントを逐次呼び出す:
+Stage 05 はプレイリストに 3 本以上の動画があるときだけ自動起動する。3 つの Claude エージェント + 決定論的カバレッジ検証を逐次実行する:
 
 | ロール | 役割 | 入力 | 出力 |
 |---|---|---|---|
 | **α** (alpha) | トピック抽出 + 重複度スコア付与 | 全動画の 04 md 本文 | `topics[]` JSON (topic_id / label / source_videos / duplication_count / category) |
 | **β** (beta) | 章立て設計 (章数を動的決定) | α の topics | `chapters[]` JSON (index / label / category / topic_ids) |
-| **γ** (gamma) | カバレッジ検証 | α + β | `CoverageReport` (covered / missing / notes) |
-| **leader** | 章別 md + MOC 生成 | α + β + γ + 04 md 本文 | `{moc, chapters[]}` JSON |
+| **coverage** | カバレッジ検証 (Python 集合演算) | α + β | `CoverageReport` (covered / missing) — LLM 不要 |
+| **β retry** | Reflexion リトライ (漏れがあれば 1 回) | β + missing IDs | 修正版 `chapters[]` |
+| **leader** | 章別 md + MOC 生成 | α + β + coverage + 04 md 本文 | `{moc, chapters[]}` JSON |
 
+- **カバレッジ検証**: 旧 γ エージェント (LLM) を Python 集合演算 (`compute_coverage`) に置換。α の topic_ids と β の chapter.topic_ids の set diff でミクロ秒で結果が出る。漏れがあれば β に missing IDs をフィードバックして 1 回リトライ (確定的自己修復)。
+- **動的タイムアウト**: 各エージェントのタイムアウトは `300 + 60 × 動画数` で自動計算。CLI `--synthesis-timeout` または config.json `synthesis_timeout` で固定値に上書き可。β は入力が軽量なため最大 600s にキャップ。
+- **プリフライトログ**: Stage 05 開始前に入力充填率・トランケーション有無・タイムアウト値をログ出力。プレイリスト fetch 直後にも早期見積もりを表示。
 - **重複度カテゴリ**: `duplication_count >= 3` → `core` (章冒頭 `> [!important]`)、`== 2` → `supporting` (本文中で **太字**)、`== 1` → `unique` (通常記述)
 - **章数**: β が動的に決定 (3 章以上を目安、内容に応じて増減)
 - **章本文の画像埋め込み**: leader は、概念理解に特に有用な箇所だけに絞って `![[...webp]]` を挿入する (各章 0〜3 枚目安)。ファイル名は入力の 04 md 本文にある記法からそのままコピー (新規ファイル名の創作は禁止)。
 - **プロンプトインジェクション対策**: 全ロール入力は `<untrusted_content>` でラップし、`sanitize_untrusted_text` を経由。
+
+## 耐障害性
+
+- **Transient エラー自動リトライ** — `invoke_claude` は `Stream idle timeout` / `ConnectionRefused` / `FailedToOpenSocket` / 5xx 等の既知のネットワーク一時障害を検出し、最大 3 回まで指数バックオフ (30s → 60s → 120s) でリトライする。laptop の sleep 復帰後の接続断や API の瞬断に対応。
+- **Checkpoint リカバリ** — Stage 04 完了済みの動画は再実行時に自動スキップ。途中で Ctrl+C しても完了分は保持される。
+- **動的タイムアウト** — Stage 05 のタイムアウトが動画数に応じて自動伸長 (`300 + 60 × N`)。大規模プレイリストでの timeout 失敗を防止。
 
 ## セキュリティ層
 
@@ -170,7 +190,7 @@ uv run mypy pipeline_youtube/ --ignore-missing-imports
 
 ```bash
 uv run pytest tests/ -q
-# 352 passed (2026-04-18 時点)
+# 506 passed (2026-04-21 時点)
 ```
 
 主な対象:
@@ -180,6 +200,9 @@ uv run pytest tests/ -q
 - `test_transcript_*` — 字幕フォールバック
 - `test_scripts_stage.py` / `test_summary_stage.py` / `test_capture_stage.py` / `test_learning_stage.py` — stage 01〜04
 - `test_synthesis_scoring.py` / `test_synthesis_agents.py` / `test_synthesis_stage.py` — stage 05 Agent Teams (claude_cli モック)
+- `test_synthesis_timeout.py` — 動的タイムアウト計算 + プリフライトログ + config.json 読み込み
+- `test_claude_cli_retry.py` — transient エラーリトライ (パターン検出 / 指数バックオフ / 非 transient 即時伝播)
+- `test_capture_backend.py` — Docker 隔離バックエンド (コマンド形状 / パス変換 / プリフライト)
 
 ## トラブルシューティング
 
@@ -192,6 +215,9 @@ uv run pytest tests/ -q
 | stage 05 が `[skip] only N videos succeeded` | プレイリストの stage 04 成功数が `--min-playlist-size` (デフォルト 3) 未満。成功数を増やすか `--min-playlist-size 2` で緩和 |
 | Templater が 04 の md を空ファイルと誤認してリネーム | stage 04 は placeholder を作らず直接書き込むよう設計済み。該当フォルダの Templater テンプレート指定を解除するのが確実 |
 | `--synthesis-only` で `04 folder not found` | 指定日付のフォルダに該当プレイリストの 04 md が存在しないときに出る。まず 01〜04 を通す |
+| `Stream idle timeout` / `ConnectionRefused` で動画が FAIL | ネットワーク一時障害。リトライ機構 (3 回、計 210s) で吸収するが、laptop sleep 中の長時間断はリトライでもカバーできない。`caffeinate -i` で sleep 防止して再実行 |
+| Stage 05 が timeout | `--synthesis-timeout 3600` で延長するか、auto (300+60×動画数) が適切か確認。50 本超は auto で 3300s |
+| iCloud `Operation not permitted` | macOS のプライバシー設定 → フルディスクアクセスにターミナルアプリを追加 → ターミナル再起動 |
 
 ## 関連ドキュメント
 
