@@ -4,13 +4,16 @@
 
 YouTube プレイリスト → Obsidian Vault 自学自習用学習レポート生成パイプライン。
 
-NotebookLM に動画 URL を 1 本ずつ手動で貼り付けて要約を Obsidian に転記する運用を自動化する。プレイリスト URL を 1 本投げると、プレイリスト内の全動画を以下 5 工程に通して、学習しやすいレポートと分野横断のハンズオンを Vault に保存する。
+NotebookLM に動画 URL を 1 本ずつ手動で貼り付けて要約を Obsidian に転記する運用を自動化する。プレイリスト URL を 1 本投げると、プレイリスト内の全動画を以下の工程に通して、学習しやすいレポートと分野横断のハンズオンを Vault に保存する。
+
+**プレイリスト単位の前処理 (00.5)**
+- **Router**: プレイリスト全体のジャンルを 1 回の haiku 呼び出しで分類 (`coding` / `humanities` / `business` / `science` / `lifestyle` / `entertainment` / `other`)。下流の「コードを含む動画向けの特別処理」はこの結果でゲートする
 
 **動画単位 (01〜04)**
-- **01_Scripts**: タイムスタンプ付き文字起こし (YouTube 純正字幕 → 自動生成字幕 → ローカル Whisper の 3 段フォールバック)
+- **01_Scripts**: タイムスタンプ付き文字起こし (YouTube 純正字幕 → 自動生成字幕 → ローカル Whisper の 3 段フォールバック)。`coding` ジャンルの時は動画概要欄から GitHub/Gist URL を検出 → raw コードを fetch → `## 関連コード` セクションとして追記
 - **02_Summary**: 意味単位タイムスタンプ範囲付き要約
 - **03_Capture**: 要点タイムスタンプに対応する動画フレーム抽出 (WebP アニメーション)
-- **04_Learning_Material**: 上記 3 工程を「時系列 → キャプチャ画像 → 要点」3 点セットでテーマ単位に再構成
+- **04_Learning_Material**: 上記 3 工程を「時系列 → キャプチャ画像 → 要点」3 点セットでテーマ単位に再構成。`coding` ジャンル時は `# 概念` (Concepts) / `# 実践` (Practice) の 2 階層に分割して出力
 
 **プレイリスト単位 (05)**
 - **05_Synthesis**: プレイリストの動画数 ≥ 3 本の時、Agent Teams (α→β→Leader) で 04 全体を横断統合し、章別ハンズオン md 群 + 00_MOC.md + 重複度スコア JSON を出力する。カバレッジ検証は Python 集合演算で決定論的に実施し、β の漏れトピックは Reflexion リトライで自己修復する
@@ -46,8 +49,9 @@ cp config.example.json config.json
 # config.json で設定できるフィールド:
 #   - vault_root (必須): Obsidian Vault のルートパス
 #   - models (任意): ステージ/エージェント別モデル
-#     {"stage_02","stage_04","alpha","beta","leader"} のキーを任意に設定。
-#     未設定キーは CLI の --model にフォールバック。"gamma" は後方互換で受理するが無視。
+#     {"router","stage_02","stage_04","alpha","beta","leader"} のキーを任意に設定。
+#     router は未設定時に haiku (他は --model にフォールバック)。
+#     "gamma" は後方互換で受理するが無視。
 #   - filler_words (任意): Stage 02 の transcript から除去する日本語フィラー語リスト。
 #     未設定ならデフォルト (えー/えっと/あのー/まあ/なんか 等) を使用。
 #   - capture_backend (任意): "host" (デフォルト) または "docker"
@@ -125,6 +129,28 @@ Permanent Note/08_YouTube学習/
 - **プレイリスト名の `/` 扱い**: YouTube プレイリスト名に ASCII `/` が含まれる場合、`/` はカテゴリ区切りとみなして **最後のセグメントのみ** をタイトルとして採用する (例: `2026Agent Teams/AI駆動経営` → `AI駆動経営`)。全角 `／` (U+FF0F) は日本語タイトル内の正規句読点として保持。
 - **画像配置**: `Permanent Note/_assets/2026/pipeline-youtube/pyt_{video_id}_{idx}.webp` に直接書き込み。Obsidian Attachment Management プラグインの `${notename}` リネームパターンとは故意に衝突させない命名を使用。
 
+## ジャンル判定 (Router) とジャンル別分岐
+
+パイプラインの最上流 (Stage 00.5) で、プレイリスト全体のジャンルを 1 回の haiku 呼び出しで判定します。コストは 1 プレイリストあたり ~$0.01 (数百トークン × haiku)。
+
+**判定結果による分岐:**
+
+| Genre | Stage 01 `## 関連コード` 自動追記 | Stage 04 `# 概念` / `# 実践` 分割 |
+|---|---|---|
+| `coding` | ✅ GitHub/Gist 概要欄 URL から raw コードを fetch | ✅ 理論と実装を分離 |
+| `business` / `humanities` / `science` / `lifestyle` / `entertainment` / `other` | ❌ | ❌ (flat 構造のまま) |
+
+**ゲート基準**: `CODE_BEARING_GENRES = {Genre.CODING}` (genres.py)。将来 `mixed` や `tutorial` を追加したい場合はこの frozenset を拡張。
+
+**エラー耐性**: Router の API 失敗・JSON パース失敗・未知のジャンル値は `Genre.OTHER` に collapse され、下流はデフォルト動作 (コード特別処理なし) に fallback します。ルーター呼び出しはパイプライン全体のブロッカーにはなりません。
+
+**GitHub URL 抽出の制約**:
+- blob URL (`https://github.com/owner/repo/blob/ref/path`) → raw をそのまま fetch
+- Gist URL → public API (`api.github.com/gists/<id>`) でファイル群をまとめて取得
+- リポジトリ URL (`github.com/owner/repo` のみ) → スキップ (README 自動 fetch は情報量的にノイズが多い)
+- 1 動画あたり最大 5 URL / ファイルあたり最大 50KB
+- 認証なし (rate limit: 60 req/h per IP)
+
 ## 文字起こしフォールバック階層
 
 1. **純正字幕** (`youtube-transcript-api` の manually-created)
@@ -190,7 +216,7 @@ uv run mypy pipeline_youtube/ --ignore-missing-imports
 
 ```bash
 uv run pytest tests/ -q
-# 506 passed (2026-04-21 時点)
+# 553 passed (2026-04-21 時点)
 ```
 
 主な対象:
@@ -203,6 +229,9 @@ uv run pytest tests/ -q
 - `test_synthesis_timeout.py` — 動的タイムアウト計算 + プリフライトログ + config.json 読み込み
 - `test_claude_cli_retry.py` — transient エラーリトライ (パターン検出 / 指数バックオフ / 非 transient 即時伝播)
 - `test_capture_backend.py` — Docker 隔離バックエンド (コマンド形状 / パス変換 / プリフライト)
+- `test_genres.py` — Router ジャンル分類 (JSON 解析 / エラー fallback / プロンプト形状)
+- `test_code_fetch.py` — GitHub URL 抽出 + raw コード取得 (yt-dlp / urllib モック)
+- `test_learning_code_bearing.py` — Stage 04 の `# 概念` / `# 実践` プロンプト分割
 
 ## トラブルシューティング
 

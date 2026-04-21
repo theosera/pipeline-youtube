@@ -189,7 +189,7 @@ def vault(tmp_path: Path):
 class TestE2EPlaylist:
     def test_full_cli_3_videos(self, vault: Path, monkeypatch):
         # Mock Stage 01 transcripts (bypass real youtube-transcript-api)
-        def fake_scripts(video, path, *, dry_run):
+        def fake_scripts(video, path, *, dry_run, include_code_blocks=False):
             return _transcript_result(video.video_id)
 
         monkeypatch.setattr(main_mod, "run_stage_scripts", fake_scripts)
@@ -204,6 +204,13 @@ class TestE2EPlaylist:
         # Bypass claude binary validation
         monkeypatch.setattr(
             main_mod, "get_resolved_claude_binary", lambda: ("/fake/claude", "claude 2.1.109")
+        )
+
+        # Stub Router (genre classification) — avoid real LLM call
+        from pipeline_youtube.genres import Genre
+
+        monkeypatch.setattr(
+            main_mod, "classify_playlist_genre", lambda *a, **kw: (Genre.OTHER, "stubbed")
         )
 
         # Stub every invoke_claude in both stages + synthesis
@@ -249,7 +256,7 @@ class TestE2EPlaylist:
         assert "leader" in result.output
 
     def test_stop_after_capture_skips_04_and_05(self, vault: Path, monkeypatch):
-        def fake_scripts(video, path, *, dry_run):
+        def fake_scripts(video, path, *, dry_run, include_code_blocks=False):
             return _transcript_result(video.video_id)
 
         monkeypatch.setattr(main_mod, "run_stage_scripts", fake_scripts)
@@ -259,8 +266,13 @@ class TestE2EPlaylist:
         monkeypatch.setattr(
             main_mod, "get_resolved_claude_binary", lambda: ("/fake/claude", "claude 2.1.109")
         )
+        from pipeline_youtube.genres import Genre
         from pipeline_youtube.stages import learning as learning_mod
         from pipeline_youtube.stages import summary as summary_mod
+
+        monkeypatch.setattr(
+            main_mod, "classify_playlist_genre", lambda *a, **kw: (Genre.OTHER, "stubbed")
+        )
 
         invoke_count = {"n": 0}
 

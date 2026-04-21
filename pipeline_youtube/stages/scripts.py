@@ -9,12 +9,24 @@ Output format matches the dummy data in
 The frontmatter above the body is already written by the placeholder
 step (`pipeline.create_placeholder_notes`), so this stage appends the
 chunked body to the existing file.
+
+When ``include_code_blocks=True`` is passed (set by the orchestrator
+when the Router classifies the playlist as ``coding``), this stage
+additionally fetches the video description, scrapes any GitHub
+blob/Gist URLs, downloads their raw content (size-capped), and appends
+a ``## 関連コード`` section after the transcript.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from ..code_fetch import (
+    extract_github_urls,
+    fetch_snippets_for_urls,
+    fetch_video_description,
+    render_code_section,
+)
 from ..playlist import VideoMeta
 from ..transcript.auto import fetch_auto
 from ..transcript.base import TranscriptResult, fetch_with_fallback
@@ -30,6 +42,7 @@ def run_stage_scripts(
     window_seconds: float = 30.0,
     languages: list[str] | None = None,
     dry_run: bool = False,
+    include_code_blocks: bool = False,
 ) -> TranscriptResult:
     """Fetch transcript, chunk it, and append the body to `scripts_md_path`.
 
@@ -64,8 +77,20 @@ def run_stage_scripts(
 
     body = _render_chunks(video, chunk_by_window(result.snippets, window_seconds))
 
-    if not dry_run and body:
-        _append_body(scripts_md_path, body)
+    code_section = ""
+    if include_code_blocks:
+        # Fetching description + raw code is best-effort. If anything
+        # fails, we silently skip — the transcript is the primary asset.
+        description = fetch_video_description(video.video_id)
+        if description:
+            urls = extract_github_urls(description)
+            snippets = fetch_snippets_for_urls(urls)
+            code_section = render_code_section(snippets)
+
+    full_body = body + code_section if code_section else body
+
+    if not dry_run and full_body:
+        _append_body(scripts_md_path, full_body)
 
     return result
 

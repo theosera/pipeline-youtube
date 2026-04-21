@@ -36,6 +36,7 @@ class TestLoadConfig:
         result = _load_config(cfg, fallback_model="sonnet")
         assert result.vault_root == vault
         assert result.models == {
+            "router": "haiku",  # router defaults to haiku regardless of fallback
             "stage_02": "sonnet",
             "stage_04": "sonnet",
             "alpha": "sonnet",

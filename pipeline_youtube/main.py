@@ -29,6 +29,7 @@ from .checkpoint import (
     read_trusted_video_id,
 )
 from .config import VaultRootError, set_dry_run, set_vault_root
+from .genres import CODE_BEARING_GENRES, classify_playlist_genre
 from .obsidian import format_playlist_folder_name
 from .path_safety import ensure_safe_path
 from .pipeline import LEARNING_BASE, UNIT_DIRS, compute_note_paths, create_placeholder_notes
@@ -51,7 +52,7 @@ from .synthesis.agents import compute_synthesis_timeouts
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
-_MODEL_KEYS = frozenset({"stage_02", "stage_04", "alpha", "beta", "leader"})
+_MODEL_KEYS = frozenset({"router", "stage_02", "stage_04", "alpha", "beta", "leader"})
 # "gamma" accepted silently for backward-compat with existing config.json,
 # but the γ LLM role has been replaced by a Python set diff — the value is ignored.
 _DEPRECATED_MODEL_KEYS = frozenset({"gamma"})
@@ -101,7 +102,12 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
             f"config.json: unknown model keys {sorted(unknown)!r}; "
             f"expected any of {sorted(_MODEL_KEYS)!r}"
         )
-    models = {key: models_raw.get(key, fallback_model) for key in _MODEL_KEYS}
+    # Router defaults to haiku regardless of fallback_model — it's a single
+    # cheap classification call where speed/cost beats reasoning depth.
+    _per_key_default = {"router": "haiku"}
+    models = {
+        key: models_raw.get(key, _per_key_default.get(key, fallback_model)) for key in _MODEL_KEYS
+    }
 
     filler_raw = data.get("filler_words")
     if filler_raw is None:
@@ -383,13 +389,19 @@ def _process_video(
     filler_words: tuple[str, ...] = (),
     stop_after_capture: bool = False,
     capture_backend: Any = None,
+    code_bearing: bool = False,
 ) -> VideoRunResult:
     try:
         paths = compute_note_paths(video, run_time)
         create_placeholder_notes(video, run_time, dry_run=dry_run)
 
         click.echo("  [01] scripts...", nl=False)
-        transcript = run_stage_scripts(video, paths["scripts"], dry_run=dry_run)
+        transcript = run_stage_scripts(
+            video,
+            paths["scripts"],
+            dry_run=dry_run,
+            include_code_blocks=code_bearing,
+        )
         with contextlib.suppress(Exception):
             record_transcript_stat(video, transcript)
         click.echo(
@@ -468,6 +480,7 @@ def _process_video(
             run_time=run_time,
             model=models["stage_04"],
             dry_run=dry_run,
+            code_bearing=code_bearing,
         )
         click.echo(
             f" in={learning_resp.input_tokens or 0}"
@@ -505,6 +518,7 @@ async def _run_videos_concurrent(
     filler_words: tuple[str, ...] = (),
     stop_after_capture: bool = False,
     capture_backend: Any = None,
+    code_bearing: bool = False,
 ) -> list[VideoRunResult]:
     """Process multiple videos concurrently with bounded parallelism."""
     sem = asyncio.Semaphore(concurrency)
@@ -522,6 +536,7 @@ async def _run_videos_concurrent(
                 filler_words=filler_words,
                 stop_after_capture=stop_after_capture,
                 capture_backend=capture_backend,
+                code_bearing=code_bearing,
             )
 
     tasks = [_task(i, v) for i, v in enumerate(videos, 1)]
@@ -732,6 +747,13 @@ def cli(
     click.echo(f"playlist: {playlist_title!r}")
     click.echo(f"videos: {len(videos)}")
 
+    # Stage 00.5: Router. One cheap haiku call decides whether downstream
+    # code-bearing features (GitHub URL extraction, concept/practice split)
+    # apply. Errors collapse to Genre.OTHER → default behavior.
+    genre, genre_rationale = classify_playlist_genre(playlist_title, videos, model=models["router"])
+    code_bearing = genre in CODE_BEARING_GENRES
+    click.echo(f"genre: {genre.value} (code_bearing={code_bearing}) — {genre_rationale[:120]}")
+
     est_timeouts = compute_synthesis_timeouts(len(videos), override=effective_synthesis_timeout)
     total_duration = sum(v.duration or 0 for v in videos)
     click.echo(
@@ -798,6 +820,7 @@ def cli(
                     filler_words=filler_words,
                     stop_after_capture=stop_after_capture,
                     capture_backend=active_capture_backend,
+                    code_bearing=code_bearing,
                 )
             )
             results.extend(concurrent_results)
@@ -813,6 +836,7 @@ def cli(
                     filler_words=filler_words,
                     stop_after_capture=stop_after_capture,
                     capture_backend=active_capture_backend,
+                    code_bearing=code_bearing,
                 )
                 results.append(result)
 
