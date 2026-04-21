@@ -134,7 +134,7 @@ LEADER_SYSTEM_PROMPT = """あなたはプレイリスト横断の学習ハンズ
 α `topics` / β `chapters` / `CoverageReport` (Python 集合演算由来) / 各動画の 04 md 本文 (`## VIDEO: {video_id}: {title}` 区切り)。
 
 ## タスク
-β の章立て通りに各章本文 markdown と、全体ハブの MOC を生成する。
+β の章立て通りに各章本文 markdown と、全体ハブの MOC を生成する。`CoverageReport.missing_topic_ids` が空でない場合は、後述の「残存ミス補完ポリシー」に従って漏れトピックを最も関連性の高い既存章の末尾に組み込む。新章の追加・章の削除・章順の変更は禁止。
 
 ### 章本文の構成（各章共通）
 1. category=core は先頭に `> [!important]\\n> 本章は N 本の動画で言及されるコアコンセプトです。`
@@ -162,6 +162,15 @@ LEADER_SYSTEM_PROMPT = """あなたはプレイリスト横断の学習ハンズ
      "source_video_ids": ["vid1"], "body_markdown": "..."}
   ]
 }
+
+## 残存ミス補完ポリシー (`CoverageReport.missing_topic_ids` が空でない場合のみ適用)
+
+β のリフレクション・リトライを経ても依然として章に割り振られなかった topic がある状況。以下の順序で処理する:
+
+1. 各 missing topic について、α `topics[].summary` と β `chapters[].rationale` を照合し、意味的に最も近い章を 1 つ選ぶ
+2. その章本文の末尾 (`## 補足とまとめ` の直前) に `### 補足: <topic.label>` 小節を追加し、`summary` を 2〜3 文で平文化して記述 + 出典 `[[<動画 note 名>#^MM-SS]]` を付与
+3. 章構成 (`chapter_index` / `label` / `category` / `source_video_ids`) は変更しない
+4. `missing_topic_ids` が空の場合、このポリシーは一切適用しない (既定挙動)
 
 ## 制約
 - category=core は `> [!important]` callout、supporting は太字、unique は通常記述
@@ -392,8 +401,7 @@ def compute_coverage(
 
     Replaces the former γ (CoverageReviewer) LLM call. Set operations
     give the same `covered` / `missing` split in microseconds with zero
-    LLM cost and no hallucination risk. `notes` is left empty — the
-    Leader can infer structural issues from the raw diff.
+    LLM cost and no hallucination risk.
     """
     all_topic_ids = {t.topic_id for t in topics}
     used_topic_ids = {tid for ch in chapters for tid in ch.topic_ids}
@@ -402,7 +410,6 @@ def compute_coverage(
     return CoverageReport(
         covered_topic_ids=covered,
         missing_topic_ids=missing,
-        notes="",
     )
 
 
@@ -428,7 +435,7 @@ def call_leader(
         f"{wrap_untrusted(_topics_to_json_block(topics))}\n\n"
         "## β chapters (この章立て通りに生成)\n\n"
         f"{wrap_untrusted(_chapters_to_json_block(chapters))}\n\n"
-        "## γ coverage report\n\n"
+        "## カバレッジレポート (Python 集合演算由来)\n\n"
         f"{wrap_untrusted(_coverage_to_json_block(coverage))}\n\n"
         "## 各動画の学習材料 (04 md body)\n\n"
         f"{wrap_untrusted(materials)}"

@@ -10,6 +10,8 @@ P2: 矢印圧縮禁止 (Leader)
 P3: 章あたり最低 5 トピック (β)
 P4: MOC に概念別索引テーブル (Leader)
 P5: 学習順序は時間別コース (Leader)
+
+Plus residual-miss policy (Leader) and the legacy "γ" label cleanup.
 """
 
 from __future__ import annotations
@@ -64,6 +66,44 @@ class TestP5LearningPaths:
         assert "全章通読コース" in LEADER_SYSTEM_PROMPT
         assert "30 分で要点把握コース" in LEADER_SYSTEM_PROMPT
         assert "深掘りコース" in LEADER_SYSTEM_PROMPT
+
+
+class TestResidualMissPolicy:
+    """Leader must not silently drop missing_topic_ids after β retry exhaustion."""
+
+    def test_residual_miss_policy_section_exists(self):
+        assert "残存ミス補完ポリシー" in LEADER_SYSTEM_PROMPT
+
+    def test_policy_gated_on_missing_topic_ids_nonempty(self):
+        """Explicitly: no-op when missing_topic_ids is empty."""
+        assert "missing_topic_ids` が空でない場合のみ適用" in LEADER_SYSTEM_PROMPT
+        # And the no-op fallback is explicit so Leader doesn't invent behavior
+        assert "missing_topic_ids` が空の場合、このポリシーは一切適用しない" in LEADER_SYSTEM_PROMPT
+
+    def test_policy_does_not_mutate_chapter_structure(self):
+        """Leader must not rearrange β's chapters when filling in residual misses."""
+        assert "章構成" in LEADER_SYSTEM_PROMPT
+        assert "変更しない" in LEADER_SYSTEM_PROMPT
+
+    def test_policy_appends_as_trailing_section(self):
+        """Residual misses land in `### 補足` at chapter tail."""
+        assert "### 補足" in LEADER_SYSTEM_PROMPT
+
+
+class TestLegacyGammaLabelRemoved:
+    """After γ removal (PR #10), no prompt should still call coverage 'γ'."""
+
+    def test_no_gamma_coverage_report_label(self):
+        # The Leader user-prompt (in call_leader) should use a neutral
+        # label. The system prompt itself may still reference γ in
+        # historical context (e.g. docstrings) but the data section
+        # label must not.
+        import inspect
+
+        from pipeline_youtube.synthesis import agents as agents_mod
+
+        source = inspect.getsource(agents_mod.call_leader)
+        assert "## γ coverage report" not in source
 
 
 class TestExistingConstraintsIntact:

@@ -59,7 +59,6 @@ class ChapterPlan:
 class CoverageReport:
     covered_topic_ids: list[str] = field(default_factory=list)
     missing_topic_ids: list[str] = field(default_factory=list)
-    notes: str = ""
 
 
 @dataclass(frozen=True)

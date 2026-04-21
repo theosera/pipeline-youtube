@@ -64,6 +64,14 @@ META_SUBDIR = "_meta"
 DUPLICATE_SCORE_FILENAME = "duplicate_score.json"
 MIN_PLAYLIST_SIZE = 3
 
+# Maximum number of β reflexion retries when coverage has missing topics.
+# Empirically: attempt #1 fixes the common "β forgot t015" case; attempt
+# #2 catches structural misunderstandings that surface only after seeing
+# the first retry feedback; attempt #3 is insurance. Beyond 3, β tends to
+# be genuinely stuck (topic is too ambiguous to place) and more retries
+# burn tokens without improving coverage.
+MAX_BETA_REFLEXION_RETRIES = 3
+
 
 @dataclass(frozen=True)
 class SynthesisStageResult:
@@ -223,13 +231,16 @@ def run_stage_synthesis(
 
     coverage = compute_coverage(topics, chapters)
 
-    # Reflexion retry: if β missed any α-extracted topics, re-run β once
-    # with the missing IDs fed back as an error instruction. One retry is
-    # enough in practice — β either fixes it or is confused in a way
-    # more retries won't help. The Leader still gets whatever β produces
-    # on the final attempt, so this is a quality improvement, not a hard
-    # gate (Gemini 2026-04-20 proposal approach A: 確定的自己修復).
-    if coverage.missing_topic_ids:
+    # Reflexion loop: if β missed any α-extracted topics, re-run β with
+    # the missing IDs fed back as an error instruction. Each iteration
+    # narrows the gap. We cap at MAX_BETA_REFLEXION_RETRIES to bound the
+    # worst-case token spend. If the final iteration still has misses,
+    # Leader applies the residual-miss policy documented in its system
+    # prompt (insert uncovered topics into the most-related existing
+    # chapter as a trailing 補足).
+    for _attempt in range(MAX_BETA_REFLEXION_RETRIES):
+        if not coverage.missing_topic_ids:
+            break
         try:
             chapters, retry_res = call_beta(
                 topics,
@@ -238,12 +249,12 @@ def run_stage_synthesis(
                 missing_topic_ids=coverage.missing_topic_ids,
                 timeout=timeouts["beta"],
             )
-            agent_results.append(retry_res)
-            coverage = compute_coverage(topics, chapters)
         except SynthesisParseError:
-            # Retry parse fail: keep the first-attempt chapters and let
-            # the Leader handle the residual miss. Don't abort the stage.
-            pass
+            # Parse fail on retry: keep the last good chapters and let
+            # Leader absorb the residual. Don't abort the stage.
+            break
+        agent_results.append(retry_res)
+        coverage = compute_coverage(topics, chapters)
 
     try:
         leader_output, leader_res = call_leader(
@@ -330,7 +341,6 @@ def run_stage_synthesis(
                 "coverage": {
                     "covered_topic_ids": coverage.covered_topic_ids,
                     "missing_topic_ids": coverage.missing_topic_ids,
-                    "notes": coverage.notes,
                 },
             },
             ensure_ascii=False,

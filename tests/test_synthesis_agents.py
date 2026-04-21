@@ -319,7 +319,6 @@ class TestComputeCoverage:
         report = compute_coverage(topics, chapters)
         assert report.covered_topic_ids == ["t001", "t002"]
         assert report.missing_topic_ids == []
-        assert report.notes == ""
 
     def test_missing_topic(self):
         topics = [
@@ -423,7 +422,7 @@ class TestCallLeader:
         chapters = [
             ChapterPlan(index=1, label="ch1", category="core", topic_ids=["t001"], source_videos=[])
         ]
-        coverage = CoverageReport(covered_topic_ids=["t001"], missing_topic_ids=[], notes="ok")
+        coverage = CoverageReport(covered_topic_ids=["t001"], missing_topic_ids=[])
 
         leader_out, result = call_leader(
             videos,
