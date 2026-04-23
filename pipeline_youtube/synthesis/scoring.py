@@ -86,6 +86,32 @@ class LeaderOutput:
     chapters: list[SynthesisChapterBody]
 
 
+@dataclass(frozen=True)
+class ReviewerFix:
+    """A single revision instruction from the Reviewer agent."""
+
+    target: str  # "moc" or "chapter:<index>"
+    reason: str
+    patch_hint: str
+
+
+@dataclass(frozen=True)
+class ReviewerFeedback:
+    """Output of the optional Reviewer (ε) agent in the `full` profile.
+
+    The Reviewer does not rewrite the leader output directly. Instead it
+    emits a list of ``fixes`` that the orchestrator forwards back to
+    Leader for one re-render pass. This keeps body generation centralized
+    in Leader (single source of rendering truth) while letting Reviewer
+    focus on policy-level checks (citation presence, arrow-compression,
+    missing-topic reconciliation).
+    """
+
+    needs_revision: bool
+    fixes: list[ReviewerFix] = field(default_factory=list)
+    summary: str = ""
+
+
 # =====================================================
 # Category derivation rule (per plan decision)
 # =====================================================
@@ -319,3 +345,45 @@ def parse_leader_output(raw: str) -> LeaderOutput:
         )
 
     return LeaderOutput(moc=moc, chapters=chapters)
+
+
+def parse_reviewer_output(raw: str) -> ReviewerFeedback:
+    """Parse Reviewer's JSON feedback.
+
+    Expected schema:
+        {
+          "needs_revision": true,
+          "summary": "...",
+          "fixes": [
+            {"target": "chapter:2", "reason": "...", "patch_hint": "..."}
+          ]
+        }
+
+    A non-dict response, or one missing ``needs_revision``, defaults to
+    "no revision needed" rather than raising — the Reviewer pass is
+    advisory, not gating.
+    """
+    try:
+        data = extract_json(raw)
+    except SynthesisParseError:
+        return ReviewerFeedback(needs_revision=False)
+
+    needs = bool(data.get("needs_revision"))
+    fixes_raw = data.get("fixes") or []
+    fixes: list[ReviewerFix] = []
+    if isinstance(fixes_raw, list):
+        for f in fixes_raw:
+            if not isinstance(f, dict):
+                continue
+            fixes.append(
+                ReviewerFix(
+                    target=str(f.get("target") or ""),
+                    reason=str(f.get("reason") or ""),
+                    patch_hint=str(f.get("patch_hint") or ""),
+                )
+            )
+    return ReviewerFeedback(
+        needs_revision=needs and bool(fixes),
+        fixes=fixes,
+        summary=str(data.get("summary") or ""),
+    )

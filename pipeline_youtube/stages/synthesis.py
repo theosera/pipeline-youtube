@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 
 from ..config import get_vault_root
@@ -43,10 +44,13 @@ from ..synthesis.agents import (
     _MAX_INPUT_CHARS,
     AgentCallResult,
     call_alpha,
+    call_alpha_batched,
     call_beta,
     call_leader,
+    call_reviewer,
     compute_coverage,
     compute_synthesis_timeouts,
+    rerun_leader_with_feedback,
 )
 from ..synthesis.body_validator import extract_allowed_embeds
 from ..synthesis.chapter import write_chapter
@@ -55,6 +59,7 @@ from ..synthesis.scoring import (
     ChapterPlan,
     CoverageReport,
     LeaderOutput,
+    ReviewerFeedback,
     SynthesisParseError,
     Topic,
 )
@@ -73,6 +78,54 @@ MIN_PLAYLIST_SIZE = 3
 MAX_BETA_REFLEXION_RETRIES = 3
 
 
+class SynthesisProfile(StrEnum):
+    """Agent Teams composition variants.
+
+    - ``standard``: α → β → Leader (legacy / default for small playlists)
+    - ``parallel``: α batched in parallel → merge → β → Leader
+    - ``full``: α → β → Leader → Reviewer (quality-gated)
+    - ``parallel+full``: parallel α + Reviewer
+    """
+
+    STANDARD = "standard"
+    PARALLEL = "parallel"
+    FULL = "full"
+    PARALLEL_FULL = "parallel+full"
+
+    @property
+    def uses_parallel_alpha(self) -> bool:
+        return "parallel" in self.value
+
+    @property
+    def uses_reviewer(self) -> bool:
+        return "full" in self.value
+
+
+# Auto-selection thresholds. The upper boundary of ``standard`` is
+# inclusive: 15 videos still runs the legacy single-α path so cache
+# reuse dominates the cost budget. Above 15 we switch to batched α.
+_AUTO_STANDARD_MAX_VIDEOS = 15
+_AUTO_PARALLEL_MAX_VIDEOS = 30
+
+
+def _select_profile(
+    n_videos: int,
+    override: str | None,
+) -> SynthesisProfile:
+    """Choose the profile from an explicit override or the video count.
+
+    ``override`` accepts profile names, ``"auto"``, or ``None`` (treated
+    as auto). Invalid names raise ``ValueError``.
+    """
+    if override and override != "auto":
+        return SynthesisProfile(override)
+    if n_videos <= _AUTO_STANDARD_MAX_VIDEOS:
+        return SynthesisProfile.STANDARD
+    if n_videos <= _AUTO_PARALLEL_MAX_VIDEOS:
+        return SynthesisProfile.PARALLEL
+    return SynthesisProfile.PARALLEL_FULL
+
+
 @dataclass(frozen=True)
 class SynthesisStageResult:
     topics: list[Topic] = field(default_factory=list)
@@ -83,6 +136,8 @@ class SynthesisStageResult:
     chapter_paths: list[Path] = field(default_factory=list)
     meta_path: Path | None = None
     agent_results: list[AgentCallResult] = field(default_factory=list)
+    profile: SynthesisProfile | None = None
+    reviewer_feedback: ReviewerFeedback | None = None
     skipped: bool = False
     skip_reason: str | None = None
     error: str | None = None
@@ -153,6 +208,7 @@ def run_stage_synthesis(
     dry_run: bool = False,
     folder_name_override: str | None = None,
     synthesis_timeout: int | None = None,
+    profile: str | None = None,
 ) -> SynthesisStageResult:
     """Orchestrate α→β→Leader and write MOC + chapter md files.
 
@@ -171,18 +227,23 @@ def run_stage_synthesis(
     model:
         Default model used for any agent not explicitly overridden.
     agent_models:
-        Optional `{"alpha", "beta", "leader"}` override map.
+        Optional `{"alpha", "beta", "leader", "reviewer"}` override map.
         Missing keys fall back to `model`. (`gamma` accepted for
         config backward-compat but ignored — coverage is now a Python
         set diff, no LLM.)
     synthesis_timeout:
         Per-agent timeout override in seconds. ``None`` = auto-compute
         from video count (``300 + 60 × n_videos``).
+    profile:
+        Agent Teams profile name (``"standard"``, ``"parallel"``,
+        ``"full"``, ``"parallel+full"``) or ``"auto"`` / ``None`` to
+        auto-pick from video count. See ``_select_profile``.
     """
     am = agent_models or {}
     alpha_model = am.get("alpha", model)
     beta_model = am.get("beta", model)
     leader_model = am.get("leader", model)
+    reviewer_model = am.get("reviewer", model)
 
     timeouts = compute_synthesis_timeouts(len(videos), override=synthesis_timeout)
 
@@ -197,6 +258,11 @@ def run_stage_synthesis(
             skip_reason=f"playlist has {len(videos)} videos (< {min_playlist_size})",
         )
 
+    try:
+        resolved_profile = _select_profile(len(videos), profile)
+    except ValueError as e:
+        return SynthesisStageResult(error=f"invalid profile: {e}")
+
     vault_root = get_vault_root()
     playlist_folder_name = folder_name_override or format_playlist_folder_name(
         run_time, playlist_title
@@ -208,16 +274,30 @@ def run_stage_synthesis(
     agent_results: list[AgentCallResult] = []
 
     try:
-        topics, alpha_res = call_alpha(
-            videos,
-            learning_md_bodies,
-            model=alpha_model,
-            playlist_title=playlist_title,
-            timeout=timeouts["alpha"],
-        )
+        if resolved_profile.uses_parallel_alpha:
+            topics, alpha_results = call_alpha_batched(
+                videos,
+                learning_md_bodies,
+                model=alpha_model,
+                playlist_title=playlist_title,
+                timeout=timeouts["alpha"],
+            )
+            agent_results.extend(alpha_results)
+        else:
+            topics, alpha_res = call_alpha(
+                videos,
+                learning_md_bodies,
+                model=alpha_model,
+                playlist_title=playlist_title,
+                timeout=timeouts["alpha"],
+            )
+            agent_results.append(alpha_res)
     except SynthesisParseError as e:
-        return SynthesisStageResult(error=f"alpha_parse_failed: {e}")
-    agent_results.append(alpha_res)
+        return SynthesisStageResult(
+            error=f"alpha_parse_failed: {e}",
+            profile=resolved_profile,
+            agent_results=agent_results,
+        )
 
     try:
         chapters, beta_res = call_beta(
@@ -225,7 +305,10 @@ def run_stage_synthesis(
         )
     except SynthesisParseError as e:
         return SynthesisStageResult(
-            topics=topics, agent_results=agent_results, error=f"beta_parse_failed: {e}"
+            topics=topics,
+            agent_results=agent_results,
+            error=f"beta_parse_failed: {e}",
+            profile=resolved_profile,
         )
     agent_results.append(beta_res)
 
@@ -274,8 +357,48 @@ def run_stage_synthesis(
             coverage=coverage,
             agent_results=agent_results,
             error=f"leader_parse_failed: {e}",
+            profile=resolved_profile,
         )
     agent_results.append(leader_res)
+
+    # Reviewer pass (profile = full / parallel+full). One-shot: if fixes
+    # are non-empty, re-render Leader once with the feedback appended.
+    # We do not loop further — the quality gate is bounded to avoid
+    # unbounded re-renders and keep costs predictable.
+    reviewer_feedback: ReviewerFeedback | None = None
+    if resolved_profile.uses_reviewer:
+        try:
+            reviewer_feedback, reviewer_res = call_reviewer(
+                leader_output,
+                topics,
+                chapters,
+                coverage,
+                model=reviewer_model,
+                timeout=timeouts["leader"],
+            )
+            agent_results.append(reviewer_res)
+        except SynthesisParseError:
+            # Reviewer is advisory. On parse failure, proceed with the
+            # original leader output rather than aborting the stage.
+            reviewer_feedback = None
+
+        if reviewer_feedback and reviewer_feedback.needs_revision:
+            try:
+                leader_output, leader_retry_res = rerun_leader_with_feedback(
+                    videos,
+                    learning_md_bodies,
+                    topics,
+                    chapters,
+                    coverage,
+                    reviewer_feedback,
+                    model=leader_model,
+                    playlist_title=playlist_title,
+                    timeout=timeouts["leader"],
+                )
+                agent_results.append(leader_retry_res)
+            except SynthesisParseError:
+                # Revision re-run failed: keep the original leader output.
+                pass
 
     if dry_run:
         return SynthesisStageResult(
@@ -284,6 +407,8 @@ def run_stage_synthesis(
             coverage=coverage,
             leader_output=leader_output,
             agent_results=agent_results,
+            profile=resolved_profile,
+            reviewer_feedback=reviewer_feedback,
         )
 
     # Write files
@@ -314,38 +439,45 @@ def run_stage_synthesis(
     meta_dir = playlist_dir / META_SUBDIR
     meta_dir.mkdir(parents=True, exist_ok=True)
     meta_path = meta_dir / DUPLICATE_SCORE_FILENAME
-    meta_path.write_text(
-        json.dumps(
+    meta_payload: dict[str, object] = {
+        "profile": resolved_profile.value,
+        "topics": [
             {
-                "topics": [
-                    {
-                        "topic_id": t.topic_id,
-                        "label": t.label,
-                        "aliases": t.aliases,
-                        "source_videos": t.source_videos,
-                        "duplication_count": t.duplication_count,
-                        "category": t.category,
-                        "summary": t.summary,
-                    }
-                    for t in topics
-                ],
-                "chapters": [
-                    {
-                        "index": c.index,
-                        "label": c.label,
-                        "category": c.category,
-                        "topic_ids": c.topic_ids,
-                    }
-                    for c in chapters
-                ],
-                "coverage": {
-                    "covered_topic_ids": coverage.covered_topic_ids,
-                    "missing_topic_ids": coverage.missing_topic_ids,
-                },
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
+                "topic_id": t.topic_id,
+                "label": t.label,
+                "aliases": t.aliases,
+                "source_videos": t.source_videos,
+                "duplication_count": t.duplication_count,
+                "category": t.category,
+                "summary": t.summary,
+            }
+            for t in topics
+        ],
+        "chapters": [
+            {
+                "index": c.index,
+                "label": c.label,
+                "category": c.category,
+                "topic_ids": c.topic_ids,
+            }
+            for c in chapters
+        ],
+        "coverage": {
+            "covered_topic_ids": coverage.covered_topic_ids,
+            "missing_topic_ids": coverage.missing_topic_ids,
+        },
+    }
+    if reviewer_feedback is not None:
+        meta_payload["reviewer"] = {
+            "needs_revision": reviewer_feedback.needs_revision,
+            "summary": reviewer_feedback.summary,
+            "fixes": [
+                {"target": f.target, "reason": f.reason, "patch_hint": f.patch_hint}
+                for f in reviewer_feedback.fixes
+            ],
+        }
+    meta_path.write_text(
+        json.dumps(meta_payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -358,4 +490,6 @@ def run_stage_synthesis(
         chapter_paths=chapter_paths,
         meta_path=meta_path,
         agent_results=agent_results,
+        profile=resolved_profile,
+        reviewer_feedback=reviewer_feedback,
     )
