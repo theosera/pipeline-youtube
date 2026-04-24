@@ -5,17 +5,66 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  lint:
+    name: Lint & format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Ruff check
+        run: uv run ruff check pipeline_youtube/ tests/
+
+      - name: Ruff format check
+        run: uv run ruff format --check pipeline_youtube/ tests/
+
+  typecheck:
+    name: Type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: mypy
+        run: uv run mypy pipeline_youtube/ --ignore-missing-imports
+
   test:
+    name: Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.13"]
-
     steps:
       - uses: actions/checkout@v6
 
@@ -30,17 +79,36 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Lint (ruff check)
-        run: uv run ruff check pipeline_youtube/ tests/
+      - name: Run tests with coverage
+        run: uv run --with pytest-cov pytest tests/ -q --tb=short --cov=pipeline_youtube --cov-report=xml --cov-report=term
 
-      - name: Format check (ruff format --check)
-        run: uv run ruff format --check pipeline_youtube/ tests/
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-py${{ matrix.python-version }}
+          path: coverage.xml
+          retention-days: 7
+          if-no-files-found: ignore
 
-      - name: Type check
-        run: uv run mypy pipeline_youtube/ --ignore-missing-imports
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    # Advisory-only: don't fail the whole pipeline on a transitively-pinned CVE.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
 
-      - name: Run tests
-        run: uv run pytest tests/ -q --tb=short
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
 
-      - name: Audit dependencies (pip-audit)
-        run: uv run --with pip-audit pip-audit
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: pip-audit
+        run: uv run --with pip-audit pip-audit --disable-pip
