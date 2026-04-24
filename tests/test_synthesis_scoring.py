@@ -8,12 +8,14 @@ import pytest
 
 from pipeline_youtube.synthesis.scoring import (
     LeaderOutput,
+    ReviewerFeedback,
     SynthesisParseError,
     derive_category,
     extract_json,
     parse_alpha_topics,
     parse_beta_chapters,
     parse_leader_output,
+    parse_reviewer_output,
 )
 
 
@@ -243,3 +245,77 @@ class TestParseLeaderOutput:
         raw = json.dumps({"moc": {"title": "x", "body_markdown": "y"}, "chapters": "bogus"})
         with pytest.raises(SynthesisParseError, match="chapters"):
             parse_leader_output(raw)
+
+
+class TestParseReviewerOutput:
+    def test_no_revision_needed(self):
+        raw = json.dumps({"needs_revision": False, "fixes": []})
+        out = parse_reviewer_output(raw)
+        assert isinstance(out, ReviewerFeedback)
+        assert out.needs_revision is False
+        assert out.fixes == []
+
+    def test_with_fixes(self):
+        raw = json.dumps(
+            {
+                "needs_revision": True,
+                "summary": "missing cites",
+                "fixes": [
+                    {
+                        "target": "chapter:2",
+                        "reason": "citation missing",
+                        "patch_hint": "add ref",
+                    }
+                ],
+            }
+        )
+        out = parse_reviewer_output(raw)
+        assert out.needs_revision is True
+        assert out.summary == "missing cites"
+        assert len(out.fixes) == 1
+        assert out.fixes[0].target == "chapter:2"
+
+    def test_needs_revision_requires_fixes_list(self):
+        # needs_revision=True without fixes collapses to False to avoid
+        # triggering an unnecessary re-render.
+        raw = json.dumps({"needs_revision": True, "fixes": []})
+        out = parse_reviewer_output(raw)
+        assert out.needs_revision is False
+
+    def test_malformed_json_returns_no_revision(self):
+        out = parse_reviewer_output("garbage")
+        assert out.needs_revision is False
+        assert out.fixes == []
+
+    def test_non_dict_top_level_returns_no_revision(self):
+        # Valid JSON but a list at the top level — the docstring promises
+        # a safe default rather than an AttributeError on ``.get``.
+        out = parse_reviewer_output('[{"target": "moc"}]')
+        assert out.needs_revision is False
+        assert out.fixes == []
+        assert out.summary == ""
+
+    def test_scalar_top_level_returns_no_revision(self):
+        out = parse_reviewer_output('"just a string"')
+        assert out.needs_revision is False
+
+    def test_missing_fields_defaults(self):
+        raw = json.dumps({})
+        out = parse_reviewer_output(raw)
+        assert out.needs_revision is False
+        assert out.fixes == []
+        assert out.summary == ""
+
+    def test_ignores_non_dict_fixes(self):
+        raw = json.dumps(
+            {
+                "needs_revision": True,
+                "fixes": [
+                    "not a dict",
+                    {"target": "moc", "reason": "r", "patch_hint": "p"},
+                ],
+            }
+        )
+        out = parse_reviewer_output(raw)
+        assert len(out.fixes) == 1
+        assert out.fixes[0].target == "moc"

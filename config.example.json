@@ -5,9 +5,11 @@
     "stage_04": "sonnet",
     "alpha": "haiku",
     "beta": "sonnet",
-    "leader": "opus"
+    "leader": "opus",
+    "reviewer": "sonnet"
   },
   "capture_backend": "host",
   "capture_docker_image": "pipeline-youtube-capture:latest",
-  "synthesis_timeout": "auto"
+  "synthesis_timeout": "auto",
+  "synthesis_profile": "auto"
 }

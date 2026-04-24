@@ -52,10 +52,12 @@ from .synthesis.agents import compute_synthesis_timeouts
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
-_MODEL_KEYS = frozenset({"router", "stage_02", "stage_04", "alpha", "beta", "leader"})
+_MODEL_KEYS = frozenset({"router", "stage_02", "stage_04", "alpha", "beta", "leader", "reviewer"})
 # "gamma" accepted silently for backward-compat with existing config.json,
 # but the γ LLM role has been replaced by a Python set diff — the value is ignored.
 _DEPRECATED_MODEL_KEYS = frozenset({"gamma"})
+
+_SYNTHESIS_PROFILE_CHOICES = ("auto", "standard", "parallel", "full", "parallel+full")
 
 
 _CAPTURE_BACKENDS = frozenset({"host", "docker"})
@@ -72,6 +74,7 @@ class CliConfig:
     capture_backend: str = "host"
     capture_docker_image: str = "pipeline-youtube-capture:latest"
     synthesis_timeout: int | None = None
+    synthesis_profile: str | None = None
 
 
 def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
@@ -140,6 +143,20 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
             f"got {synthesis_timeout_raw!r}"
         )
 
+    synthesis_profile_raw = data.get("synthesis_profile")
+    if synthesis_profile_raw is None:
+        synthesis_profile: str | None = None
+    elif (
+        isinstance(synthesis_profile_raw, str)
+        and synthesis_profile_raw in _SYNTHESIS_PROFILE_CHOICES
+    ):
+        synthesis_profile = synthesis_profile_raw
+    else:
+        raise click.UsageError(
+            f"config.json: synthesis_profile must be one of "
+            f"{list(_SYNTHESIS_PROFILE_CHOICES)!r}, got {synthesis_profile_raw!r}"
+        )
+
     return CliConfig(
         vault_root=path,
         models=models,
@@ -147,6 +164,7 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
         capture_backend=capture_backend,
         capture_docker_image=capture_docker_image,
         synthesis_timeout=synthesis_timeout,
+        synthesis_profile=synthesis_profile,
     )
 
 
@@ -244,9 +262,12 @@ def _print_cost_breakdown(
         _add("stage_04", r.learning_model, r.learning_cost_usd)
 
     if synthesis_result is not None and getattr(synthesis_result, "agent_results", None):
-        roles = ("alpha", "beta", "leader")
-        for role, agent_res in zip(roles, synthesis_result.agent_results, strict=False):
-            _add(role, agent_res.response.model, agent_res.total_cost_usd)
+        # With profile-aware orchestration, the agent_results sequence
+        # varies (parallel α spawns multiple, reviewer adds one, etc.).
+        # Aggregate by the prompt's system-prompt role rather than by
+        # positional role labels.
+        for agent_res in synthesis_result.agent_results:
+            _add("synthesis", agent_res.response.model, agent_res.total_cost_usd)
 
     if not stage_totals:
         return
@@ -630,6 +651,16 @@ async def _run_videos_concurrent(
         "Default: auto (300 + 60 × video_count). Overrides config.json."
     ),
 )
+@click.option(
+    "--synthesis-profile",
+    type=click.Choice(list(_SYNTHESIS_PROFILE_CHOICES)),
+    default=None,
+    help=(
+        "Agent Teams composition for Stage 05. 'auto' (default) picks "
+        "'standard' (≤15 videos), 'parallel' (16-30), or 'parallel+full' "
+        "(>30). 'full' adds a Reviewer pass. Overrides config.json."
+    ),
+)
 def cli(
     url: str | None,
     dry_run: bool,
@@ -646,6 +677,7 @@ def cli(
     resume_reviewed: bool,
     capture_backend: str | None,
     synthesis_timeout: int | None,
+    synthesis_profile: str | None,
 ) -> None:
     """Process a YouTube playlist or single-video URL end-to-end."""
     if not url:
@@ -723,6 +755,7 @@ def cli(
         click.echo("capture_backend: host")
 
     effective_synthesis_timeout = synthesis_timeout or cfg.synthesis_timeout
+    effective_synthesis_profile = synthesis_profile or cfg.synthesis_profile or "auto"
 
     click.echo(f"vault_root: {vault_root}")
     click.echo(f"dry_run: {dry_run}")
@@ -736,6 +769,7 @@ def cli(
         if effective_synthesis_timeout
         else "synthesis_timeout: auto"
     )
+    click.echo(f"synthesis_profile: {effective_synthesis_profile}")
 
     click.echo("fetching metadata...")
     videos = fetch_metadata(url)
@@ -879,12 +913,13 @@ def cli(
         run_time=run_time,
         playlist_title=playlist_title,
         model=model,
-        agent_models={k: models[k] for k in ("alpha", "beta", "leader")},
+        agent_models={k: models[k] for k in ("alpha", "beta", "leader", "reviewer")},
         min_playlist_size=min_playlist_size,
         max_chapters=max_chapters,
         dry_run=dry_run,
         folder_name_override=folder_override,
         synthesis_timeout=effective_synthesis_timeout,
+        profile=effective_synthesis_profile,
     )
 
     if synthesis_result.skipped:

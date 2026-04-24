@@ -42,6 +42,7 @@ class TestLoadConfig:
             "alpha": "sonnet",
             "beta": "sonnet",
             "leader": "sonnet",
+            "reviewer": "sonnet",
         }
 
     def test_partial_models_filled_with_fallback(self, tmp_path: Path):

@@ -49,8 +49,10 @@ class TestCostBreakdown:
 
     def test_synthesis_adds_agents(self, capsys):
         results = [_result("a", 0.01, "haiku", 0.05, "sonnet")]
-        # γ was removed (Python set diff replaces the LLM call), so synthesis
-        # agent_results is now alpha + beta + leader = 3 entries.
+        # Profile-aware orchestration may emit a variable number of agent
+        # calls (parallel α spawns N, reviewer adds one, etc.), so the
+        # breakdown aggregates all Stage 05 LLM calls under a single
+        # "synthesis" label instead of positional role names.
         synth = SimpleNamespace(
             agent_results=[
                 SimpleNamespace(response=SimpleNamespace(model="haiku"), total_cost_usd=0.02),
@@ -60,10 +62,8 @@ class TestCostBreakdown:
         )
         _print_cost_breakdown(results, synthesis_result=synth)
         out = capsys.readouterr().out
-        for role in ("alpha", "beta", "leader"):
-            assert role in out
+        assert "synthesis" in out
         assert "gamma" not in out
-        assert "opus" in out
         # total = 0.01 + 0.05 + 0.02 + 0.03 + 0.15 = 0.26
         assert "$  0.260" in out
 
