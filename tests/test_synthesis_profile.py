@@ -140,9 +140,17 @@ class TestSelectProfile:
     def test_boundary_fifteen_is_standard(self):
         assert _select_profile(15, None) is SynthesisProfile.STANDARD
 
+    def test_boundary_sixteen_crosses_to_parallel(self):
+        # Guard against off-by-one on _AUTO_STANDARD_MAX_VIDEOS (15).
+        assert _select_profile(16, None) is SynthesisProfile.PARALLEL
+
     def test_mid_range_auto_selects_parallel(self):
         assert _select_profile(20, None) is SynthesisProfile.PARALLEL
         assert _select_profile(30, None) is SynthesisProfile.PARALLEL
+
+    def test_boundary_thirty_one_crosses_to_parallel_full(self):
+        # Guard against off-by-one on _AUTO_PARALLEL_MAX_VIDEOS (30).
+        assert _select_profile(31, None) is SynthesisProfile.PARALLEL_FULL
 
     def test_large_auto_selects_parallel_full(self):
         assert _select_profile(50, None) is SynthesisProfile.PARALLEL_FULL
@@ -347,3 +355,50 @@ class TestRunStageWithProfile:
         assert result.meta_path is not None
         meta = json.loads(result.meta_path.read_text(encoding="utf-8"))
         assert meta["profile"] == "standard"
+        assert meta["reviewer_status"] == "skipped"
+
+    def test_meta_records_reviewer_ok(self, vault, monkeypatch):
+        _queue_invoke(monkeypatch, [ALPHA_OUT, BETA_OUT, LEADER_OUT, REVIEWER_OK])
+        videos = [_video(i) for i in range(1, 4)]
+        bodies = [f"body{i}" for i in range(1, 4)]
+        result = run_stage_synthesis(
+            videos,
+            bodies,
+            run_time=datetime(2026, 4, 15),
+            playlist_title="Test Playlist",
+            profile="full",
+        )
+        meta = json.loads(result.meta_path.read_text(encoding="utf-8"))
+        assert meta["reviewer_status"] == "ok"
+
+    def test_reviewer_transient_failure_keeps_leader_output(self, vault, monkeypatch):
+        """Non-parse exceptions from call_reviewer must not abort the stage."""
+        call_count = {"n": 0}
+
+        def flaky_invoke(**kw):
+            call_count["n"] += 1
+            # Reviewer is the 4th call in the full profile (α, β, Leader,
+            # Reviewer). Simulate a transient network / CLI failure that
+            # the old narrow handler would have let escape.
+            if call_count["n"] == 4:
+                raise TimeoutError("claude CLI timeout")
+            return _fake([ALPHA_OUT, BETA_OUT, LEADER_OUT][call_count["n"] - 1])
+
+        monkeypatch.setattr(agents_mod, "invoke_claude", flaky_invoke)
+
+        videos = [_video(i) for i in range(1, 4)]
+        bodies = [f"body{i}" for i in range(1, 4)]
+        result = run_stage_synthesis(
+            videos,
+            bodies,
+            run_time=datetime(2026, 4, 15),
+            playlist_title="Test Playlist",
+            profile="full",
+        )
+        # Stage completes with the original Leader output; Reviewer's
+        # failure is logged and recorded in meta.
+        assert result.error is None
+        assert result.leader_output is not None
+        assert result.reviewer_feedback is None
+        meta = json.loads(result.meta_path.read_text(encoding="utf-8"))
+        assert meta["reviewer_status"] == "failed"

@@ -367,6 +367,12 @@ def parse_reviewer_output(raw: str) -> ReviewerFeedback:
         data = extract_json(raw)
     except SynthesisParseError:
         return ReviewerFeedback(needs_revision=False)
+    if not isinstance(data, dict):
+        # extract_json may legitimately return a list or scalar for valid
+        # JSON that isn't an object (e.g. ``[{"target":"moc"}]``). The
+        # docstring promises a safe default in that case rather than an
+        # AttributeError on ``.get``.
+        return ReviewerFeedback(needs_revision=False)
 
     needs = bool(data.get("needs_revision"))
     fixes_raw = data.get("fixes") or []

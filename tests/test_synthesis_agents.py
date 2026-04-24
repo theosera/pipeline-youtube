@@ -510,6 +510,26 @@ class TestMergeTopics:
         assert merged[0].duplication_count == 3
         assert merged[0].category == "core"
 
+    def test_dedup_within_single_topic_source_videos(self):
+        # α sometimes repeats a video_id within a single topic entry
+        # (same concept discussed at multiple timestamps). These
+        # intra-topic duplicates must not inflate duplication_count.
+        batch = [
+            Topic(
+                topic_id="t001",
+                label="X",
+                source_videos=["v1", "v1", "v2"],
+                duplication_count=3,
+                category="core",
+            )
+        ]
+        merged = merge_topics([batch])
+        assert len(merged) == 1
+        assert merged[0].source_videos == ["v1", "v2"]
+        # 2 distinct sources → supporting, not core
+        assert merged[0].duplication_count == 2
+        assert merged[0].category == "supporting"
+
     def test_union_source_videos_dedup(self):
         batch_a = [
             Topic(
@@ -635,6 +655,45 @@ class TestCallAlphaBatched:
         merged, results = call_alpha_batched([], [])
         assert merged == []
         assert results == []
+
+    def test_single_batch_failure_preserves_others(self, monkeypatch):
+        # Batch 1 returns valid α JSON; batch 2 returns garbage that
+        # fails to parse. The function must return the topics from
+        # batch 1 rather than aborting the whole stage.
+        queue = [BATCH_OUT_1, "not valid json"]
+
+        def fake_invoke(**kw):
+            return _fake_response(queue.pop(0))
+
+        monkeypatch.setattr(agents_mod, "invoke_claude", fake_invoke)
+
+        videos = [_video(f"vid{i}", f"t{i}") for i in range(1, 5)]
+        bodies = [f"body{i}" for i in range(1, 5)]
+        merged, results = call_alpha_batched(
+            videos,
+            bodies,
+            batch_size=2,
+            playlist_title="Playlist",
+        )
+
+        # 1 batch succeeded, so 1 AgentCallResult and the topics from
+        # BATCH_OUT_1 (label "shared") survive the merge.
+        assert len(results) == 1
+        assert len(merged) == 1
+        assert merged[0].label == "shared"
+
+    def test_all_batches_failing_raises(self, monkeypatch):
+        queue = ["bad 1", "bad 2"]
+
+        def fake_invoke(**kw):
+            return _fake_response(queue.pop(0))
+
+        monkeypatch.setattr(agents_mod, "invoke_claude", fake_invoke)
+
+        videos = [_video(f"vid{i}", f"t{i}") for i in range(1, 5)]
+        bodies = [f"body{i}" for i in range(1, 5)]
+        with pytest.raises(SynthesisParseError, match="all .* α batches failed"):
+            call_alpha_batched(videos, bodies, batch_size=2, playlist_title="Playlist")
 
 
 # =====================================================

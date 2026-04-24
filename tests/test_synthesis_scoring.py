@@ -287,6 +287,18 @@ class TestParseReviewerOutput:
         assert out.needs_revision is False
         assert out.fixes == []
 
+    def test_non_dict_top_level_returns_no_revision(self):
+        # Valid JSON but a list at the top level — the docstring promises
+        # a safe default rather than an AttributeError on ``.get``.
+        out = parse_reviewer_output('[{"target": "moc"}]')
+        assert out.needs_revision is False
+        assert out.fixes == []
+        assert out.summary == ""
+
+    def test_scalar_top_level_returns_no_revision(self):
+        out = parse_reviewer_output('"just a string"')
+        assert out.needs_revision is False
+
     def test_missing_fields_defaults(self):
         raw = json.dumps({})
         out = parse_reviewer_output(raw)

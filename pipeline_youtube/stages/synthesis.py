@@ -365,8 +365,16 @@ def run_stage_synthesis(
     # are non-empty, re-render Leader once with the feedback appended.
     # We do not loop further — the quality gate is bounded to avoid
     # unbounded re-renders and keep costs predictable.
+    #
+    # The Reviewer is advisory: any failure (parse error, claude CLI
+    # timeout, subprocess crash, transient network error) must fall back
+    # to the original Leader output rather than aborting a stage that
+    # has already produced valid α/β/Leader results. We catch a broad
+    # Exception for that reason.
     reviewer_feedback: ReviewerFeedback | None = None
+    reviewer_status: str = "skipped"
     if resolved_profile.uses_reviewer:
+        reviewer_status = "failed"
         try:
             reviewer_feedback, reviewer_res = call_reviewer(
                 leader_output,
@@ -377,9 +385,8 @@ def run_stage_synthesis(
                 timeout=timeouts["leader"],
             )
             agent_results.append(reviewer_res)
-        except SynthesisParseError:
-            # Reviewer is advisory. On parse failure, proceed with the
-            # original leader output rather than aborting the stage.
+            reviewer_status = "ok"
+        except Exception:
             reviewer_feedback = None
 
         if reviewer_feedback and reviewer_feedback.needs_revision:
@@ -396,7 +403,7 @@ def run_stage_synthesis(
                     timeout=timeouts["leader"],
                 )
                 agent_results.append(leader_retry_res)
-            except SynthesisParseError:
+            except Exception:
                 # Revision re-run failed: keep the original leader output.
                 pass
 
@@ -467,6 +474,7 @@ def run_stage_synthesis(
             "missing_topic_ids": coverage.missing_topic_ids,
         },
     }
+    meta_payload["reviewer_status"] = reviewer_status
     if reviewer_feedback is not None:
         meta_payload["reviewer"] = {
             "needs_revision": reviewer_feedback.needs_revision,

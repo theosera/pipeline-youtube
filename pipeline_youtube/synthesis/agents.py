@@ -18,7 +18,8 @@ session chaining is needed.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
 from ..playlist import VideoMeta
@@ -29,12 +30,15 @@ from .scoring import (
     CoverageReport,
     LeaderOutput,
     ReviewerFeedback,
+    SynthesisParseError,
     Topic,
     parse_alpha_topics,
     parse_beta_chapters,
     parse_leader_output,
     parse_reviewer_output,
 )
+
+_LOG = logging.getLogger(__name__)
 
 # =====================================================
 # Dynamic timeout computation
@@ -189,7 +193,7 @@ LEADER_SYSTEM_PROMPT = """あなたはプレイリスト横断の学習ハンズ
 REVIEWER_SYSTEM_PROMPT = """あなたは Leader が生成した MOC + 章本文を検査する最終校正者です。
 
 ## 入力
-`<untrusted_content>` 内に Leader 出力 (moc + chapters)、α topics、β chapters、coverage、元動画の 04 md が同梱される。
+`<untrusted_content>` 内に Leader 出力 (moc + chapters)、α topics、β chapters、coverage が同梱される。元動画の本文は渡されないため、出典検証は Leader 出力内のリンク記法 `[[...#^MM-SS]]` の形式遵守のみをチェックし、リンク先の実在確認は行わない。
 
 ## 検査項目 (いずれかに該当すれば `needs_revision: true`)
 1. **出典不足**: 各章の `## 核心要素` の各項目末尾に `(出典: [[...#^MM-SS]])` が付与されているか
@@ -669,15 +673,21 @@ def merge_topics(batched: list[list[Topic]]) -> list[Topic]:
             key = _norm(topic.label)
             if not key:
                 continue
+            # Dedupe source_videos up front: α occasionally returns the
+            # same video_id multiple times for a single topic (e.g. when
+            # a concept is discussed at multiple timestamps in one
+            # video). Counting those as distinct would inflate
+            # duplication_count and incorrectly promote `unique` →
+            # `supporting`, skewing downstream chapter category logic.
+            initial_sources = list(dict.fromkeys(topic.source_videos))
             if key not in merged:
                 order.append(key)
                 merged[key] = {
                     "label": topic.label,
                     "aliases": list(topic.aliases),
-                    "source_videos": list(topic.source_videos),
+                    "source_videos": initial_sources,
                     "summary": topic.summary,
                     "excerpts": list(topic.excerpts),
-                    "category_hint": topic.category,
                 }
             else:
                 entry = merged[key]
@@ -689,7 +699,7 @@ def merge_topics(batched: list[list[Topic]]) -> list[Topic]:
                         aliases_list.append(a)
                 src_list = entry["source_videos"]
                 assert isinstance(src_list, list)
-                for v in topic.source_videos:
+                for v in initial_sources:
                     if v not in src_list:
                         src_list.append(v)
                 excerpts_list = entry["excerpts"]
@@ -775,9 +785,47 @@ def call_alpha_batched(
     workers = min(max_workers, len(batches)) or 1
     batched_topics: list[list[Topic]] = []
     results: list[AgentCallResult] = []
+
+    # Per-future error handling: a single batch failure must not discard
+    # the successful ones. For a 30-video playlist split into 3 batches,
+    # a transient parse error on batch 3/3 should still yield a merged
+    # result from batches 1+2 rather than aborting the whole α stage.
+    # The orchestrator treats an empty topic list as an upstream failure
+    # via SynthesisParseError, preserving the existing "all batches
+    # failed → stage error" semantics.
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for topics, res in pool.map(run_one, batches):
-            batched_topics.append(topics)
-            results.append(res)
+        future_to_index = {pool.submit(run_one, batch): i for i, batch in enumerate(batches)}
+        indexed_topics: dict[int, list[Topic]] = {}
+        indexed_results: dict[int, AgentCallResult] = {}
+        failures: list[tuple[int, Exception]] = []
+        for future in as_completed(future_to_index):
+            idx = future_to_index[future]
+            try:
+                topics, res = future.result()
+            except Exception as exc:  # noqa: BLE001 — per-batch isolation
+                failures.append((idx, exc))
+                _LOG.warning(
+                    "α batch %d/%d failed: %s",
+                    idx + 1,
+                    len(batches),
+                    exc,
+                )
+                continue
+            indexed_topics[idx] = topics
+            indexed_results[idx] = res
+
+    if not indexed_topics:
+        # Every batch failed — preserve the existing "parse failure"
+        # contract so the orchestrator reports alpha_parse_failed.
+        first_exc = failures[0][1] if failures else None
+        raise SynthesisParseError(
+            f"all {len(batches)} α batches failed; first error: {first_exc!r}"
+        )
+
+    # Restore deterministic ordering so merge_topics produces a stable
+    # topic_id sequence regardless of future completion order.
+    for i in sorted(indexed_topics):
+        batched_topics.append(indexed_topics[i])
+        results.append(indexed_results[i])
     merged = merge_topics(batched_topics)
     return merged, results

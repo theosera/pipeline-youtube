@@ -13,7 +13,7 @@ Stage 05 Synthesis の Agent Teams は **プロファイル** でエージェン
 
 `auto` 選択時の対応表:
 
-```
+```text
 n_videos < 3            → skip
 3  ≤ n_videos ≤ 15      → standard
 15 < n_videos ≤ 30      → parallel
@@ -77,7 +77,7 @@ uv run python -m pipeline_youtube.main <url> --synthesis-profile parallel+full
 
 ## 決定フロー (要約)
 
-```
+```text
 ┌──────────────────────────┐
 │ 明示フラグ or config あり? │
 └──────────┬───────────────┘
