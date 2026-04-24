@@ -111,4 +111,4 @@ jobs:
         run: uv sync
 
       - name: pip-audit
-        run: uv run --with pip-audit pip-audit --disable-pip
+        run: uv run --with pip-audit pip-audit
