@@ -20,17 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.13
-
-      - name: Install dependencies
-        run: uv sync
+      - uses: ./.github/actions/setup-python-uv
 
       - name: Ruff check
         run: uv run ruff check pipeline_youtube/ tests/
@@ -43,17 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.13
-
-      - name: Install dependencies
-        run: uv sync
+      - uses: ./.github/actions/setup-python-uv
 
       # mypy options live in [tool.mypy] in pyproject.toml so CI and local runs match.
       - name: mypy
@@ -68,17 +48,9 @@ jobs:
         python-version: ["3.13"]
     steps:
       - uses: actions/checkout@v6
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
+      - uses: ./.github/actions/setup-python-uv
         with:
-          enable-cache: true
-
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: uv sync
+          python-version: ${{ matrix.python-version }}
 
       - name: Run tests with coverage
         run: uv run --with pytest-cov pytest tests/ -q --tb=short --cov=pipeline_youtube --cov-report=xml --cov-report=term
@@ -97,21 +69,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-python-uv
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.13
-
-      - name: Install dependencies
-        run: uv sync
-
-      # Advisory: surface findings as warning annotations without failing the pipeline.
-      # Promote to a required check once known transitive vulnerabilities are addressed.
+      # Distinguish vulnerability findings (advisory) from tool failures (real errors):
+      #   exit 0  -> clean
+      #   exit 1  -> vulnerabilities found; emit a warning annotation, don't fail
+      #   other   -> resolver / network / tooling failure; surface as error and fail
+      #              so dependency auditing isn't silently disabled.
       - name: pip-audit (advisory)
         run: |
-          uv run --with pip-audit pip-audit \
-            || echo "::warning::pip-audit reported findings — see job log."
+          rc=0
+          uv run --with pip-audit pip-audit || rc=$?
+          case "$rc" in
+            0) ;;
+            1) echo "::warning::pip-audit reported findings — see job log." ;;
+            *) echo "::error::pip-audit failed to run (exit $rc)"; exit "$rc" ;;
+          esac
