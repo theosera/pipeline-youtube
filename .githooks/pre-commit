@@ -1,0 +1,13 @@
+#!/bin/sh
+# Managed hook — do not edit .git/hooks/ directly; changes must go through .githooks/
+
+# Resolve pre-commit: uv run (handles venv automatically), then bare PATH
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+if command -v uv >/dev/null 2>&1 && [ -f "$REPO_ROOT/pyproject.toml" ]; then
+  exec uv run --project "$REPO_ROOT" python -m pre_commit run --hook-stage pre-commit
+elif command -v pre-commit >/dev/null 2>&1; then
+  exec pre-commit run --hook-stage pre-commit
+else
+  echo "[pre-commit hook] pre-commit not found — skipping (run: uv sync)" >&2
+  exit 0
+fi

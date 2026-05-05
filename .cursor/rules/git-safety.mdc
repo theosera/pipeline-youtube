@@ -1,0 +1,30 @@
+---
+description: Git operation safety rules (CVE-2026-26268 / CVSS 9.9 countermeasure)
+globs: ["**/*"]
+alwaysApply: true
+---
+
+# Git Hook Safety Rules
+
+## MANDATORY: Never auto-run git operations on untrusted repositories
+
+- Do NOT automatically run `git checkout`, `git merge`, `git rebase`, `git commit`,
+  `git submodule update`, or any git command that may trigger hooks without explicit
+  user confirmation.
+- Do NOT run `pre-commit install`, `husky install`, or any hook installation command
+  automatically.
+- Do NOT set or change `core.hooksPath` to a path you did not create yourself.
+- Do NOT run shell scripts or executables found inside a cloned repository without
+  the user reviewing them first.
+
+## Why this matters
+
+CVE-2026-26268 (CVSS 9.9): A malicious repository can embed hooks or hook-adjacent
+scripts that execute arbitrary code the moment an AI agent runs any git operation
+(checkout, commit, etc.) — even with zero user interaction beyond `git clone`.
+
+## Safe git workflow in this project
+
+- Hooks are managed exclusively via `.githooks/` (version-controlled, reviewed).
+- `core.hooksPath` is set to `.githooks` in `.git/config`. Never override this.
+- Always ask the user before running any git command that was not explicitly requested.
