@@ -786,13 +786,9 @@ def call_alpha_batched(
     batched_topics: list[list[Topic]] = []
     results: list[AgentCallResult] = []
 
-    # Per-future error handling: a single batch failure must not discard
-    # the successful ones. For a 30-video playlist split into 3 batches,
-    # a transient parse error on batch 3/3 should still yield a merged
-    # result from batches 1+2 rather than aborting the whole α stage.
-    # The orchestrator treats an empty topic list as an upstream failure
-    # via SynthesisParseError, preserving the existing "all batches
-    # failed → stage error" semantics.
+    # Per-future error handling keeps the executor drained before raising.
+    # Synthesis is an all-inputs operation: continuing after one α batch
+    # fails would silently omit that batch's topics from β/coverage/meta.
     with ThreadPoolExecutor(max_workers=workers) as pool:
         future_to_index = {pool.submit(run_one, batch): i for i, batch in enumerate(batches)}
         indexed_topics: dict[int, list[Topic]] = {}
@@ -814,12 +810,10 @@ def call_alpha_batched(
             indexed_topics[idx] = topics
             indexed_results[idx] = res
 
-    if not indexed_topics:
-        # Every batch failed — preserve the existing "parse failure"
-        # contract so the orchestrator reports alpha_parse_failed.
+    if failures:
         first_exc = failures[0][1] if failures else None
         raise SynthesisParseError(
-            f"all {len(batches)} α batches failed; first error: {first_exc!r}"
+            f"{len(failures)}/{len(batches)} α batches failed; first error: {first_exc!r}"
         )
 
     # Restore deterministic ordering so merge_topics produces a stable

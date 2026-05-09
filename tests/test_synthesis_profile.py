@@ -314,6 +314,28 @@ class TestRunStageWithProfile:
         # Merged topics should have 2 distinct labels
         assert len(result.topics) == 2
 
+    def test_parallel_alpha_partial_failure_aborts_without_writes(self, vault, monkeypatch):
+        # A failed α batch means that a subset of videos has no extracted
+        # topics. Stage 05 must fail closed instead of writing a partial MOC.
+        _queue_invoke(monkeypatch, [ALPHA_OUT, "not valid json"])
+        videos = [_video(i) for i in range(1, 13)]
+        bodies = [f"body{i}" for i in range(1, 13)]
+
+        result = run_stage_synthesis(
+            videos,
+            bodies,
+            run_time=datetime(2026, 4, 15),
+            playlist_title="Test Playlist",
+            profile="parallel",
+        )
+
+        assert result.error is not None
+        assert "alpha_parse_failed" in result.error
+        assert "1/2 α batches failed" in result.error
+        assert result.profile is SynthesisProfile.PARALLEL
+        assert result.moc_path is None
+        assert not result.chapter_paths
+
     def test_invalid_profile_returns_error(self, vault):
         videos = [_video(i) for i in range(1, 4)]
         bodies = [f"body{i}" for i in range(1, 4)]
