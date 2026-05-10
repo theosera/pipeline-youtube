@@ -22,6 +22,7 @@ ahead of time should use `compute_note_paths` (pure path calc, no write).
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -50,6 +51,22 @@ LEGACY_LEARNING_DIR = "04_Lerning_Material"
 # Units that get pre-created as empty placeholders before stages run.
 # 'learning' is excluded — see the module docstring for why.
 DEFAULT_PLACEHOLDER_UNITS: tuple[str, ...] = ("scripts", "summary", "capture")
+
+_NOTE_PATH_RESERVATION_LOCK = threading.Lock()
+_RESERVED_NOTE_PATHS: set[Path] = set()
+
+
+def _resolve_unique_reserved_path(folder: Path, base_name: str, ext: str = ".md") -> Path:
+    """Find an unused path, treating in-process reservations as existing."""
+    candidate = folder / f"{base_name}{ext}"
+    if not candidate.exists() and candidate not in _RESERVED_NOTE_PATHS:
+        return candidate
+    i = 2
+    while True:
+        candidate = folder / f"{base_name}-{i}{ext}"
+        if not candidate.exists() and candidate not in _RESERVED_NOTE_PATHS:
+            return candidate
+        i += 1
 
 
 def compute_note_paths(
@@ -80,12 +97,43 @@ def compute_note_paths(
     return paths
 
 
+def reserve_note_paths(
+    video: VideoMeta,
+    run_time: datetime,
+    *,
+    units: tuple[str, ...] = ("scripts", "summary", "capture", "learning"),
+) -> dict[str, Path]:
+    """Return target md paths and reserve them for this Python process.
+
+    This closes the gap between "path does not exist" checks and later writes
+    when multiple videos run concurrently. The reservation is intentionally
+    in-memory only so Stage 04 still avoids creating an empty placeholder file.
+    """
+    vault_root = get_vault_root()
+    playlist_folder = format_playlist_folder_name(run_time, video.playlist_title)
+    note_base = format_video_note_base(run_time, video.title)
+
+    with _NOTE_PATH_RESERVATION_LOCK:
+        paths: dict[str, Path] = {}
+        for unit_key in units:
+            if unit_key not in UNIT_DIRS:
+                raise ValueError(f"unknown unit key: {unit_key!r}")
+            rel_path = f"{LEARNING_BASE}/{UNIT_DIRS[unit_key]}/{playlist_folder}"
+            safe_rel = ensure_safe_path(rel_path)
+            folder = vault_root / safe_rel
+            paths[unit_key] = _resolve_unique_reserved_path(folder, note_base, ".md")
+
+        _RESERVED_NOTE_PATHS.update(paths.values())
+        return paths
+
+
 def create_placeholder_notes(
     video: VideoMeta,
     run_time: datetime,
     *,
     units: tuple[str, ...] = DEFAULT_PLACEHOLDER_UNITS,
     dry_run: bool = False,
+    precomputed_paths: dict[str, Path] | None = None,
 ) -> dict[str, Path]:
     """Create empty md placeholders for the specified units.
 
@@ -94,8 +142,18 @@ def create_placeholder_notes(
     `units=("scripts", "summary", "capture", "learning")` explicitly
     if all four are needed (e.g. legacy tests).
 
+    `precomputed_paths`, when provided, must contain every requested unit and
+    is used verbatim. The CLI passes paths from `reserve_note_paths` so worker
+    threads do not recompute the same names after another thread has reserved
+    them but before Stage 04 writes its final file.
+
     Returns `{unit_key: absolute_path}` for whatever was created.
     """
+    if precomputed_paths is not None:
+        missing = set(units) - set(precomputed_paths)
+        if missing:
+            raise ValueError(f"precomputed_paths missing unit keys: {sorted(missing)!r}")
+
     vault_root = get_vault_root()
     playlist_folder = format_playlist_folder_name(run_time, video.playlist_title)
     note_base = format_video_note_base(run_time, video.title)
@@ -112,7 +170,11 @@ def create_placeholder_notes(
         if not dry_run:
             folder.mkdir(parents=True, exist_ok=True)
 
-        path = resolve_unique_path(folder, note_base, ".md")
+        path = (
+            precomputed_paths[unit_key]
+            if precomputed_paths is not None
+            else resolve_unique_path(folder, note_base, ".md")
+        )
         paths[unit_key] = path
 
         extra: dict[str, str] = {
@@ -133,6 +195,7 @@ def create_placeholder_notes(
         )
 
         if not dry_run:
-            path.write_text(fm, encoding="utf-8")
+            with path.open("x", encoding="utf-8") as f:
+                f.write(fm)
 
     return paths

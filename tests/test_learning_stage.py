@@ -195,6 +195,29 @@ class TestRunStageLearning:
         # Body is present (no empty-file intermediate state)
         assert len(content) > 500
 
+    def test_existing_04_file_is_not_overwritten(self, vault, monkeypatch):
+        """A late path collision must fail closed instead of corrupting another note."""
+        video, run_time, paths, learning_path = _setup_vault(vault)
+        learning_path.parent.mkdir(parents=True, exist_ok=True)
+        learning_path.write_text("existing learning note", encoding="utf-8")
+
+        monkeypatch.setattr(
+            learning_stage,
+            "invoke_claude",
+            lambda **kw: _fake_claude_response(SAMPLE_LEARNING_BODY),
+        )
+
+        with pytest.raises(FileExistsError):
+            learning_stage.run_stage_learning(
+                video,
+                summary_md_path=paths["summary"],
+                capture_md_path=paths["capture"],
+                learning_md_path=learning_path,
+                run_time=run_time,
+            )
+
+        assert learning_path.read_text(encoding="utf-8") == "existing learning note"
+
     def test_dry_run_does_not_write_file(self, vault, monkeypatch):
         video, run_time, paths, learning_path = _setup_vault(vault)
 

@@ -268,4 +268,5 @@ def _write_md(
     learning_md_path.parent.mkdir(parents=True, exist_ok=True)
     # fm ends with "---\n", add a blank line then the body
     content = fm + "\n" + body + "\n"
-    learning_md_path.write_text(content, encoding="utf-8")
+    with learning_md_path.open("x", encoding="utf-8") as f:
+        f.write(content)

@@ -32,7 +32,13 @@ from .config import VaultRootError, set_dry_run, set_vault_root
 from .genres import CODE_BEARING_GENRES, classify_playlist_genre
 from .obsidian import format_playlist_folder_name
 from .path_safety import ensure_safe_path
-from .pipeline import LEARNING_BASE, UNIT_DIRS, compute_note_paths, create_placeholder_notes
+from .pipeline import (
+    LEARNING_BASE,
+    UNIT_DIRS,
+    compute_note_paths,
+    create_placeholder_notes,
+    reserve_note_paths,
+)
 from .playlist import VideoMeta, fetch_metadata, validate_youtube_url
 from .providers.claude_cli import ClaudeBinaryError, get_resolved_claude_binary
 from .sanitize import configure_alert_sink
@@ -413,8 +419,8 @@ def _process_video(
     code_bearing: bool = False,
 ) -> VideoRunResult:
     try:
-        paths = compute_note_paths(video, run_time)
-        create_placeholder_notes(video, run_time, dry_run=dry_run)
+        paths = compute_note_paths(video, run_time) if dry_run else reserve_note_paths(video, run_time)
+        create_placeholder_notes(video, run_time, dry_run=dry_run, precomputed_paths=paths)
 
         click.echo("  [01] scripts...", nl=False)
         transcript = run_stage_scripts(

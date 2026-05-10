@@ -17,6 +17,7 @@ from pipeline_youtube.pipeline import (
     UNIT_DIRS,
     compute_note_paths,
     create_placeholder_notes,
+    reserve_note_paths,
 )
 from pipeline_youtube.playlist import VideoMeta
 
@@ -34,6 +35,18 @@ def _video():
         video_id="_h3decBW12Q",
         title="Anthropicが公開したハーネス設計、全部解説します",
         url="https://www.youtube.com/watch?v=_h3decBW12Q",
+        duration=945,
+        channel="テストチャンネル",
+        upload_date="20260414",
+        playlist_title="Harness Engineering",
+    )
+
+
+def _video_with(video_id: str, title: str):
+    return VideoMeta(
+        video_id=video_id,
+        title=title,
+        url=f"https://www.youtube.com/watch?v={video_id}",
         duration=945,
         channel="テストチャンネル",
         upload_date="20260414",
@@ -134,3 +147,42 @@ class TestComputeNotePaths:
         """UNIT_DIRS must retain 'learning' so stage 04 can look it up."""
         assert "learning" in UNIT_DIRS
         assert UNIT_DIRS["learning"] == "04_Learning_Material"
+
+
+class TestReservedNotePaths:
+    def test_duplicate_titles_reserve_distinct_learning_paths_before_04_exists(self, vault):
+        """Concurrent videos with the same title must not share the future 04 path."""
+        run_time = datetime(2026, 4, 15, 21, 23)
+        first = _video_with("aaaaaaaaaaa", "Same Title")
+        second = _video_with("bbbbbbbbbbb", "Same Title")
+
+        first_paths = reserve_note_paths(first, run_time)
+        create_placeholder_notes(first, run_time, precomputed_paths=first_paths)
+
+        # Stage 04 deliberately has not written yet, but its name is reserved.
+        assert not first_paths["learning"].exists()
+
+        second_paths = reserve_note_paths(second, run_time)
+        create_placeholder_notes(second, run_time, precomputed_paths=second_paths)
+
+        assert second_paths["learning"] != first_paths["learning"]
+        assert second_paths["learning"].name.endswith("-2.md")
+        assert not second_paths["learning"].exists()
+
+        for unit in ("scripts", "summary", "capture"):
+            assert first_paths[unit].exists()
+            assert second_paths[unit].exists()
+            assert second_paths[unit] != first_paths[unit]
+
+    def test_precomputed_placeholder_creation_refuses_existing_file(self, vault):
+        """A stale or externally claimed reserved path must fail instead of overwrite."""
+        video = _video()
+        run_time = datetime(2026, 4, 15, 21, 23)
+        paths = reserve_note_paths(video, run_time)
+        paths["scripts"].parent.mkdir(parents=True, exist_ok=True)
+        paths["scripts"].write_text("existing", encoding="utf-8")
+
+        with pytest.raises(FileExistsError):
+            create_placeholder_notes(video, run_time, units=("scripts",), precomputed_paths=paths)
+
+        assert paths["scripts"].read_text(encoding="utf-8") == "existing"
