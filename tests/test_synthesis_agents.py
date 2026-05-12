@@ -656,10 +656,10 @@ class TestCallAlphaBatched:
         assert merged == []
         assert results == []
 
-    def test_single_batch_failure_preserves_others(self, monkeypatch):
+    def test_single_batch_failure_raises_instead_of_partial_synthesis(self, monkeypatch):
         # Batch 1 returns valid α JSON; batch 2 returns garbage that
-        # fails to parse. The function must return the topics from
-        # batch 1 rather than aborting the whole stage.
+        # fails to parse. Continuing with only batch 1 would silently
+        # omit videos from batch 2 from the final synthesis.
         queue = [BATCH_OUT_1, "not valid json"]
 
         def fake_invoke(**kw):
@@ -669,18 +669,13 @@ class TestCallAlphaBatched:
 
         videos = [_video(f"vid{i}", f"t{i}") for i in range(1, 5)]
         bodies = [f"body{i}" for i in range(1, 5)]
-        merged, results = call_alpha_batched(
-            videos,
-            bodies,
-            batch_size=2,
-            playlist_title="Playlist",
-        )
-
-        # 1 batch succeeded, so 1 AgentCallResult and the topics from
-        # BATCH_OUT_1 (label "shared") survive the merge.
-        assert len(results) == 1
-        assert len(merged) == 1
-        assert merged[0].label == "shared"
+        with pytest.raises(SynthesisParseError, match="refusing partial synthesis"):
+            call_alpha_batched(
+                videos,
+                bodies,
+                batch_size=2,
+                playlist_title="Playlist",
+            )
 
     def test_all_batches_failing_raises(self, monkeypatch):
         queue = ["bad 1", "bad 2"]
