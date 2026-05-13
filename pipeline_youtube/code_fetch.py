@@ -16,9 +16,8 @@ can't get its code blocks still completes Stage 01 normally.
 
 Network safety: all HTTP fetches go through ``urllib.request`` (built-in,
 no extra deps), use a short timeout, and only allow ``raw.githubusercontent.com``
-and ``gist.githubusercontent.com`` hosts after URL rewriting — even if a
-malicious description contains a redirect-style URL, the fetch target is
-constrained.
+and ``api.github.com`` hosts after URL rewriting — even if a malicious
+description contains a redirect-style URL, the fetch target is constrained.
 """
 
 from __future__ import annotations
@@ -54,6 +53,7 @@ _GITHUB_REPO_RE = re.compile(
 # Hard caps to prevent runaway descriptions from inflating Stage 01 md.
 MAX_URLS_PER_VIDEO = 5
 MAX_BYTES_PER_FILE = 50_000
+MAX_GIST_RESPONSE_BYTES = MAX_BYTES_PER_FILE * 4
 FETCH_TIMEOUT = 10  # seconds
 
 
@@ -254,7 +254,10 @@ def _fetch_gist(url: str) -> CodeSnippet | None:
         with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:  # noqa: S310
             import json as _json
 
-            payload = _json.loads(resp.read().decode("utf-8"))
+            data = resp.read(MAX_GIST_RESPONSE_BYTES + 1)
+            if len(data) > MAX_GIST_RESPONSE_BYTES:
+                return None
+            payload = _json.loads(data.decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError, TimeoutError):
         return None
 
@@ -325,12 +328,19 @@ def render_code_section(snippets: list[CodeSnippet]) -> str:
     for s in snippets:
         lines.append(f"### [{s.filename}]({s.source_url})")
         lines.append("")
+        fence = _markdown_fence_for(s.content)
         fence_lang = s.language or ""
-        lines.append(f"```{fence_lang}")
+        lines.append(f"{fence}{fence_lang}")
         lines.append(s.content.rstrip())
-        lines.append("```")
+        lines.append(fence)
         if s.truncated:
             lines.append("")
             lines.append(f"_(truncated to {MAX_BYTES_PER_FILE:,} bytes; see source for full file)_")
         lines.append("")
     return "\n".join(lines)
+
+
+def _markdown_fence_for(content: str) -> str:
+    """Return a backtick fence longer than any run in the snippet."""
+    longest = max((len(m.group(0)) for m in re.finditer(r"`+", content)), default=0)
+    return "`" * max(3, longest + 1)

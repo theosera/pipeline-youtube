@@ -182,6 +182,18 @@ class TestFetchSnippetsForUrls:
         assert "main.py" in s.content
         assert "README.md" in s.content
 
+    def test_gist_api_response_size_is_capped(self):
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b"x" * (code_fetch.MAX_GIST_RESPONSE_BYTES + 1)
+        mock_resp.__enter__ = lambda self: self
+        mock_resp.__exit__ = lambda *a: None
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            snippets = code_fetch.fetch_snippets_for_urls(["https://gist.github.com/abc123def456"])
+
+        assert snippets == []
+        mock_resp.read.assert_called_once_with(code_fetch.MAX_GIST_RESPONSE_BYTES + 1)
+
 
 # =====================================================
 # render_code_section
@@ -232,6 +244,20 @@ class TestRenderCodeSection:
         )
         rendered = code_fetch.render_code_section([snippet])
         assert "```\n" in rendered or rendered.split("```")[1].startswith("\n")
+
+    def test_fence_expands_when_snippet_contains_backticks(self):
+        snippet = code_fetch.CodeSnippet(
+            source_url="https://github.com/o/r/blob/main/x.py",
+            raw_url="https://raw.githubusercontent.com/o/r/main/x.py",
+            filename="x.py",
+            language="python",
+            content='print("before")\n```\n# injected heading\n```',
+            truncated=False,
+        )
+        rendered = code_fetch.render_code_section([snippet])
+
+        assert "````python" in rendered
+        assert rendered.rstrip().endswith("````")
 
 
 # =====================================================
