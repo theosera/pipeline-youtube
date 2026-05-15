@@ -314,6 +314,49 @@ class TestRunStageWithProfile:
         # Merged topics should have 2 distinct labels
         assert len(result.topics) == 2
 
+    def test_parallel_profile_aborts_on_partial_alpha_failure(self, vault, monkeypatch):
+        alpha_batch_1 = json.dumps(
+            {
+                "topics": [
+                    {
+                        "topic_id": "t001",
+                        "label": "x",
+                        "source_videos": ["vid001", "vid002"],
+                        "duplication_count": 2,
+                        "category": "supporting",
+                        "summary": "s",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+        alpha_prompts: list[str] = []
+
+        def fake_invoke(**kw):
+            assert kw["append_system_prompt"] == agents_mod.ALPHA_SYSTEM_PROMPT
+            prompt = kw["prompt"]
+            alpha_prompts.append(prompt)
+            if "vid011" in prompt:
+                return _fake("not valid json")
+            return _fake(alpha_batch_1)
+
+        monkeypatch.setattr(agents_mod, "invoke_claude", fake_invoke)
+
+        videos = [_video(i) for i in range(1, 13)]
+        bodies = [f"body{i}" for i in range(1, 13)]
+        result = run_stage_synthesis(
+            videos,
+            bodies,
+            run_time=datetime(2026, 4, 15),
+            playlist_title="Test Playlist",
+            profile="parallel",
+        )
+        assert result.error is not None
+        assert "alpha_parse_failed: 1/2 α batches failed" in result.error
+        assert result.topics == []
+        assert result.agent_results == []
+        assert len(alpha_prompts) == 2
+
     def test_invalid_profile_returns_error(self, vault):
         videos = [_video(i) for i in range(1, 4)]
         bodies = [f"body{i}" for i in range(1, 4)]
