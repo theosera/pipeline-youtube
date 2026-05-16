@@ -55,6 +55,7 @@ _GITHUB_REPO_RE = re.compile(
 MAX_URLS_PER_VIDEO = 5
 MAX_BYTES_PER_FILE = 50_000
 FETCH_TIMEOUT = 10  # seconds
+_MIN_CODE_FENCE_LEN = 3
 
 
 # Common code file extensions → fenced-code language hint.
@@ -323,14 +324,39 @@ def render_code_section(snippets: list[CodeSnippet]) -> str:
 
     lines: list[str] = ["", "## 関連コード", ""]
     for s in snippets:
-        lines.append(f"### [{s.filename}]({s.source_url})")
+        safe_content = _sanitize_fetched_code_for_markdown(s.content)
+        fence = _code_fence_for(safe_content)
+        lines.append(f"### [{_escape_markdown_link_text(s.filename)}]({s.source_url})")
         lines.append("")
         fence_lang = s.language or ""
-        lines.append(f"```{fence_lang}")
-        lines.append(s.content.rstrip())
-        lines.append("```")
+        lines.append(f"{fence}{fence_lang}")
+        lines.append(safe_content.rstrip())
+        lines.append(fence)
         if s.truncated:
             lines.append("")
             lines.append(f"_(truncated to {MAX_BYTES_PER_FILE:,} bytes; see source for full file)_")
         lines.append("")
     return "\n".join(lines)
+
+
+def _code_fence_for(content: str) -> str:
+    """Return a backtick fence longer than any run already in content."""
+    longest = _MIN_CODE_FENCE_LEN - 1
+    for match in re.finditer(r"`+", content):
+        longest = max(longest, len(match.group(0)))
+    return "`" * (longest + 1)
+
+
+def _sanitize_fetched_code_for_markdown(content: str) -> str:
+    """Neutralize active Obsidian templater delimiters in fetched code.
+
+    Stage 01 writes fetched GitHub/Gist content directly into the user's
+    vault. Even inside a code fence, Obsidian plugins may scan templater
+    delimiters globally, so keep the code readable while making the token
+    inert.
+    """
+    return content.replace("<%", "< %").replace("%>", "% >")
+
+
+def _escape_markdown_link_text(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")

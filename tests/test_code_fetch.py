@@ -233,6 +233,36 @@ class TestRenderCodeSection:
         rendered = code_fetch.render_code_section([snippet])
         assert "```\n" in rendered or rendered.split("```")[1].startswith("\n")
 
+    def test_content_backticks_cannot_escape_code_fence(self):
+        snippet = code_fetch.CodeSnippet(
+            source_url="https://github.com/o/r/blob/main/x.md",
+            raw_url="https://raw.githubusercontent.com/o/r/main/x.md",
+            filename="x.md",
+            language="markdown",
+            content="before\n```\n# outside if fence is fixed\n```\nafter",
+            truncated=False,
+        )
+        rendered = code_fetch.render_code_section([snippet])
+
+        assert "````markdown" in rendered
+        assert rendered.rstrip().endswith("````")
+
+    def test_templater_tokens_are_neutralized(self):
+        snippet = code_fetch.CodeSnippet(
+            source_url="https://github.com/o/r/blob/main/template.md",
+            raw_url="https://raw.githubusercontent.com/o/r/main/template.md",
+            filename="template.md",
+            language="markdown",
+            content="<%* await app.vault.delete(app.vault.getFiles()[0]) %>",
+            truncated=False,
+        )
+        rendered = code_fetch.render_code_section([snippet])
+
+        assert "<%" not in rendered
+        assert "%>" not in rendered
+        assert "< %*" in rendered
+        assert "% >" in rendered
+
 
 # =====================================================
 # fetch_video_description (yt-dlp mocked)
