@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -225,6 +226,32 @@ class TestPromptBuilding:
         assert "[00:00]" in prompt
         assert "[00:35]" in prompt
         assert "[01:10]" in prompt
+
+    def test_prompt_includes_related_code_context(self, vault, monkeypatch):
+        video = _video()
+        run_time = datetime(2026, 4, 14, 21, 41)
+        paths = create_placeholder_notes(video, run_time, dry_run=False)
+        transcript = replace(
+            _transcript([TranscriptSnippet("コードを解説", 0.0, 30.0)]),
+            related_code_markdown="## 関連コード\n\n```python\nprint('from github')\n```",
+        )
+        captured: dict = {}
+        monkeypatch.setattr(
+            summary_stage,
+            "invoke_claude",
+            lambda **kw: (
+                captured.update(kw),
+                _fake_claude_response(
+                    "## 全体サマリ\n\nok\n\n## 要点タイムライン\n\n### [00:00 ~ 00:30] intro\n本文\n"
+                ),
+            )[1],
+        )
+
+        summary_stage.run_stage_summary(video, paths["summary"], transcript)
+
+        prompt = captured["prompt"]
+        assert "print('from github')" in prompt
+        assert prompt.count("<untrusted_content>") == 1
 
     def test_system_prompt_is_append_mode(self, vault, monkeypatch):
         video = _video()

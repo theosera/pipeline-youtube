@@ -147,7 +147,11 @@ def run_stage_summary(
             _append_body(summary_md_path, _EMPTY_BODY)
         return ClaudeResponse(text=_EMPTY_BODY, model=model)
 
-    prompt = _build_prompt(video, chunks)
+    prompt = _build_prompt(
+        video,
+        chunks,
+        related_code_markdown=transcript_result.related_code_markdown,
+    )
     response = invoke_claude(
         prompt=prompt,
         append_system_prompt=SUMMARY_SYSTEM_PROMPT,
@@ -221,22 +225,40 @@ def _persist_one_liner(summary_md_path: Path, one_liner: str) -> None:
         summary_md_path.write_text(updated, encoding="utf-8")
 
 
-def _build_prompt(video: VideoMeta, chunks: list[Chunk]) -> str:
-    """Format chunks into the user message, wrapped in untrusted_content."""
+def _build_prompt(
+    video: VideoMeta,
+    chunks: list[Chunk],
+    *,
+    related_code_markdown: str = "",
+) -> str:
+    """Format transcript chunks plus optional code context for the user message."""
     lines = [f"[{chunk.mmss}] {chunk.text}" for chunk in chunks]
     raw_transcript = "\n".join(lines)
 
     safe_transcript = sanitize_untrusted_text(
-        raw_transcript, MAX_INPUT_CHARS, context="summary.transcript"
+        raw_transcript, MAX_INPUT_CHARS * 3 // 4, context="summary.transcript"
     )
-    wrapped = wrap_untrusted(safe_transcript)
+    safe_code = ""
+    if related_code_markdown:
+        safe_code = sanitize_untrusted_text(
+            related_code_markdown,
+            MAX_INPUT_CHARS // 4,
+            context="summary.related_code",
+        )
+
+    raw_source = safe_transcript
+    if safe_code:
+        raw_source = f"{safe_transcript}\n\n## 関連コード (GitHub 等から取得)\n{safe_code}"
+    wrapped = wrap_untrusted(raw_source)
 
     safe_title = sanitize_untrusted_text(
         video.title or "Untitled", 200, context="summary.video_title"
     )
 
+    source_label = "字幕と関連コード" if safe_code else "字幕"
     return (
-        f"以下は動画「{safe_title}」の字幕です。上記のルールに従って要約してください。\n\n{wrapped}"
+        f"以下は動画「{safe_title}」の{source_label}です。"
+        f"上記のルールに従って要約してください。\n\n{wrapped}"
     )
 
 

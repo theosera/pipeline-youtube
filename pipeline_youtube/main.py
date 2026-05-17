@@ -502,6 +502,7 @@ def _process_video(
             model=models["stage_04"],
             dry_run=dry_run,
             code_bearing=code_bearing,
+            related_code_markdown=transcript.related_code_markdown,
         )
         click.echo(
             f" in={learning_resp.input_tokens or 0}"

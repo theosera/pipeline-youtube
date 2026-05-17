@@ -59,6 +59,9 @@ class TranscriptResult:
     source: TranscriptSource
     language: str | None
     snippets: list[TranscriptSnippet] = field(default_factory=list)
+    # Best-effort Stage 01 enrichment (e.g. fetched GitHub snippets).
+    # Kept out of snippets so transcript timing/chunking stays unchanged.
+    related_code_markdown: str = ""
     retrieved_at: str = ""
     fallback_reason: str | None = None
     error: str | None = None

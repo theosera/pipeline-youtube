@@ -158,6 +158,7 @@ def run_stage_learning(
     model: str = "sonnet",
     dry_run: bool = False,
     code_bearing: bool = False,
+    related_code_markdown: str = "",
 ) -> ClaudeResponse:
     """Integrate 02 + 03 into 04 and write directly to `learning_md_path`.
 
@@ -180,7 +181,13 @@ def run_stage_learning(
     capture_body = _strip_frontmatter(capture_md_path.read_text(encoding="utf-8"))
     mappings = parse_capture_mapping(capture_body)
 
-    prompt = _build_prompt(video, summary_body, capture_body, mappings)
+    prompt = _build_prompt(
+        video,
+        summary_body,
+        capture_body,
+        mappings,
+        related_code_markdown=related_code_markdown,
+    )
     system_prompt = LEARNING_SYSTEM_PROMPT
     if code_bearing:
         system_prompt = LEARNING_SYSTEM_PROMPT + LEARNING_CODE_BEARING_ADDENDUM
@@ -220,19 +227,31 @@ def _build_prompt(
     summary_body: str,
     capture_body: str,
     mappings: list[CaptureMapping],
+    *,
+    related_code_markdown: str = "",
 ) -> str:
     safe_title = sanitize_untrusted_text(
         video.title or "Untitled", 200, context="learning.video_title"
     )
+    has_code = bool(related_code_markdown)
+    summary_limit = _MAX_INPUT_CHARS * 3 // 8 if has_code else _MAX_INPUT_CHARS // 2
+    capture_limit = _MAX_INPUT_CHARS * 3 // 8 if has_code else _MAX_INPUT_CHARS // 2
     safe_summary = sanitize_untrusted_text(
-        summary_body, _MAX_INPUT_CHARS // 2, context="learning.summary_body"
+        summary_body, summary_limit, context="learning.summary_body"
     )
     safe_capture = sanitize_untrusted_text(
-        capture_body, _MAX_INPUT_CHARS // 2, context="learning.capture_body"
+        capture_body, capture_limit, context="learning.capture_body"
     )
+    safe_code = ""
+    if related_code_markdown:
+        safe_code = sanitize_untrusted_text(
+            related_code_markdown,
+            _MAX_INPUT_CHARS // 4,
+            context="learning.related_code",
+        )
     mapping_table = _format_mapping_table(mappings)
 
-    return (
+    prompt = (
         f"以下は動画「{safe_title}」の stage 02/03 出力と画像マッピングテーブルです。"
         "上記のルールに従って stage 04 の learning md 本文を生成してください。\n\n"
         "## 画像マッピングテーブル (このテーブルからのみ画像を選ぶこと)\n\n"
@@ -242,6 +261,12 @@ def _build_prompt(
         "## キャプチャ md (参考、構造確認用)\n"
         f"{wrap_untrusted(safe_capture)}"
     )
+    if safe_code:
+        prompt += (
+            "\n\n## 関連コード (Stage 01 が GitHub 等から取得)\n"
+            f"{wrap_untrusted(safe_code)}"
+        )
+    return prompt
 
 
 def _write_md(

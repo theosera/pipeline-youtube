@@ -19,6 +19,7 @@ a ``## 関連コード`` section after the transcript.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from ..code_fetch import (
@@ -86,6 +87,8 @@ def run_stage_scripts(
             urls = extract_github_urls(description)
             snippets = fetch_snippets_for_urls(urls)
             code_section = render_code_section(snippets)
+            if code_section:
+                result = replace(result, related_code_markdown=code_section.strip())
 
     full_body = body + code_section if code_section else body
 

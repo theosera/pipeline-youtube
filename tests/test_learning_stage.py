@@ -272,6 +272,31 @@ class TestPromptBuilding:
         # Title is present
         assert video.title in prompt
 
+    def test_prompt_includes_related_code_when_provided(self, vault, monkeypatch):
+        video, run_time, paths, learning_path = _setup_vault(vault)
+        captured: dict = {}
+
+        def fake_invoke(**kw):
+            captured.update(kw)
+            return _fake_claude_response(SAMPLE_LEARNING_BODY)
+
+        monkeypatch.setattr(learning_stage, "invoke_claude", fake_invoke)
+
+        learning_stage.run_stage_learning(
+            video,
+            summary_md_path=paths["summary"],
+            capture_md_path=paths["capture"],
+            learning_md_path=learning_path,
+            run_time=run_time,
+            code_bearing=True,
+            related_code_markdown="## 関連コード\n\n```python\nprint('practice')\n```",
+        )
+
+        prompt = captured["prompt"]
+        assert prompt.count("<untrusted_content>") == 3
+        assert "Stage 01 が GitHub 等から取得" in prompt
+        assert "print('practice')" in prompt
+
     def test_prompt_uses_append_system_prompt(self, vault, monkeypatch):
         video, run_time, paths, learning_path = _setup_vault(vault)
         captured: dict = {}

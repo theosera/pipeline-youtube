@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from pipeline_youtube import config
+from pipeline_youtube.code_fetch import CodeSnippet
 from pipeline_youtube.pipeline import create_placeholder_notes
 from pipeline_youtube.playlist import VideoMeta
 from pipeline_youtube.stages import scripts as scripts_stage
@@ -134,6 +135,53 @@ class TestRunStageScripts:
         result = scripts_stage.run_stage_scripts(video, scripts_path)
         assert result.source == TranscriptSource.ERROR
         assert scripts_path.read_text(encoding="utf-8") == pre_content
+
+    def test_related_code_is_returned_for_downstream_stages(self, vault, monkeypatch):
+        video = _video()
+        run_time = datetime(2026, 4, 14, 21, 41)
+        paths = create_placeholder_notes(video, run_time, dry_run=False)
+        scripts_path = paths["scripts"]
+
+        monkeypatch.setattr(
+            scripts_stage,
+            "fetch_with_fallback",
+            lambda video_id, languages, fetchers: _fake_fetch_success()(video_id, languages),
+        )
+        monkeypatch.setattr(
+            scripts_stage,
+            "fetch_video_description",
+            lambda video_id: "code: https://github.com/example/repo/blob/main/app.py",
+        )
+        monkeypatch.setattr(
+            scripts_stage,
+            "extract_github_urls",
+            lambda desc: ["https://github.com/example/repo/blob/main/app.py"],
+        )
+        monkeypatch.setattr(
+            scripts_stage,
+            "fetch_snippets_for_urls",
+            lambda urls: [
+                CodeSnippet(
+                    source_url=urls[0],
+                    raw_url="https://raw.githubusercontent.com/example/repo/main/app.py",
+                    filename="app.py",
+                    language="python",
+                    content="print('kept')",
+                    truncated=False,
+                )
+            ],
+        )
+
+        result = scripts_stage.run_stage_scripts(
+            video,
+            scripts_path,
+            window_seconds=30.0,
+            include_code_blocks=True,
+        )
+
+        assert "## 関連コード" in result.related_code_markdown
+        assert "print('kept')" in result.related_code_markdown
+        assert "print('kept')" in scripts_path.read_text(encoding="utf-8")
 
     def test_missing_placeholder_raises(self, vault, monkeypatch):
         video = _video()
