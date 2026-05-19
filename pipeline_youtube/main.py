@@ -185,6 +185,18 @@ class VideoRunResult:
         return self.error is None and self.learning_md_body is not None
 
 
+def _successful_results_in_playlist_order(
+    videos: list[VideoMeta], results: list[VideoRunResult]
+) -> list[VideoRunResult]:
+    """Return successful results sorted by the original playlist order."""
+    playlist_index = {video.video_id: i for i, video in enumerate(videos)}
+    missing_index = len(playlist_index)
+    return sorted(
+        (result for result in results if result.ok),
+        key=lambda result: playlist_index.get(result.video.video_id, missing_index),
+    )
+
+
 def _strip_frontmatter(text: str) -> str:
     if not text.startswith("---"):
         return text.strip()
@@ -357,10 +369,11 @@ def _collect_existing_learning_bodies(
         # and contains the sanitized playlist title as a substring. Handles
         # both the new YYYY-MM-DD HHmm <title> format and the legacy
         # YYYY-MM-DD <title> format from runs before the HHmm fix.
-        from .obsidian import sanitize_title_for_filename
+        from .obsidian import _strip_playlist_category_prefix, sanitize_title_for_filename
 
         date_prefix = run_time.strftime("%Y-%m-%d")
-        title_needle = sanitize_title_for_filename(playlist_title)
+        display_title = _strip_playlist_category_prefix(playlist_title)
+        title_needle = sanitize_title_for_filename(display_title)
         candidates = [
             p
             for p in base_dir.iterdir()
@@ -881,7 +894,7 @@ def cli(
             )
             return
 
-        succeeded = [r for r in results if r.ok]
+        succeeded = _successful_results_in_playlist_order(videos, results)
         failed = [r for r in results if not r.ok]
 
         click.echo("\n=== Video processing summary ===")
