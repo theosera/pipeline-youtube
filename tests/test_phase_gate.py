@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from pipeline_youtube.main import _filter_to_reviewed, _find_summary_md
+from pipeline_youtube.main import (
+    _collect_reviewed_phase1_items,
+    _filter_to_reviewed,
+    _find_summary_md,
+)
 from pipeline_youtube.playlist import VideoMeta
 
 
@@ -63,6 +67,23 @@ class TestFindSummaryMd:
         config.set_vault_root(tmp_path)
         assert _find_summary_md("missingxxxx", "testlist", datetime(2026, 4, 18)) is None
 
+    def test_cross_day_resume_finds_prior_phase1_folder(self, tmp_path: Path):
+        from pipeline_youtube import config
+        from pipeline_youtube import main as main_mod
+
+        config.set_vault_root(tmp_path)
+        phase1_folder = (
+            tmp_path
+            / main_mod.LEARNING_BASE
+            / main_mod.UNIT_DIRS["summary"]
+            / "2026-04-18-0800 testlist"
+        )
+        summary = phase1_folder / "note.md"
+        _write_summary(summary, _VID_1, "true")
+
+        found = _find_summary_md(_VID_1, "testlist", datetime(2026, 4, 19, 9, 0))
+        assert found == summary
+
 
 class TestFilterToReviewed:
     @pytest.fixture
@@ -108,3 +129,38 @@ class TestFilterToReviewed:
         _write_summary(folder / "a.md", _VID_A, "TRUE")
         kept = _filter_to_reviewed([(1, _vid(_VID_A))], "testlist", dt)
         assert len(kept) == 1
+
+    def test_collect_reviewed_maps_existing_02_to_03_and_04(self, tmp_path: Path):
+        from pipeline_youtube import config
+        from pipeline_youtube import main as main_mod
+
+        config.set_vault_root(tmp_path)
+        dt = datetime(2026, 4, 19, 9, 0)
+        summary = (
+            tmp_path
+            / main_mod.LEARNING_BASE
+            / main_mod.UNIT_DIRS["summary"]
+            / "2026-04-18-0800 testlist"
+            / "note.md"
+        )
+        _write_summary(summary, _VID_A, "true")
+
+        kept = _collect_reviewed_phase1_items([(1, _vid(_VID_A))], "testlist", dt)
+
+        assert len(kept) == 1
+        _i, _video, paths = kept[0]
+        assert paths.summary == summary
+        assert paths.capture == (
+            tmp_path
+            / main_mod.LEARNING_BASE
+            / main_mod.UNIT_DIRS["capture"]
+            / "2026-04-18-0800 testlist"
+            / "note.md"
+        )
+        assert paths.learning == (
+            tmp_path
+            / main_mod.LEARNING_BASE
+            / main_mod.UNIT_DIRS["learning"]
+            / "2026-04-18-0800 testlist"
+            / "note.md"
+        )

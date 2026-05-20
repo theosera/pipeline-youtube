@@ -305,3 +305,117 @@ class TestE2EPlaylist:
         assert "stop-after-capture" in result.output
         assert "[04] learning" not in result.output
         assert "Stage 05 Synthesis" not in result.output
+
+    def test_resume_reviewed_runs_only_stage_04_on_existing_phase1_files(
+        self, vault: Path, monkeypatch
+    ):
+        video = VideoMeta(
+            video_id="abc1234567A",
+            title="Reviewed Video",
+            url="https://www.youtube.com/watch?v=abc1234567A",
+            duration=120,
+            channel="Test",
+            upload_date="20260418",
+            playlist_title="Test Playlist",
+        )
+        note_name = "2026-04-18-0800 Reviewed Video.md"
+        phase1_folder = "2026-04-18-0800 Test Playlist"
+        summary_md = (
+            vault
+            / main_mod.LEARNING_BASE
+            / main_mod.UNIT_DIRS["summary"]
+            / phase1_folder
+            / note_name
+        )
+        capture_md = (
+            vault
+            / main_mod.LEARNING_BASE
+            / main_mod.UNIT_DIRS["capture"]
+            / phase1_folder
+            / note_name
+        )
+        fm = (
+            '---\n'
+            'date: 2026-04-18 08:00\n'
+            'title: "Reviewed Video"\n'
+            'URL: "https://www.youtube.com/watch?v=abc1234567A"\n'
+            'playlist: "Test Playlist"\n'
+            'video_id: "abc1234567A"\n'
+            'reviewed: "true"\n'
+            'tags: [memo, youtube]\n'
+            '---\n\n'
+        )
+        summary_md.parent.mkdir(parents=True, exist_ok=True)
+        summary_md.write_text(fm + "MANUAL REVIEWED SUMMARY\n", encoding="utf-8")
+        capture_md.parent.mkdir(parents=True, exist_ok=True)
+        capture_md.write_text(
+            fm + "[00:00 ~ 00:30]\n![[reviewed-capture.webp]]\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(main_mod, "fetch_metadata", lambda url: [video])
+        monkeypatch.setattr(
+            main_mod, "run_stage_scripts", lambda *a, **kw: pytest.fail("stage 01 reran")
+        )
+        monkeypatch.setattr(
+            main_mod, "run_stage_summary", lambda *a, **kw: pytest.fail("stage 02 reran")
+        )
+        monkeypatch.setattr(
+            main_mod, "run_stage_capture", lambda *a, **kw: pytest.fail("stage 03 reran")
+        )
+        monkeypatch.setattr(
+            main_mod, "get_resolved_claude_binary", lambda: ("/fake/claude", "claude 2.1.109")
+        )
+        from pipeline_youtube.genres import Genre
+
+        monkeypatch.setattr(
+            main_mod, "classify_playlist_genre", lambda *a, **kw: (Genre.OTHER, "stubbed")
+        )
+
+        learning_calls = []
+
+        def fake_learning(video, summary_path, capture_path, learning_path, **kw):
+            learning_calls.append((summary_path, capture_path, learning_path))
+            assert "MANUAL REVIEWED SUMMARY" in summary_path.read_text(encoding="utf-8")
+            assert capture_path == capture_md
+            learning_path.parent.mkdir(parents=True, exist_ok=True)
+            learning_path.write_text(
+                fm.replace('reviewed: "true"\n', "") + "LEARNING FROM REVIEWED\n",
+                encoding="utf-8",
+            )
+            return _fake_response("LEARNING FROM REVIEWED", model="sonnet", cost=0.05)
+
+        monkeypatch.setattr(main_mod, "run_stage_learning", fake_learning)
+
+        cfg = vault / "config.json"
+        cfg.write_text(json.dumps({"vault_root": str(vault)}), encoding="utf-8")
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main_mod.cli,
+            [
+                "https://www.youtube.com/playlist?list=PL_fake",
+                "--config",
+                str(cfg),
+                "--resume-reviewed",
+                "--skip-synthesis",
+            ],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "[01] scripts" not in result.output
+        assert "[02] summary" not in result.output
+        assert "[03] capture" not in result.output
+        assert "[04] learning" in result.output
+        assert len(learning_calls) == 1
+        _summary_path, _capture_path, learning_path = learning_calls[0]
+        assert learning_path == (
+            vault
+            / main_mod.LEARNING_BASE
+            / main_mod.UNIT_DIRS["learning"]
+            / phase1_folder
+            / note_name
+        )
+        assert 'reviewed: "true"' in summary_md.read_text(encoding="utf-8")
+        assert "MANUAL REVIEWED SUMMARY" in summary_md.read_text(encoding="utf-8")

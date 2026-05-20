@@ -185,6 +185,13 @@ class VideoRunResult:
         return self.error is None and self.learning_md_body is not None
 
 
+@dataclass(frozen=True)
+class ResumeReviewedPaths:
+    summary: Path
+    capture: Path
+    learning: Path
+
+
 def _strip_frontmatter(text: str) -> str:
     if not text.startswith("---"):
         return text.strip()
@@ -286,9 +293,23 @@ def _filter_to_reviewed(
     run_time: datetime,
 ) -> list[tuple[int, VideoMeta]]:
     """Keep only videos whose 02_Summary.md frontmatter has `reviewed: true`."""
+    return [
+        (i, video)
+        for i, video, _paths in _collect_reviewed_phase1_items(
+            to_process, playlist_title, run_time
+        )
+    ]
+
+
+def _collect_reviewed_phase1_items(
+    to_process: list[tuple[int, VideoMeta]],
+    playlist_title: str,
+    run_time: datetime,
+) -> list[tuple[int, VideoMeta, ResumeReviewedPaths]]:
+    """Return reviewed videos plus the existing 02/03 inputs for Phase 3."""
     from .obsidian import read_frontmatter_field
 
-    kept: list[tuple[int, VideoMeta]] = []
+    kept: list[tuple[int, VideoMeta, ResumeReviewedPaths]] = []
     for i, video in to_process:
         summary_md = _find_summary_md(video.video_id, playlist_title, run_time)
         if summary_md is None:
@@ -296,17 +317,47 @@ def _filter_to_reviewed(
             continue
         value = read_frontmatter_field(summary_md, "reviewed")
         if value and value.lower() == "true":
-            kept.append((i, video))
+            kept.append((i, video, _resume_paths_from_summary(summary_md)))
         else:
             click.echo(f"  [skip] {video.video_id}: reviewed={value!r}")
     return kept
 
 
+def _resume_paths_from_summary(summary_md: Path) -> ResumeReviewedPaths:
+    """Map an existing 02_Summary.md path to its sibling 03 and 04 paths."""
+    return ResumeReviewedPaths(
+        summary=summary_md,
+        capture=_replace_unit_dir(summary_md, "summary", "capture"),
+        learning=_replace_unit_dir(summary_md, "summary", "learning"),
+    )
+
+
+def _replace_unit_dir(path: Path, from_unit: str, to_unit: str) -> Path:
+    from_dir = UNIT_DIRS[from_unit]
+    to_dir = UNIT_DIRS[to_unit]
+    parts = list(path.parts)
+    try:
+        idx = parts.index(from_dir)
+    except ValueError:
+        from .config import get_vault_root
+
+        # Fallback for unusual Path implementations in tests: keep the
+        # playlist folder and filename, but rebuild under the requested unit.
+        return (
+            get_vault_root()
+            / ensure_safe_path(f"{LEARNING_BASE}/{to_dir}")
+            / path.parent.name
+            / path.name
+        )
+    parts[idx] = to_dir
+    return Path(*parts)
+
+
 def _summary_folder_candidates(base: Path, playlist_title: str, run_date: datetime):
     """Yield likely playlist folders holding 02_Summary files.
 
-    Canonical first, then any date-prefixed folder that contains the
-    sanitized title substring (mirrors `_find_learning_folder` heuristics).
+    Canonical first, then matching playlist folders. Same-day folders are
+    preferred, but prior-day Phase 1 runs are valid resume inputs too.
     """
     from .obsidian import _strip_playlist_category_prefix, sanitize_title_for_filename
 
@@ -319,14 +370,19 @@ def _summary_folder_candidates(base: Path, playlist_title: str, run_date: dateti
     if not title_needle:
         return
     try:
-        for child in base.iterdir():
-            if (
-                child.is_dir()
-                and child.name.startswith(date_prefix)
-                and title_needle in child.name
-                and child.name != canonical_name
-            ):
-                yield child
+        candidates = [
+            child
+            for child in base.iterdir()
+            if child.is_dir() and title_needle in child.name and child.name != canonical_name
+        ]
+        candidates.sort(
+            key=lambda p: (
+                not p.name.startswith(date_prefix),
+                -p.stat().st_mtime,
+                p.name,
+            )
+        )
+        yield from candidates
     except OSError:
         return
 
@@ -528,6 +584,51 @@ def _process_video(
         return VideoRunResult(video=video, error=f"{type(e).__name__}: {e}")
 
 
+def _process_video_resume_reviewed(
+    video: VideoMeta,
+    run_time: datetime,
+    paths: ResumeReviewedPaths,
+    *,
+    dry_run: bool,
+    models: dict[str, str],
+    code_bearing: bool = False,
+) -> VideoRunResult:
+    """Phase 3 processing: reuse reviewed 02/03 artifacts and run Stage 04 only."""
+    try:
+        click.echo(f"  [04] learning (model={models['stage_04']})...", nl=False)
+        learning_resp = run_stage_learning(
+            video,
+            paths.summary,
+            paths.capture,
+            paths.learning,
+            run_time=run_time,
+            model=models["stage_04"],
+            dry_run=dry_run,
+            code_bearing=code_bearing,
+        )
+        click.echo(
+            f" in={learning_resp.input_tokens or 0}"
+            f" out={learning_resp.output_tokens or 0}"
+            f" cost=${learning_resp.total_cost_usd or 0:.3f}"
+        )
+
+        if dry_run:
+            body = learning_resp.text.strip()
+        else:
+            body = _strip_frontmatter(paths.learning.read_text(encoding="utf-8"))
+
+        return VideoRunResult(
+            video=video,
+            learning_md_path=paths.learning,
+            learning_md_body=body,
+            learning_cost_usd=learning_resp.total_cost_usd,
+            learning_model=learning_resp.model,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        return VideoRunResult(video=video, error=f"{type(e).__name__}: {e}")
+
+
 async def _run_videos_concurrent(
     videos: list[VideoMeta],
     run_time: datetime,
@@ -561,6 +662,36 @@ async def _run_videos_concurrent(
             )
 
     tasks = [_task(i, v) for i, v in enumerate(videos, 1)]
+    return list(await asyncio.gather(*tasks))
+
+
+async def _run_resume_reviewed_concurrent(
+    items: list[tuple[int, VideoMeta, ResumeReviewedPaths]],
+    run_time: datetime,
+    *,
+    total_videos: int,
+    concurrency: int,
+    dry_run: bool,
+    models: dict[str, str],
+    code_bearing: bool = False,
+) -> list[VideoRunResult]:
+    """Run Phase 3 Stage 04 work concurrently without touching 01-03."""
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _task(i: int, video: VideoMeta, paths: ResumeReviewedPaths) -> VideoRunResult:
+        async with sem:
+            click.echo(f"\n[{i}/{total_videos}] {video.video_id} {video.title}")
+            return await asyncio.to_thread(
+                _process_video_resume_reviewed,
+                video,
+                run_time,
+                paths,
+                dry_run=dry_run,
+                models=models,
+                code_bearing=code_bearing,
+            )
+
+    tasks = [_task(i, v, paths) for i, v, paths in items]
     return list(await asyncio.gather(*tasks))
 
 
@@ -836,12 +967,41 @@ def cli(
             else:
                 to_process.append((i, video))
 
+        resume_items: list[tuple[int, VideoMeta, ResumeReviewedPaths]] = []
         if resume_reviewed:
-            # Phase 3: filter to videos whose 02_Summary.md has `reviewed: true`.
-            to_process = _filter_to_reviewed(to_process, playlist_title, run_time)
+            # Phase 3: skip 01-03 and feed Stage 04 the reviewed Phase 1 files.
+            resume_items = _collect_reviewed_phase1_items(
+                to_process, playlist_title, run_time
+            )
+            to_process = []
 
         # Process remaining videos
-        if to_process and concurrency > 1:
+        if resume_items and concurrency > 1:
+            concurrent_results = asyncio.run(
+                _run_resume_reviewed_concurrent(
+                    resume_items,
+                    run_time,
+                    total_videos=len(videos),
+                    concurrency=concurrency,
+                    dry_run=dry_run,
+                    models=models,
+                    code_bearing=code_bearing,
+                )
+            )
+            results.extend(concurrent_results)
+        elif resume_items:
+            for i, video, paths in resume_items:
+                click.echo(f"\n[{i}/{len(videos)}] {video.video_id} {video.title}")
+                result = _process_video_resume_reviewed(
+                    video,
+                    run_time,
+                    paths,
+                    dry_run=dry_run,
+                    models=models,
+                    code_bearing=code_bearing,
+                )
+                results.append(result)
+        elif to_process and concurrency > 1:
             process_videos = [v for _, v in to_process]
             concurrent_results = asyncio.run(
                 _run_videos_concurrent(
