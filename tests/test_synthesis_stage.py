@@ -360,6 +360,36 @@ class TestErrorHandling:
         assert result.error is not None
         assert "alpha_parse_failed" in result.error
 
+    def test_parallel_alpha_partial_failure_returns_error_without_writes(
+        self, vault, monkeypatch
+    ):
+        def fake_invoke(**kw):
+            system = kw.get("append_system_prompt", "")
+            prompt = kw.get("prompt", "")
+            if "トピックエクストラクター" in system:
+                return _fake("not json" if "vid011" in prompt else ALPHA_OUT)
+            pytest.fail("downstream agents should not run after partial α failure")
+
+        monkeypatch.setattr(agents_mod, "invoke_claude", fake_invoke)
+        videos = [_video(i) for i in range(1, 17)]
+        result = run_stage_synthesis(
+            videos,
+            [f"body{i}" for i in range(1, 17)],
+            run_time=datetime(2026, 4, 15),
+            playlist_title="x",
+            profile="parallel",
+            folder_name_override="partial-alpha",
+        )
+
+        assert result.error is not None
+        assert "alpha_parse_failed" in result.error
+        assert "1/2 α batches failed" in result.error
+        assert result.moc_path is None
+        assert result.chapter_paths == []
+        assert result.meta_path is None
+        synthesis_dir = vault / "Permanent Note/08_YouTube学習/05_Synthesis/partial-alpha"
+        assert not synthesis_dir.exists()
+
     def test_beta_parse_error_after_alpha_ok(self, vault, monkeypatch):
         _mock_all_agents(monkeypatch, responses=[ALPHA_OUT, "not json", LEADER_OUT])
         videos = [_video(i) for i in range(1, 4)]
