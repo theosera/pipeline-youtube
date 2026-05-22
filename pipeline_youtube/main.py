@@ -32,7 +32,13 @@ from .config import VaultRootError, set_dry_run, set_vault_root
 from .genres import CODE_BEARING_GENRES, classify_playlist_genre
 from .obsidian import format_playlist_folder_name
 from .path_safety import ensure_safe_path
-from .pipeline import LEARNING_BASE, UNIT_DIRS, compute_note_paths, create_placeholder_notes
+from .pipeline import (
+    LEARNING_BASE,
+    UNIT_DIRS,
+    compute_note_paths,
+    create_placeholder_notes,
+    video_note_path_lock,
+)
 from .playlist import VideoMeta, fetch_metadata, validate_youtube_url
 from .providers.claude_cli import ClaudeBinaryError, get_resolved_claude_binary
 from .sanitize import configure_alert_sink
@@ -400,7 +406,7 @@ def _collect_existing_learning_bodies(
     return matched_videos, matched_bodies, folder_name
 
 
-def _process_video(
+def _process_video_locked(
     video: VideoMeta,
     run_time: datetime,
     *,
@@ -413,8 +419,8 @@ def _process_video(
     code_bearing: bool = False,
 ) -> VideoRunResult:
     try:
-        paths = compute_note_paths(video, run_time)
-        create_placeholder_notes(video, run_time, dry_run=dry_run)
+        paths = create_placeholder_notes(video, run_time, dry_run=dry_run)
+        paths["learning"] = compute_note_paths(video, run_time, units=("learning",))["learning"]
 
         click.echo("  [01] scripts...", nl=False)
         transcript = run_stage_scripts(
@@ -526,6 +532,32 @@ def _process_video(
     except Exception as e:
         traceback.print_exc()
         return VideoRunResult(video=video, error=f"{type(e).__name__}: {e}")
+
+
+def _process_video(
+    video: VideoMeta,
+    run_time: datetime,
+    *,
+    dry_run: bool,
+    capture_format: str,
+    models: dict[str, str],
+    filler_words: tuple[str, ...] = (),
+    stop_after_capture: bool = False,
+    capture_backend: Any = None,
+    code_bearing: bool = False,
+) -> VideoRunResult:
+    with video_note_path_lock(video, run_time):
+        return _process_video_locked(
+            video,
+            run_time,
+            dry_run=dry_run,
+            capture_format=capture_format,
+            models=models,
+            filler_words=filler_words,
+            stop_after_capture=stop_after_capture,
+            capture_backend=capture_backend,
+            code_bearing=code_bearing,
+        )
 
 
 async def _run_videos_concurrent(

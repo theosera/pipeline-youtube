@@ -6,6 +6,7 @@ empty file, to prevent Templater folder-template hijacking.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -91,6 +92,51 @@ class TestDefaultPlaceholders:
         run_time = datetime(2026, 4, 15, 21, 23)
         with pytest.raises(ValueError, match="unknown unit key"):
             create_placeholder_notes(video, run_time, units=("bogus",))  # type: ignore[arg-type]
+
+    def test_concurrent_same_title_placeholders_get_distinct_paths(self, vault, monkeypatch):
+        """Same-title videos must not overwrite each other's placeholders."""
+        from pipeline_youtube import pipeline as pipeline_mod
+
+        # Old check-then-write behavior would trust this stale answer in both
+        # threads and write the same file twice. The production code must still
+        # allocate distinct paths via exclusive file creation.
+        monkeypatch.setattr(
+            pipeline_mod,
+            "resolve_unique_path",
+            lambda folder, base_name, ext=".md": folder / f"{base_name}{ext}",
+        )
+
+        run_time = datetime(2026, 4, 15, 21, 23)
+        videos = [
+            VideoMeta(
+                video_id=f"duplicate{i:02d}",
+                title="Same Title",
+                url=f"https://www.youtube.com/watch?v=duplicate{i:02d}",
+                duration=60,
+                channel="テストチャンネル",
+                upload_date="20260414",
+                playlist_title="Harness Engineering",
+            )
+            for i in range(2)
+        ]
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(
+                pool.map(
+                    lambda v: create_placeholder_notes(v, run_time, units=("scripts",)),
+                    videos,
+                )
+            )
+
+        paths = [result["scripts"] for result in results]
+        assert len(set(paths)) == 2
+        assert sorted(path.name for path in paths) == [
+            "2026-04-15-2123 Same Title-2.md",
+            "2026-04-15-2123 Same Title.md",
+        ]
+        written = "\n".join(path.read_text(encoding="utf-8") for path in paths)
+        assert 'video_id: "duplicate00"' in written
+        assert 'video_id: "duplicate01"' in written
 
 
 class TestComputeNotePaths:

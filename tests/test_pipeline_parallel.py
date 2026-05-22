@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 
+from pipeline_youtube import config
+from pipeline_youtube import main as main_mod
 from pipeline_youtube.playlist import VideoMeta
-from pipeline_youtube.stages.capture import VideoPrefetch, prefetch_video_download
+from pipeline_youtube.providers.claude_cli import ClaudeResponse
+from pipeline_youtube.stages.capture import CaptureResult, VideoPrefetch, prefetch_video_download
+from pipeline_youtube.transcript.base import TranscriptSnippet, TranscriptSource, build_result
 
 
 def _video() -> VideoMeta:
@@ -116,3 +121,87 @@ class TestPrefetchedPathConsumed:
         assert called["download"] == 0
         assert called["extract"] == 1
         assert result.outcomes and result.outcomes[0].success
+
+
+class TestDuplicateTitlePathSafety:
+    @pytest.mark.asyncio
+    async def test_duplicate_titles_are_serialized_under_video_concurrency(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Same-title videos share filename state, so their 01-04 writes must not overlap."""
+        config.set_vault_root(tmp_path)
+        run_time = datetime(2026, 4, 15, 21, 23)
+        videos = [
+            VideoMeta(
+                video_id=f"dupetitle{i}",
+                title="Same Title",
+                url=f"https://www.youtube.com/watch?v=dupetitle{i}",
+                duration=60,
+                channel="ch",
+                upload_date=None,
+                playlist_title="Test Playlist",
+            )
+            for i in range(2)
+        ]
+
+        active_scripts = 0
+        max_active_scripts = 0
+        seen_script_paths: list[Path] = []
+
+        def fake_scripts(video, path, *, dry_run, include_code_blocks=False):
+            nonlocal active_scripts, max_active_scripts
+            assert path.exists()
+            seen_script_paths.append(path)
+            active_scripts += 1
+            max_active_scripts = max(max_active_scripts, active_scripts)
+            time.sleep(0.05)
+            active_scripts -= 1
+            return build_result(
+                video_id=video.video_id,
+                source=TranscriptSource.OFFICIAL,
+                language="ja",
+                snippets=[TranscriptSnippet("字幕", 0.0, 5.0)],
+            )
+
+        def fake_summary(*args, **kwargs):
+            return ClaudeResponse(text="summary", model="haiku")
+
+        def fake_capture(*args, **kwargs):
+            return CaptureResult(
+                ranges=[],
+                outcomes=[],
+                video_downloaded=False,
+                capture_format="webp",
+            )
+
+        def fake_learning(video, summary_path, capture_path, learning_path, **kwargs):
+            learning_path.parent.mkdir(parents=True, exist_ok=True)
+            learning_path.write_text(f"---\n---\n\nbody {video.video_id}\n", encoding="utf-8")
+            return ClaudeResponse(text=f"body {video.video_id}", model="sonnet")
+
+        monkeypatch.setattr(main_mod, "run_stage_scripts", fake_scripts)
+        monkeypatch.setattr(main_mod, "run_stage_summary", fake_summary)
+        monkeypatch.setattr(main_mod, "run_stage_capture", fake_capture)
+        monkeypatch.setattr(main_mod, "run_stage_learning", fake_learning)
+        monkeypatch.setattr(main_mod, "prefetch_video_download", lambda *a, **kw: None)
+
+        try:
+            results = await main_mod._run_videos_concurrent(
+                videos,
+                run_time,
+                concurrency=2,
+                dry_run=False,
+                capture_format="auto",
+                models={"stage_02": "haiku", "stage_04": "sonnet"},
+            )
+        finally:
+            config.reset_vault_root()
+
+        assert max_active_scripts == 1
+        assert len({path.name for path in seen_script_paths}) == 2
+        assert [result.error for result in results] == [None, None]
+        learning_names = sorted(result.learning_md_path.name for result in results)
+        assert learning_names == [
+            "2026-04-15-2123 Same Title-2.md",
+            "2026-04-15-2123 Same Title.md",
+        ]

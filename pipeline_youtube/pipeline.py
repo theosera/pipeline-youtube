@@ -22,8 +22,11 @@ ahead of time should use `compute_note_paths` (pure path calc, no write).
 
 from __future__ import annotations
 
+import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Iterator
 
 from .config import get_vault_root
 from .obsidian import (
@@ -50,6 +53,47 @@ LEGACY_LEARNING_DIR = "04_Lerning_Material"
 # Units that get pre-created as empty placeholders before stages run.
 # 'learning' is excluded — see the module docstring for why.
 DEFAULT_PLACEHOLDER_UNITS: tuple[str, ...] = ("scripts", "summary", "capture")
+
+_NOTE_PATH_LOCKS_GUARD = threading.Lock()
+_NOTE_PATH_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+
+
+def _note_path_lock_key(video: VideoMeta, run_time: datetime) -> tuple[str, str]:
+    """Return the playlist-folder/note-base pair that shares filename state."""
+    return (
+        format_playlist_folder_name(run_time, video.playlist_title),
+        format_video_note_base(run_time, video.title),
+    )
+
+
+@contextmanager
+def video_note_path_lock(video: VideoMeta, run_time: datetime) -> Iterator[None]:
+    """Serialize processing for videos that would otherwise share note filenames.
+
+    `compute_note_paths` intentionally only observes the filesystem. Holding this
+    lock across a video's 01-04 writes prevents same-title videos processed by
+    `--concurrency` from all observing the same "free" 04 path before any of
+    them writes it.
+    """
+    key = _note_path_lock_key(video, run_time)
+    with _NOTE_PATH_LOCKS_GUARD:
+        lock = _NOTE_PATH_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        yield
+
+
+def _create_unique_text_file(folder: Path, base_name: str, ext: str, text: str) -> Path:
+    """Atomically create a collision-resolved file and write `text` to it."""
+    i = 1
+    while True:
+        suffix = "" if i == 1 else f"-{i}"
+        path = folder / f"{base_name}{suffix}{ext}"
+        try:
+            with path.open("x", encoding="utf-8") as f:
+                f.write(text)
+            return path
+        except FileExistsError:
+            i += 1
 
 
 def compute_note_paths(
@@ -112,9 +156,6 @@ def create_placeholder_notes(
         if not dry_run:
             folder.mkdir(parents=True, exist_ok=True)
 
-        path = resolve_unique_path(folder, note_base, ".md")
-        paths[unit_key] = path
-
         extra: dict[str, str] = {
             "playlist": video.playlist_title or "",
             "video_id": video.video_id,
@@ -132,7 +173,10 @@ def create_placeholder_notes(
             extra=extra,
         )
 
-        if not dry_run:
-            path.write_text(fm, encoding="utf-8")
+        if dry_run:
+            path = resolve_unique_path(folder, note_base, ".md")
+        else:
+            path = _create_unique_text_file(folder, note_base, ".md", fm)
+        paths[unit_key] = path
 
     return paths
