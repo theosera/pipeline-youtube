@@ -298,6 +298,12 @@ def run_stage_synthesis(
             profile=resolved_profile,
             agent_results=agent_results,
         )
+    if not topics:
+        return SynthesisStageResult(
+            error="alpha_parse_failed: α produced no topics",
+            profile=resolved_profile,
+            agent_results=agent_results,
+        )
 
     try:
         chapters, beta_res = call_beta(

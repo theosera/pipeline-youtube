@@ -360,6 +360,21 @@ class TestErrorHandling:
         assert result.error is not None
         assert "alpha_parse_failed" in result.error
 
+    def test_empty_alpha_topics_returns_error(self, vault, monkeypatch):
+        _mock_all_agents(monkeypatch, responses=[json.dumps({"topics": []}), BETA_OUT, LEADER_OUT])
+        videos = [_video(i) for i in range(1, 4)]
+        result = run_stage_synthesis(
+            videos,
+            ["b1", "b2", "b3"],
+            run_time=datetime(2026, 4, 15),
+            playlist_title="x",
+        )
+        assert result.error is not None
+        assert "alpha_parse_failed" in result.error
+        assert "no topics" in result.error
+        assert result.moc_path is None
+        assert result.chapter_paths == []
+
     def test_beta_parse_error_after_alpha_ok(self, vault, monkeypatch):
         _mock_all_agents(monkeypatch, responses=[ALPHA_OUT, "not json", LEADER_OUT])
         videos = [_video(i) for i in range(1, 4)]
