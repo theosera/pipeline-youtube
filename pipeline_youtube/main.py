@@ -30,7 +30,7 @@ from .checkpoint import (
 )
 from .config import VaultRootError, set_dry_run, set_vault_root
 from .genres import CODE_BEARING_GENRES, classify_playlist_genre
-from .obsidian import format_playlist_folder_name
+from .obsidian import format_playlist_folder_name, resolve_unique_path
 from .path_safety import ensure_safe_path
 from .pipeline import LEARNING_BASE, UNIT_DIRS, compute_note_paths, create_placeholder_notes
 from .playlist import VideoMeta, fetch_metadata, validate_youtube_url
@@ -216,6 +216,45 @@ def _load_existing_04_body(video_id: str, playlist_title: str, run_date: datetim
     return None
 
 
+def _find_unit_md(
+    video_id: str,
+    playlist_title: str,
+    run_date: datetime,
+    unit_key: str,
+    *,
+    preferred_folder_name: str | None = None,
+) -> Path | None:
+    """Locate an existing unit md for `video_id` within a given run date."""
+    from .config import get_vault_root
+
+    if unit_key not in UNIT_DIRS:
+        raise ValueError(f"unknown unit key: {unit_key!r}")
+
+    vault_root = get_vault_root()
+    rel = f"{LEARNING_BASE}/{UNIT_DIRS[unit_key]}"
+    safe_rel = ensure_safe_path(rel)
+    base = vault_root / safe_rel
+    if not base.exists():
+        return None
+
+    seen: set[Path] = set()
+    if preferred_folder_name:
+        preferred = base / preferred_folder_name
+        seen.add(preferred)
+        if preferred.exists():
+            for md in preferred.glob("*.md"):
+                if read_trusted_video_id(md) == video_id:
+                    return md
+
+    for candidate_folder in _unit_folder_candidates(base, playlist_title, run_date):
+        if candidate_folder in seen or not candidate_folder.exists():
+            continue
+        for md in candidate_folder.glob("*.md"):
+            if read_trusted_video_id(md) == video_id:
+                return md
+    return None
+
+
 def _find_summary_md(video_id: str, playlist_title: str, run_date: datetime) -> Path | None:
     """Locate the existing 02_Summary.md for `video_id` within a given run date.
 
@@ -223,23 +262,7 @@ def _find_summary_md(video_id: str, playlist_title: str, run_date: datetime) -> 
     in a prior Phase 1 run. Falls back across date-prefix matches so
     users can resume on a different clock day.
     """
-    from .config import get_vault_root
-
-    vault_root = get_vault_root()
-    rel = f"{LEARNING_BASE}/{UNIT_DIRS['summary']}"
-    safe_rel = ensure_safe_path(rel)
-    base = vault_root / safe_rel
-    if not base.exists():
-        return None
-
-    # Try today's canonical playlist folder, then any folder under base.
-    for candidate_folder in _summary_folder_candidates(base, playlist_title, run_date):
-        if not candidate_folder.exists():
-            continue
-        for md in candidate_folder.glob("*.md"):
-            if read_trusted_video_id(md) == video_id:
-                return md
-    return None
+    return _find_unit_md(video_id, playlist_title, run_date, "summary")
 
 
 def _print_cost_breakdown(
@@ -302,8 +325,8 @@ def _filter_to_reviewed(
     return kept
 
 
-def _summary_folder_candidates(base: Path, playlist_title: str, run_date: datetime):
-    """Yield likely playlist folders holding 02_Summary files.
+def _unit_folder_candidates(base: Path, playlist_title: str, run_date: datetime):
+    """Yield likely playlist folders holding unit files.
 
     Canonical first, then any date-prefixed folder that contains the
     sanitized title substring (mirrors `_find_learning_folder` heuristics).
@@ -329,6 +352,24 @@ def _summary_folder_candidates(base: Path, playlist_title: str, run_date: dateti
                 yield child
     except OSError:
         return
+
+
+def _summary_folder_candidates(base: Path, playlist_title: str, run_date: datetime):
+    """Backward-compatible wrapper for tests and older callers."""
+    yield from _unit_folder_candidates(base, playlist_title, run_date)
+
+
+def _learning_path_for_reviewed_summary(summary_md: Path, video: VideoMeta) -> Path:
+    """Return the Stage 04 output path that matches a reviewed Stage 02 note."""
+    from .config import get_vault_root
+
+    rel_folder = f"{LEARNING_BASE}/{UNIT_DIRS['learning']}/{summary_md.parent.name}"
+    safe_rel_folder = ensure_safe_path(rel_folder)
+    folder = get_vault_root() / safe_rel_folder
+    candidate = folder / summary_md.name
+    if not candidate.exists() or read_trusted_video_id(candidate) == video.video_id:
+        return candidate
+    return resolve_unique_path(folder, summary_md.stem, ".md")
 
 
 def _collect_existing_learning_bodies(
@@ -400,6 +441,63 @@ def _collect_existing_learning_bodies(
     return matched_videos, matched_bodies, folder_name
 
 
+def _process_reviewed_video(
+    video: VideoMeta,
+    run_time: datetime,
+    *,
+    playlist_title: str,
+    dry_run: bool,
+    models: dict[str, str],
+    code_bearing: bool = False,
+) -> VideoRunResult:
+    """Phase 3 path: reuse reviewed 02/03 notes and run only Stage 04."""
+    summary_md = _find_summary_md(video.video_id, playlist_title, run_time)
+    if summary_md is None:
+        return VideoRunResult(video=video, error="reviewed_summary_not_found")
+
+    capture_md = _find_unit_md(
+        video.video_id,
+        playlist_title,
+        run_time,
+        "capture",
+        preferred_folder_name=summary_md.parent.name,
+    )
+    if capture_md is None:
+        return VideoRunResult(video=video, error="reviewed_capture_not_found")
+
+    learning_md = _learning_path_for_reviewed_summary(summary_md, video)
+
+    click.echo(f"  [04] learning (model={models['stage_04']})...", nl=False)
+    learning_resp = run_stage_learning(
+        video,
+        summary_md,
+        capture_md,
+        learning_md,
+        run_time=run_time,
+        model=models["stage_04"],
+        dry_run=dry_run,
+        code_bearing=code_bearing,
+    )
+    click.echo(
+        f" in={learning_resp.input_tokens or 0}"
+        f" out={learning_resp.output_tokens or 0}"
+        f" cost=${learning_resp.total_cost_usd or 0:.3f}"
+    )
+
+    if dry_run:
+        body = learning_resp.text.strip()
+    else:
+        body = _strip_frontmatter(learning_md.read_text(encoding="utf-8"))
+
+    return VideoRunResult(
+        video=video,
+        learning_md_path=learning_md,
+        learning_md_body=body,
+        learning_cost_usd=learning_resp.total_cost_usd,
+        learning_model=learning_resp.model,
+    )
+
+
 def _process_video(
     video: VideoMeta,
     run_time: datetime,
@@ -409,10 +507,22 @@ def _process_video(
     models: dict[str, str],
     filler_words: tuple[str, ...] = (),
     stop_after_capture: bool = False,
+    resume_reviewed: bool = False,
+    playlist_title: str | None = None,
     capture_backend: Any = None,
     code_bearing: bool = False,
 ) -> VideoRunResult:
     try:
+        if resume_reviewed:
+            return _process_reviewed_video(
+                video,
+                run_time,
+                playlist_title=playlist_title or video.playlist_title or video.title or "",
+                dry_run=dry_run,
+                models=models,
+                code_bearing=code_bearing,
+            )
+
         paths = compute_note_paths(video, run_time)
         create_placeholder_notes(video, run_time, dry_run=dry_run)
 
@@ -538,6 +648,8 @@ async def _run_videos_concurrent(
     models: dict[str, str],
     filler_words: tuple[str, ...] = (),
     stop_after_capture: bool = False,
+    resume_reviewed: bool = False,
+    playlist_title: str | None = None,
     capture_backend: Any = None,
     code_bearing: bool = False,
 ) -> list[VideoRunResult]:
@@ -556,6 +668,8 @@ async def _run_videos_concurrent(
                 models=models,
                 filler_words=filler_words,
                 stop_after_capture=stop_after_capture,
+                resume_reviewed=resume_reviewed,
+                playlist_title=playlist_title,
                 capture_backend=capture_backend,
                 code_bearing=code_bearing,
             )
@@ -853,6 +967,8 @@ def cli(
                     models=models,
                     filler_words=filler_words,
                     stop_after_capture=stop_after_capture,
+                    resume_reviewed=resume_reviewed,
+                    playlist_title=playlist_title,
                     capture_backend=active_capture_backend,
                     code_bearing=code_bearing,
                 )
@@ -869,6 +985,8 @@ def cli(
                     models=models,
                     filler_words=filler_words,
                     stop_after_capture=stop_after_capture,
+                    resume_reviewed=resume_reviewed,
+                    playlist_title=playlist_title,
                     capture_backend=active_capture_backend,
                     code_bearing=code_bearing,
                 )
@@ -899,6 +1017,11 @@ def cli(
                 "stage 05 skipped"
             )
             return
+        if resume_reviewed:
+            folder_override = next(
+                (r.learning_md_path.parent.name for r in succeeded if r.learning_md_path),
+                None,
+            )
         synthesis_videos = [r.video for r in succeeded]
         synthesis_bodies = [r.learning_md_body or "" for r in succeeded]
 
