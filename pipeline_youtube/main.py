@@ -194,26 +194,33 @@ def _strip_frontmatter(text: str) -> str:
     return text[end + 4 :].lstrip()
 
 
-def _load_existing_04_body(video_id: str, playlist_title: str, run_date: datetime) -> str | None:
-    """Read the stage 04 body for a checkpoint-skipped video.
-
-    Returns the frontmatter-stripped body, or None if the file can't be found.
-    Uses the same M3 hardened frontmatter validation as `is_video_complete`.
-    """
+def _find_existing_04_md(video_id: str, playlist_title: str, run_date: datetime) -> Path | None:
+    """Locate the stage 04 md for a checkpoint-skipped video."""
     from .checkpoint import _find_learning_folder
 
     folder = _find_learning_folder(playlist_title, run_date)
     if folder is None:
         return None
     for md in folder.glob("*.md"):
-        if read_trusted_video_id(md) != video_id:
-            continue
-        try:
-            text = md.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        return _strip_frontmatter(text)
+        if read_trusted_video_id(md) == video_id:
+            return md
     return None
+
+
+def _load_existing_04_body(video_id: str, playlist_title: str, run_date: datetime) -> str | None:
+    """Read the stage 04 body for a checkpoint-skipped video.
+
+    Returns the frontmatter-stripped body, or None if the file can't be found.
+    Uses the same M3 hardened frontmatter validation as `is_video_complete`.
+    """
+    md = _find_existing_04_md(video_id, playlist_title, run_date)
+    if md is None:
+        return None
+    try:
+        text = md.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return _strip_frontmatter(text)
 
 
 def _find_unit_md(
@@ -945,8 +952,15 @@ def cli(
             if video.video_id in completed_ids and video.video_id not in force_set:
                 click.echo(f"\n[{i}/{len(videos)}] {video.video_id} {video.title}")
                 click.echo("  [skip] checkpoint: stage 04 already exists")
+                learning_md = _find_existing_04_md(video.video_id, playlist_title, run_time)
                 body = _load_existing_04_body(video.video_id, playlist_title, run_time)
-                results.append(VideoRunResult(video=video, learning_md_body=body))
+                results.append(
+                    VideoRunResult(
+                        video=video,
+                        learning_md_path=learning_md,
+                        learning_md_body=body,
+                    )
+                )
             else:
                 to_process.append((i, video))
 

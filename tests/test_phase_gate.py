@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from pipeline_youtube.main import _filter_to_reviewed, _find_summary_md, _process_video
+from pipeline_youtube.main import (
+    _filter_to_reviewed,
+    _find_existing_04_md,
+    _find_summary_md,
+    _process_video,
+)
 from pipeline_youtube.playlist import VideoMeta
 from pipeline_youtube.providers.claude_cli import ClaudeResponse
 
@@ -38,6 +43,15 @@ def _write_capture(path: Path, video_id: str) -> None:
     path.write_text(
         f'---\ndate: 2026-04-18 08:00\ntitle: "x"\nplaylist: "testlist"\n'
         f'video_id: "{video_id}"\n---\n\n[00:00 ~ 00:05]\n![[capture.webp]]\n',
+        encoding="utf-8",
+    )
+
+
+def _write_learning(path: Path, video_id: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f'---\ndate: 2026-04-18 08:00\ntitle: "x"\nplaylist: "testlist"\n'
+        f'video_id: "{video_id}"\n---\n\nlearning body\n',
         encoding="utf-8",
     )
 
@@ -121,6 +135,24 @@ class TestFilterToReviewed:
 
 
 class TestResumeReviewedProcessing:
+    def test_existing_04_lookup_keeps_checkpoint_skips_in_original_folder(self, tmp_path: Path):
+        from pipeline_youtube import config
+        from pipeline_youtube import main as main_mod
+
+        config.set_vault_root(tmp_path)
+        dt = datetime(2026, 4, 18, 12, 0)
+        phase1_folder = "2026-04-18-0800 testlist"
+        learning = (
+            tmp_path
+            / main_mod.LEARNING_BASE
+            / main_mod.UNIT_DIRS["learning"]
+            / phase1_folder
+            / "a.md"
+        )
+        _write_learning(learning, _VID_A)
+
+        assert _find_existing_04_md(_VID_A, "testlist", dt) == learning
+
     def test_runs_only_stage_04_against_existing_reviewed_notes(
         self, tmp_path: Path, monkeypatch
     ):
