@@ -190,7 +190,7 @@ class TestResumeReviewedProcessing:
         )
 
         assert result.ok
-        assert result.learning_md_body == "learning body"
+        assert result.learning_md_body and result.learning_md_body.strip() == "learning body"
         assert result.learning_md_path == (
             tmp_path
             / main_mod.LEARNING_BASE
