@@ -132,6 +132,46 @@ class TestCodeBearingAddendum:
         # Mentions the GitHub snippet section from Stage 01
         assert "## 関連コード" in sp
 
+    def test_code_bearing_includes_related_code_from_scripts(self, vault: Path):
+        summary_path = vault / "summary.md"
+        capture_path = vault / "capture.md"
+        scripts_path = vault / "scripts.md"
+        learning_path = vault / "learning.md"
+        _write_stub(summary_path, "sample summary")
+        _write_stub(capture_path, "[00:00 ~ 01:00]\n![[x.webp]]")
+        _write_stub(
+            scripts_path,
+            "[00:00](https://example.test) transcript\n\n"
+            "## 関連コード\n\n"
+            "### [demo.py](https://github.com/o/r/blob/main/demo.py)\n\n"
+            "```python\nprint('from github')\n```",
+        )
+
+        captured: dict = {}
+
+        def fake_invoke(**kw):
+            captured.update(kw)
+            return _fake_response()
+
+        with patch.object(learning_mod, "invoke_claude", fake_invoke):
+            run_stage_learning(
+                _video(),
+                summary_path,
+                capture_path,
+                learning_path,
+                run_time=datetime(2026, 4, 21, 12, 0),
+                model="sonnet",
+                code_bearing=True,
+                scripts_md_path=scripts_path,
+            )
+
+        prompt = captured["prompt"]
+        assert "## 関連コード md" in prompt
+        assert "## 関連コード" in prompt
+        assert "demo.py" in prompt
+        assert "print('from github')" in prompt
+        assert "<untrusted_content>" in prompt
+
     def test_addendum_lists_concept_and_practice_types(self):
         """Sanity check that the category partition is spelled out."""
         # concept categories

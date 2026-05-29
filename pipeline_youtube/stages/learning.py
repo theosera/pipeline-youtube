@@ -46,6 +46,7 @@ LEARNING_SYSTEM_PROMPT = """あなたは YouTube 動画の要約と画像キャ�
 1. **要約 md** — stage 02 の出力 (全体サマリ + 要点タイムライン)
 2. **キャプチャ md** — stage 03 の出力 (生の md、参考用)
 3. **画像マッピングテーブル** — `[タイムスタンプ範囲, 画像ファイル名]` の対応表。**画像選択はこのテーブルからのみ**行うこと
+4. **関連コード md (任意)** — coding 判定時に stage 01 が取得した GitHub/Gist スニペット
 
 ## 出力フォーマット
 
@@ -100,7 +101,7 @@ LEARNING_CODE_BEARING_ADDENDUM = """
 
 - `# 概念` 配下に置く `<種別>`: `概念` / `問題` / `結果` / `まとめ` / `背景`
 - `# 実践` 配下に置く `<種別>`: `解決策` / `実装手順` / `コマンド` / `コード例` / `セットアップ` / `デバッグ`
-- 動画末尾に **GitHub などから取得したコードブロック** が `## 関連コード` として既に存在する場合は、そこに記載されたファイル / コマンドを `# 実践` セクション内で参照すると学習者にとって有用 (引用は必要、創作は禁止)
+- 入力末尾に **GitHub などから取得したコードブロック** が `## 関連コード` として存在する場合は、そこに記載されたファイル / コマンドを `# 実践` セクション内で参照すると学習者にとって有用 (引用は必要、創作は禁止)
 - どちらのセクションにも該当しないテーマは `# 実践` の末尾に置く
 - どちらかのセクションが空になる場合は、そのトップレベル見出し自体を省略してよい (片方しか書く内容がない動画もある)
 """
@@ -158,6 +159,7 @@ def run_stage_learning(
     model: str = "sonnet",
     dry_run: bool = False,
     code_bearing: bool = False,
+    scripts_md_path: Path | None = None,
 ) -> ClaudeResponse:
     """Integrate 02 + 03 into 04 and write directly to `learning_md_path`.
 
@@ -169,7 +171,9 @@ def run_stage_learning(
     classifies the playlist), the system prompt receives an additional
     instruction to split the output into ``# 概念`` and ``# 実践``
     top-level sections so theoretical and practical content stay
-    separated.
+    separated. When ``scripts_md_path`` is provided for a code-bearing
+    playlist, the ``## 関連コード`` section produced by Stage 01 is also
+    included in the prompt as untrusted input.
     """
     if not summary_md_path.exists():
         raise FileNotFoundError(f"summary md not found: {summary_md_path}")
@@ -179,8 +183,12 @@ def run_stage_learning(
     summary_body = _strip_frontmatter(summary_md_path.read_text(encoding="utf-8"))
     capture_body = _strip_frontmatter(capture_md_path.read_text(encoding="utf-8"))
     mappings = parse_capture_mapping(capture_body)
+    related_code = None
+    if code_bearing and scripts_md_path is not None and scripts_md_path.exists():
+        scripts_body = _strip_frontmatter(scripts_md_path.read_text(encoding="utf-8"))
+        related_code = _extract_related_code_section(scripts_body)
 
-    prompt = _build_prompt(video, summary_body, capture_body, mappings)
+    prompt = _build_prompt(video, summary_body, capture_body, mappings, related_code)
     system_prompt = LEARNING_SYSTEM_PROMPT
     if code_bearing:
         system_prompt = LEARNING_SYSTEM_PROMPT + LEARNING_CODE_BEARING_ADDENDUM
@@ -203,6 +211,7 @@ def run_stage_learning(
 
 
 _MAX_INPUT_CHARS = 200_000
+_MAX_RELATED_CODE_CHARS = 50_000
 
 
 def _strip_frontmatter(text: str) -> str:
@@ -215,11 +224,22 @@ def _strip_frontmatter(text: str) -> str:
     return text[end + 4 :].lstrip()
 
 
+def _extract_related_code_section(scripts_body: str) -> str | None:
+    """Return the Stage 01 ``## 関連コード`` section, if present."""
+    marker = "## 関連コード"
+    start = scripts_body.rfind(marker)
+    if start == -1:
+        return None
+    section = scripts_body[start:].strip()
+    return section or None
+
+
 def _build_prompt(
     video: VideoMeta,
     summary_body: str,
     capture_body: str,
     mappings: list[CaptureMapping],
+    related_code: str | None = None,
 ) -> str:
     safe_title = sanitize_untrusted_text(
         video.title or "Untitled", 200, context="learning.video_title"
@@ -230,9 +250,18 @@ def _build_prompt(
     safe_capture = sanitize_untrusted_text(
         capture_body, _MAX_INPUT_CHARS // 2, context="learning.capture_body"
     )
+    safe_related_code = (
+        sanitize_untrusted_text(
+            related_code,
+            _MAX_RELATED_CODE_CHARS,
+            context="learning.related_code",
+        )
+        if related_code
+        else None
+    )
     mapping_table = _format_mapping_table(mappings)
 
-    return (
+    prompt = (
         f"以下は動画「{safe_title}」の stage 02/03 出力と画像マッピングテーブルです。"
         "上記のルールに従って stage 04 の learning md 本文を生成してください。\n\n"
         "## 画像マッピングテーブル (このテーブルからのみ画像を選ぶこと)\n\n"
@@ -242,6 +271,10 @@ def _build_prompt(
         "## キャプチャ md (参考、構造確認用)\n"
         f"{wrap_untrusted(safe_capture)}"
     )
+    if safe_related_code:
+        prompt += "\n\n## 関連コード md (参考、coding 判定時のみ)\n"
+        prompt += wrap_untrusted(safe_related_code)
+    return prompt
 
 
 def _write_md(
