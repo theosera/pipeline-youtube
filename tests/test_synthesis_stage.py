@@ -360,6 +360,23 @@ class TestErrorHandling:
         assert result.error is not None
         assert "alpha_parse_failed" in result.error
 
+    def test_parallel_alpha_partial_failure_aborts_stage(self, vault, monkeypatch):
+        # With the parallel profile, dropping one failed α batch would omit
+        # that batch's videos from the final MOC while still reporting success.
+        _mock_all_agents(monkeypatch, responses=[ALPHA_OUT, "not json", BETA_OUT, LEADER_OUT])
+        videos = [_video(i) for i in range(1, 12)]
+        result = run_stage_synthesis(
+            videos,
+            [f"body{i}" for i in range(1, 12)],
+            run_time=datetime(2026, 4, 15),
+            playlist_title="x",
+            profile="parallel",
+        )
+        assert result.error is not None
+        assert "alpha_parse_failed" in result.error
+        assert "some α batches failed" in result.error
+        assert result.moc_path is None
+
     def test_beta_parse_error_after_alpha_ok(self, vault, monkeypatch):
         _mock_all_agents(monkeypatch, responses=[ALPHA_OUT, "not json", LEADER_OUT])
         videos = [_video(i) for i in range(1, 4)]

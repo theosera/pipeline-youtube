@@ -357,10 +357,11 @@ def _collect_existing_learning_bodies(
         # and contains the sanitized playlist title as a substring. Handles
         # both the new YYYY-MM-DD HHmm <title> format and the legacy
         # YYYY-MM-DD <title> format from runs before the HHmm fix.
-        from .obsidian import sanitize_title_for_filename
+        from .obsidian import _strip_playlist_category_prefix, sanitize_title_for_filename
 
         date_prefix = run_time.strftime("%Y-%m-%d")
-        title_needle = sanitize_title_for_filename(playlist_title)
+        display_title = _strip_playlist_category_prefix(playlist_title)
+        title_needle = sanitize_title_for_filename(display_title)
         candidates = [
             p
             for p in base_dir.iterdir()

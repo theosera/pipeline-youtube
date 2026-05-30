@@ -786,13 +786,9 @@ def call_alpha_batched(
     batched_topics: list[list[Topic]] = []
     results: list[AgentCallResult] = []
 
-    # Per-future error handling: a single batch failure must not discard
-    # the successful ones. For a 30-video playlist split into 3 batches,
-    # a transient parse error on batch 3/3 should still yield a merged
-    # result from batches 1+2 rather than aborting the whole α stage.
-    # The orchestrator treats an empty topic list as an upstream failure
-    # via SynthesisParseError, preserving the existing "all batches
-    # failed → stage error" semantics.
+    # Collect every future before deciding whether to abort. Returning
+    # successful batches after a partial failure would silently synthesize
+    # an incomplete playlist, so any failed batch makes α fail as a unit.
     with ThreadPoolExecutor(max_workers=workers) as pool:
         future_to_index = {pool.submit(run_one, batch): i for i, batch in enumerate(batches)}
         indexed_topics: dict[int, list[Topic]] = {}
@@ -814,12 +810,27 @@ def call_alpha_batched(
             indexed_topics[idx] = topics
             indexed_results[idx] = res
 
+    if failures:
+        failures.sort(key=lambda item: item[0])
+        first_exc = failures[0][1]
+        failed_batches = ", ".join(str(idx + 1) for idx, _exc in failures)
+        if len(failures) == len(batches):
+            # Preserve the existing "all batches failed" contract so the
+            # orchestrator reports alpha_parse_failed.
+            raise SynthesisParseError(
+                f"all {len(batches)} α batches failed; first error: {first_exc!r}"
+            )
+        raise SynthesisParseError(
+            f"some α batches failed ({len(failures)}/{len(batches)}: "
+            f"{failed_batches}); aborting to avoid incomplete synthesis; "
+            f"first error: {first_exc!r}"
+        )
+
     if not indexed_topics:
         # Every batch failed — preserve the existing "parse failure"
         # contract so the orchestrator reports alpha_parse_failed.
-        first_exc = failures[0][1] if failures else None
         raise SynthesisParseError(
-            f"all {len(batches)} α batches failed; first error: {first_exc!r}"
+            f"all {len(batches)} α batches failed; first error: None"
         )
 
     # Restore deterministic ordering so merge_topics produces a stable
