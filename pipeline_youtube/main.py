@@ -200,19 +200,17 @@ def _load_existing_04_body(video_id: str, playlist_title: str, run_date: datetim
     Returns the frontmatter-stripped body, or None if the file can't be found.
     Uses the same M3 hardened frontmatter validation as `is_video_complete`.
     """
-    from .checkpoint import _find_learning_folder
+    from .checkpoint import _find_learning_folders
 
-    folder = _find_learning_folder(playlist_title, run_date)
-    if folder is None:
-        return None
-    for md in folder.glob("*.md"):
-        if read_trusted_video_id(md) != video_id:
-            continue
-        try:
-            text = md.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        return _strip_frontmatter(text)
+    for folder in _find_learning_folders(playlist_title, run_date):
+        for md in folder.glob("*.md"):
+            if read_trusted_video_id(md) != video_id:
+                continue
+            try:
+                text = md.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            return _strip_frontmatter(text)
     return None
 
 

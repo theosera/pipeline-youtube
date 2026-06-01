@@ -110,6 +110,12 @@ def _find_learning_folder(playlist_title: str, run_date: datetime) -> Path | Non
     so existing vaults continue to work without renaming. See
     `pipeline.LEGACY_LEARNING_DIR`.
     """
+    folders = _find_learning_folders(playlist_title, run_date)
+    return folders[0] if folders else None
+
+
+def _find_learning_folders(playlist_title: str, run_date: datetime) -> list[Path]:
+    """Return all matching stage 04 playlist folders across current and legacy bases."""
     vault_root = get_vault_root()
     bases = [
         vault_root / ensure_safe_path(f"{LEARNING_BASE}/{UNIT_DIRS['learning']}"),
@@ -117,19 +123,26 @@ def _find_learning_folder(playlist_title: str, run_date: datetime) -> Path | Non
     ]
     bases = [b for b in bases if b.exists()]
     if not bases:
-        return None
-    base = bases[0]
+        return []
 
-    # Canonical name
-    canonical = base / format_playlist_folder_name(run_date, playlist_title)
-    if canonical.exists():
-        return canonical
+    folders: list[Path] = []
+    seen: set[Path] = set()
+
+    def add(folder: Path) -> None:
+        if folder in seen or not folder.is_dir():
+            return
+        seen.add(folder)
+        folders.append(folder)
+
+    canonical_name = format_playlist_folder_name(run_date, playlist_title)
+    for base in bases:
+        add(base / canonical_name)
 
     # Fallback: date prefix + title substring (handles legacy folder names)
     date_prefix = run_date.strftime("%Y-%m-%d")
     title_needle = sanitize_title_for_filename(playlist_title)
     if not title_needle:
-        return None
+        return folders
 
     # Also handle `/`-separated playlist titles (take last segment)
     from .obsidian import _strip_playlist_category_prefix
@@ -138,10 +151,14 @@ def _find_learning_folder(playlist_title: str, run_date: datetime) -> Path | Non
     title_needle = sanitize_title_for_filename(display_title)
 
     for b in bases:
-        for child in b.iterdir():
+        try:
+            children = list(b.iterdir())
+        except OSError:
+            continue
+        for child in children:
             if child.is_dir() and child.name.startswith(date_prefix) and title_needle in child.name:
-                return child
-    return None
+                add(child)
+    return folders
 
 
 def is_video_complete(
@@ -154,11 +171,11 @@ def is_video_complete(
     Scans the 04_Learning_Material playlist folder for any .md file whose
     YAML frontmatter contains `video_id: "<video_id>"`.
     """
-    folder = _find_learning_folder(playlist_title, run_date)
-    if folder is None or not folder.exists():
-        return False
-
-    return any(read_trusted_video_id(md) == video_id for md in folder.glob("*.md"))
+    return any(
+        read_trusted_video_id(md) == video_id
+        for folder in _find_learning_folders(playlist_title, run_date)
+        for md in folder.glob("*.md")
+    )
 
 
 def get_completed_video_ids(
@@ -170,13 +187,10 @@ def get_completed_video_ids(
     Useful for batch skip decisions without calling is_video_complete
     in a loop (one folder scan instead of N).
     """
-    folder = _find_learning_folder(playlist_title, run_date)
-    if folder is None or not folder.exists():
-        return set()
-
     ids: set[str] = set()
-    for md in folder.glob("*.md"):
-        vid = read_trusted_video_id(md)
-        if vid is not None:
-            ids.add(vid)
+    for folder in _find_learning_folders(playlist_title, run_date):
+        for md in folder.glob("*.md"):
+            vid = read_trusted_video_id(md)
+            if vid is not None:
+                ids.add(vid)
     return ids
