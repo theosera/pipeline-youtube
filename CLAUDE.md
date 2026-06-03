@@ -3,6 +3,17 @@
 This is the authoritative CLAUDE.md for this repository. It is version-controlled;
 any modification is visible in `git diff` and requires review.
 
+> 3 層設計: 普遍ルール (行動原則 / セキュリティ境界 / エスカレーション) は共通グローバル層
+> `CLAUDE.global.md` (= `~/.claude/CLAUDE.md` 想定) にある。本ファイル = リポ固有ハードルール。
+> 下記の Git hooks / Security posture はこのリポ固有のハードルールなのでここに残す。
+
+## スキル発火表
+
+このリポは現状**追加スキルなし** (`.claude/skills/` を持たない)。CLAUDE.md が既に薄く、
+Git hooks / Security posture はハードルールとして常時ロードに置くのが適切なため。
+将来、特定タスクでしか要らない作業規約・機能知識が増えたら `.claude/skills/` へ分離し
+本表に発火条件を追加すること。
+
 ## Project
 
 YouTube playlist → Obsidian vault learning pipeline written in Python 3.13.
