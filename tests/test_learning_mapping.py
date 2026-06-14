@@ -79,6 +79,21 @@ class TestParseCaptureMapping:
         assert len(mappings) == 1
         assert "日本語タイトル" in mappings[0].filename
 
+    def test_path_qualified_embed_with_bracketed_playlist_folder(self):
+        body = (
+            "[00:00 ~ 01:03]\n"
+            "![[2026-06-14-1100 [LLM] Agent Teams/pyt_video_00.webp]]\n"
+        )
+
+        mappings = parse_capture_mapping(body)
+
+        assert mappings == [
+            CaptureMapping(
+                "[00:00 ~ 01:03]",
+                "2026-06-14-1100 [LLM] Agent Teams/pyt_video_00.webp",
+            )
+        ]
+
 
 class TestFormatMappingTable:
     def test_formats_as_markdown_table(self):

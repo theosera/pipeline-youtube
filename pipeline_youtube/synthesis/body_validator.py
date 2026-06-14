@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 
-_EMBED_RE = re.compile(r"!\[\[([^\]]+?)\]\]")
+_EMBED_RE = re.compile(r"!\[\[([^\n]+?)\]\]")
 _HTML_TAG_RE = re.compile(r"<(script|iframe|object|embed|style)[^>]*>", re.IGNORECASE)
 _TEMPLATER_RE = re.compile(r"<%[^%]*%>")
 

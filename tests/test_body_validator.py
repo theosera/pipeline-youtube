@@ -23,6 +23,12 @@ class TestExtractAllowedEmbeds:
     def test_strips_whitespace(self):
         assert extract_allowed_embeds(["![[  spaced.webp  ]]"]) == frozenset({"spaced.webp"})
 
+    def test_path_qualified_embed_with_bracketed_playlist_folder(self):
+        body = "![[2026-06-14-1100 [LLM] Agent Teams/pyt_video_00.webp]]"
+        assert extract_allowed_embeds([body]) == frozenset(
+            {"2026-06-14-1100 [LLM] Agent Teams/pyt_video_00.webp"}
+        )
+
 
 class TestValidateChapterBody:
     def test_allowed_embed_preserved(self):
@@ -34,6 +40,17 @@ class TestValidateChapterBody:
         assert "![[evil.webp]]" not in out
         assert "dropped embed" in out
         assert "evil.webp" in out
+
+    def test_bracketed_playlist_embed_preserved_when_allowed(self):
+        target = "2026-06-14-1100 [LLM] Agent Teams/pyt_video_00.webp"
+        out = validate_chapter_body(f"![[{target}]]", {target})
+        assert f"![[{target}]]" in out
+
+    def test_bracketed_playlist_embed_dropped_when_disallowed(self):
+        target = "2026-06-14-1100 [LLM] Agent Teams/pyt_video_00.webp"
+        out = validate_chapter_body(f"![[{target}]]", {"ok.webp"})
+        assert f"![[{target}]]" not in out
+        assert "dropped embed" in out
 
     def test_script_tag_stripped(self):
         out = validate_chapter_body("<script>alert(1)</script>hello", frozenset())
