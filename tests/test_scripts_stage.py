@@ -99,6 +99,7 @@ class TestRunStageScripts:
         returned TranscriptResult.snippets (consumed by Stage 02), not only in
         the rendered 01 markdown."""
         from pipeline_youtube.transcript.chunking import Chunk
+        from pipeline_youtube.transcript.correction import CorrectionResult
 
         video = _video()
         run_time = datetime(2026, 4, 14, 21, 41)
@@ -114,7 +115,10 @@ class TestRunStageScripts:
         monkeypatch.setattr(
             scripts_stage,
             "correct_chunks",
-            lambda chunks, *, model: [Chunk(start=c.start, text=c.text + " [FIX]") for c in chunks],
+            lambda chunks, *, model: CorrectionResult(
+                chunks=[Chunk(start=c.start, text=c.text + " [FIX]") for c in chunks],
+                cost_usd=0.42,
+            ),
         )
 
         result = scripts_stage.run_stage_scripts(
@@ -126,6 +130,8 @@ class TestRunStageScripts:
         assert all("[FIX]" in s.text for s in result.snippets)
         # ...and timestamps are preserved (first chunk starts at 0).
         assert result.snippets[0].start == 0.0
+        # ...and the correction cost rides along on the result.
+        assert result.correction_cost_usd == 0.42
         # ...and the rendered 01 md also has it.
         assert "[FIX]" in scripts_path.read_text(encoding="utf-8")
 
