@@ -297,7 +297,13 @@ class TestGlossaryNormalization:
         video = _video()
         run_time = datetime(2026, 4, 14, 21, 41)
         paths = create_placeholder_notes(video, run_time, dry_run=False)
-        transcript = _transcript([TranscriptSnippet("\u30d3\u30d6\u30b3\u30fc\u30c7\u30a3\u30f3\u30b0\u306e\u5c0e\u5165", 0.0, 30.0)])
+        transcript = _transcript(
+            [
+                TranscriptSnippet(
+                    "\u30d3\u30d6\u30b3\u30fc\u30c7\u30a3\u30f3\u30b0\u306e\u5c0e\u5165", 0.0, 30.0
+                )
+            ]
+        )
         monkeypatch.setattr(
             summary_stage,
             "invoke_claude",
@@ -310,10 +316,17 @@ class TestGlossaryNormalization:
         from pipeline_youtube.glossary.schema import Glossary, GlossaryEntry
 
         glossary = Glossary(
-            entries=(GlossaryEntry(canonical="Vibe Coding", aliases=["\u30d3\u30d6\u30b3\u30fc\u30c7\u30a3\u30f3\u30b0"]),)
+            entries=(
+                GlossaryEntry(
+                    canonical="Vibe Coding",
+                    aliases=["\u30d3\u30d6\u30b3\u30fc\u30c7\u30a3\u30f3\u30b0"],
+                ),
+            )
         )
         post = self._run(vault, monkeypatch, glossary)
-        assert "\u30d3\u30d6\u30b3\u30fc\u30c7\u30a3\u30f3\u30b0" not in post  # variant fully rewritten
+        assert (
+            "\u30d3\u30d6\u30b3\u30fc\u30c7\u30a3\u30f3\u30b0" not in post
+        )  # variant fully rewritten
         assert "Vibe Coding" in post
         assert "Vibe Coding\u5165\u9580" in post  # one-liner (frontmatter) normalized too
 
