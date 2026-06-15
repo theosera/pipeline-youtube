@@ -184,7 +184,12 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
             f"got {whisper_backend!r}"
         )
     whisper_model_raw = data.get("whisper_model")
-    whisper_model = str(whisper_model_raw) if whisper_model_raw else None
+    if whisper_model_raw is None or whisper_model_raw == "":
+        whisper_model = None
+    elif isinstance(whisper_model_raw, str):
+        whisper_model = whisper_model_raw
+    else:
+        raise click.UsageError("config.json: whisper_model must be a string or null")
 
     return CliConfig(
         vault_root=path,
