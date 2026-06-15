@@ -145,7 +145,8 @@ class TestRunStageScripts:
         assert report_path.exists()
         report = report_path.read_text(encoding="utf-8")
         assert "誤変換を訂正" in report
-        assert "https://example.com" in report
+        # Exact-line match (not a URL substring check, which trips CodeQL).
+        assert any(line.strip() == "- https://example.com" for line in report.splitlines())
 
     def test_dry_run_does_not_touch_file(self, vault, monkeypatch):
         video = _video()

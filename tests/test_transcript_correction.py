@@ -171,4 +171,5 @@ class TestRenderCorrectionReport:
         assert "[00:00]" in md and "[00:30]" in md
         assert "before: ぐぐる" in md and "after: Google" in md
         assert "ぐぐる→Google" in md
-        assert "https://g" in md
+        # Exact-line match (not a URL substring check, which trips CodeQL).
+        assert any(line.strip() == "- https://g" for line in md.splitlines())
