@@ -61,7 +61,9 @@ from .transcript.whisper_fallback import configure_whisper, describe_whisper
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
-_MODEL_KEYS = frozenset({"router", "stage_02", "stage_04", "alpha", "beta", "leader", "reviewer"})
+_MODEL_KEYS = frozenset(
+    {"router", "stage_01_correct", "stage_02", "stage_04", "alpha", "beta", "leader", "reviewer"}
+)
 # "gamma" accepted silently for backward-compat with existing config.json,
 # but the γ LLM role has been replaced by a Python set diff — the value is ignored.
 _DEPRECATED_MODEL_KEYS = frozenset({"gamma"})
@@ -93,6 +95,10 @@ class CliConfig:
     # large-v3-turbo). Set via config.json "whisper_backend"/"whisper_model".
     whisper_backend: str = "auto"
     whisper_model: str | None = None
+    # Stage 01b: when True, run the chunked transcript through an LLM +
+    # web-search correction pass (model = models["stage_01_correct"], default
+    # opus) before rendering. Opt-in because it is a paid, slower call.
+    transcript_correction: bool = False
 
 
 def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
@@ -125,7 +131,9 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
         )
     # Router defaults to haiku regardless of fallback_model — it's a single
     # cheap classification call where speed/cost beats reasoning depth.
-    _per_key_default = {"router": "haiku"}
+    # Stage 01b transcript correction defaults to opus: it fact-checks proper
+    # nouns via web search, where reasoning depth matters most.
+    _per_key_default = {"router": "haiku", "stage_01_correct": "opus"}
     models = {
         key: models_raw.get(key, _per_key_default.get(key, fallback_model)) for key in _MODEL_KEYS
     }
@@ -191,6 +199,10 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
     else:
         raise click.UsageError("config.json: whisper_model must be a string or null")
 
+    transcript_correction_raw = data.get("transcript_correction", False)
+    if not isinstance(transcript_correction_raw, bool):
+        raise click.UsageError("config.json: transcript_correction must be a boolean")
+
     return CliConfig(
         vault_root=path,
         models=models,
@@ -202,6 +214,7 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
         glossary=glossary,
         whisper_backend=whisper_backend,
         whisper_model=whisper_model,
+        transcript_correction=transcript_correction_raw,
     )
 
 
@@ -490,18 +503,24 @@ def _process_video(
     code_bearing: bool = False,
     glossary: Glossary | None = None,
     media_path: Path | None = None,
+    correct_transcript: bool = False,
 ) -> VideoRunResult:
     try:
         paths = compute_note_paths(video, run_time)
         create_placeholder_notes(video, run_time, dry_run=dry_run)
 
-        click.echo("  [01] scripts...", nl=False)
+        correct_model = models["stage_01_correct"] if correct_transcript else None
+        if correct_model:
+            click.echo(f"  [01] scripts (correct={correct_model})...", nl=False)
+        else:
+            click.echo("  [01] scripts...", nl=False)
         transcript = run_stage_scripts(
             video,
             paths["scripts"],
             dry_run=dry_run,
             include_code_blocks=code_bearing,
             media_path=media_path,
+            correct_model=correct_model,
         )
         with contextlib.suppress(Exception):
             record_transcript_stat(video, transcript)
@@ -641,6 +660,7 @@ async def _run_videos_concurrent(
     code_bearing: bool = False,
     glossary: Glossary | None = None,
     media_map: dict[str, Path] | None = None,
+    correct_transcript: bool = False,
 ) -> list[VideoRunResult]:
     """Process multiple videos concurrently with bounded parallelism."""
     sem = asyncio.Semaphore(concurrency)
@@ -662,6 +682,7 @@ async def _run_videos_concurrent(
                 code_bearing=code_bearing,
                 glossary=glossary,
                 media_path=media.get(video.video_id),
+                correct_transcript=correct_transcript,
             )
 
     tasks = [_task(i, v) for i, v in enumerate(videos, 1)]
@@ -1096,6 +1117,7 @@ def cli(
                     code_bearing=code_bearing,
                     glossary=cfg.glossary,
                     media_map=media_map,
+                    correct_transcript=cfg.transcript_correction,
                 )
             )
             results.extend(concurrent_results)
@@ -1114,6 +1136,7 @@ def cli(
                     code_bearing=code_bearing,
                     glossary=cfg.glossary,
                     media_path=media_map.get(video.video_id),
+                    correct_transcript=cfg.transcript_correction,
                 )
                 results.append(result)
 

@@ -1,6 +1,8 @@
 # 設計: Stage 01 文字起こし刷新（高速文字起こし＋agentic web search 訂正）
 
-> ステータス: **設計（実装前のレビュー用）**。非SDK（claude CLI 版）先行で実装し、合意後 SDK へ移植する。
+> ステータス: **非SDK 実装済み**（このリポ）。SDK へは後続 PR で移植する。
+> 実装後に判明した差分は §6・§4 の注記参照（非SDK には永続 transcript キャッシュが無く、
+> claude CLI には拡張思考フラグが無い）。ユーザー向け手順は `docs/transcribe.md`。
 
 ## 1. 背景・目的
 
@@ -46,8 +48,9 @@ local : 高速 Whisper  ─┘     (start/duration 保持)            ・固有�
 
 - 新パラメータ `allowed_tools: list[str] | None`（例 `["WebSearch"]`）。
   指定時は `--tools <names>` ＋ `--allowedTools <names>`（自動承認）を付与。`disallow_tools` と排他。
-- 新パラメータ `thinking: bool`（または `thinking_budget` 数値）。claude CLI の拡張思考オプションへ写像。
-  ※ claude CLI の正確なフラグは実装時に `claude --help` で確定（環境差吸収のため `extra_args` 併用も可）。
+- **拡張思考**: claude CLI には拡張思考の専用フラグが無い（`claude --help` で確認）。非SDK 版は
+  **モデル指定（既定 opus）**で対応し、`thinking` パラメータの配線は **SDK 移植時**（Anthropic API の
+  `thinking={"type":"enabled","budget_tokens":...}`）に行う。
 - WebSearch は OAuth/プラン課金で動く（API キーは既存どおり環境から除去）。
 
 ## 5. 設定（config.json）
@@ -56,12 +59,12 @@ local : 高速 Whisper  ─┘     (start/duration 保持)            ・固有�
 - 任意で `whisper_model` を「速い小モデル」に倒す運用を docs に明記（例 local の一次パスは turbo/ small）。
 - 訂正の上限系（バッチサイズ、最大 web 検索回数の目安）は config で調整可能にする。
 
-## 6. transcript キャッシュの再設計（Codex #3 をここで解消）
+## 6. transcript キャッシュの再設計（Codex #3） — **非SDK では不要**
 
-- 現状キー `(video_id, tier, lang)` に **訂正の有無・モデル**が含まれず、モデル変更で陳腐化。
-- 新キー: 粗トランスクリプトは従来どおり tier 別、**訂正済みは別レイヤ**
-  `transcript_corrected/(video_id, source_tier, correct_model)` で保存。
-  → backend/model を変えれば別エントリになり、古い結果のサイレント再利用を防ぐ。
+- **実装時の判明事項**: 非SDK 版には永続 transcript キャッシュが存在しない（`cache.py` 無し）。
+  よってモデル変更でのサイレント再利用問題は**非SDK では起きず**、本 PR でキャッシュ変更は不要。
+- Codex #3 は **SDK 固有**（SDK は `cache.py` の `(video_id, tier, lang)` キャッシュを持つ）。
+  SDK 移植時に「訂正済みを `(video_id, source_tier, correct_model)` で別レイヤ保存」して解消する。
 
 ## 7. ステージ境界・契約
 

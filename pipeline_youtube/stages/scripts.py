@@ -31,6 +31,7 @@ from ..playlist import VideoMeta
 from ..transcript.auto import fetch_auto
 from ..transcript.base import Fetcher, TranscriptResult, fetch_with_fallback
 from ..transcript.chunking import Chunk, chunk_by_window
+from ..transcript.correction import correct_chunks
 from ..transcript.official import fetch_official
 
 DEFAULT_LANGUAGES: list[str] = ["ja", "en"]
@@ -44,6 +45,7 @@ def run_stage_scripts(
     dry_run: bool = False,
     include_code_blocks: bool = False,
     media_path: Path | None = None,
+    correct_model: str | None = None,
 ) -> TranscriptResult:
     """Fetch transcript, chunk it, and append the body to `scripts_md_path`.
 
@@ -53,6 +55,9 @@ def run_stage_scripts(
     - When `media_path` is set (``--local-media`` / fully offline), skips the
       caption tiers entirely and transcribes that local file with Whisper —
       so YouTube is never contacted for this video.
+    - When `correct_model` is set (Stage 01b), the chunked transcript is
+      passed through an LLM + web-search correction pass (timestamps
+      preserved) before rendering. Skipped under `dry_run`.
     - Does NOT overwrite the frontmatter already present; appends below.
     - Returns the `TranscriptResult` so the caller can record stats and
       pass timing info to stages 02/03.
@@ -95,7 +100,13 @@ def run_stage_scripts(
             ],
         )
 
-    body = _render_chunks(video, chunk_by_window(result.snippets, window_seconds))
+    chunks = chunk_by_window(result.snippets, window_seconds)
+    # Stage 01b: repair ASR/caption errors with an LLM + web search. Best-effort
+    # and timestamp-preserving — never blocks the run. Skipped on dry runs (it
+    # is a paid LLM call) and when there is nothing to correct.
+    if correct_model and not dry_run and chunks:
+        chunks = correct_chunks(chunks, model=correct_model)
+    body = _render_chunks(video, chunks)
 
     code_section = ""
     # Skip the description fetch under --local-media: it hits YouTube (yt-dlp),

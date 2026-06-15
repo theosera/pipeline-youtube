@@ -199,6 +199,7 @@ def _invoke_claude_once(
     system_prompt: str | None = None,
     model: str = "sonnet",
     disallow_tools: bool = True,
+    allowed_tools: list[str] | None = None,
     timeout: int = 600,
     resume_session: str | None = None,
     persist_session: bool = False,
@@ -226,6 +227,13 @@ def _invoke_claude_once(
     disallow_tools:
         If True (default), passes `--tools ""` so Claude cannot invoke
         any built-in tools. Agent Teams roles are pure text generation.
+        Ignored when `allowed_tools` is set.
+    allowed_tools:
+        Built-in tool names to enable for this call (e.g. ["WebSearch"]).
+        When set, passes `--tools`/`--allowedTools` so the tools are
+        available and auto-approved in headless mode. Used by Stage 01b
+        transcript correction to let the model fact-check terms via web
+        search. Takes precedence over `disallow_tools`.
     timeout:
         Seconds before `subprocess.run` kills the child. Agent Teams
         large-context calls may need > 600s — adjust per stage.
@@ -282,11 +290,18 @@ def _invoke_claude_once(
     if extra_args:
         cmd.extend(extra_args)
 
-    # IMPORTANT: --tools "" must go LAST among value-taking flags so
-    # its variadic parser has no following positional to accidentally
-    # consume. (We pass prompt via stdin so there's no positional, but
-    # we still order it last to be safe against future refactors.)
-    if disallow_tools:
+    # Tool flags are variadic, so they must go LAST among value-taking flags
+    # (their parser would otherwise consume a following positional). We pass
+    # the prompt via stdin so there is no positional, but we still order these
+    # last to be safe against future refactors.
+    if allowed_tools:
+        # Enable specific built-in tools (e.g. ["WebSearch"]) for this call.
+        # `--allowedTools` auto-approves them so headless `claude -p` does not
+        # block on a permission prompt; `--tools` makes them available at all.
+        # Takes precedence over `disallow_tools`.
+        cmd.extend(["--allowedTools", *allowed_tools])
+        cmd.extend(["--tools", *allowed_tools])
+    elif disallow_tools:
         cmd.extend(["--tools", ""])
 
     # Strip ANTHROPIC_API_KEY from the subprocess environment so
@@ -375,6 +390,7 @@ def invoke_claude(
     system_prompt: str | None = None,
     model: str = "sonnet",
     disallow_tools: bool = True,
+    allowed_tools: list[str] | None = None,
     timeout: int = 600,
     resume_session: str | None = None,
     persist_session: bool = False,
@@ -411,6 +427,7 @@ def invoke_claude(
                 system_prompt=system_prompt,
                 model=model,
                 disallow_tools=disallow_tools,
+                allowed_tools=allowed_tools,
                 timeout=timeout,
                 resume_session=resume_session,
                 persist_session=persist_session,
