@@ -45,7 +45,6 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
-import platform
 import re
 from pathlib import Path
 from typing import Any
@@ -62,81 +61,9 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _TMP_DIR = _PROJECT_ROOT / "tmp"
 _LOCK_PATH = _TMP_DIR / ".whisper.lock"
 
-# Default openai-whisper model — "small" balances speed and accuracy on CPU
-# while staying memory-light. Override via config.json `whisper_model`.
+# Default whisper model — "small" balances speed and accuracy for most
+# YouTube content. Override via config.json whisper_model field (future).
 DEFAULT_WHISPER_MODEL = "small"
-# Default MLX model — on Apple Silicon the GPU runs large-v3-turbo fast at low
-# memory, so we can afford near-large accuracy by default.
-DEFAULT_MLX_MODEL = "large-v3-turbo"
-
-# Logical model name → mlx-community HF repo. An unmapped value is passed
-# through verbatim so a full repo id also works.
-_MLX_REPOS = {
-    "tiny": "mlx-community/whisper-tiny",
-    "base": "mlx-community/whisper-base",
-    "small": "mlx-community/whisper-small",
-    "medium": "mlx-community/whisper-medium",
-    "large-v3": "mlx-community/whisper-large-v3",
-    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
-    "turbo": "mlx-community/whisper-large-v3-turbo",
-}
-
-_WHISPER_BACKENDS = frozenset({"auto", "mlx", "openai"})
-
-# Backend/model selection, set once at startup via configure_whisper(). Default
-# "auto" → MLX on Apple Silicon when installed, else openai-whisper.
-_BACKEND = "auto"
-_MODEL: str | None = None
-
-
-def configure_whisper(*, backend: str = "auto", model: str | None = None) -> None:
-    """Select the transcription backend and model (call once from config)."""
-    global _BACKEND, _MODEL
-    if backend not in _WHISPER_BACKENDS:
-        raise ValueError(
-            f"whisper_backend must be one of {sorted(_WHISPER_BACKENDS)}, got {backend!r}"
-        )
-    _BACKEND = backend
-    _MODEL = model or None
-
-
-def _mlx_available() -> bool:
-    """True only on Apple Silicon with `mlx_whisper` importable (GPU path)."""
-    if platform.system() != "Darwin" or platform.machine() != "arm64":
-        return False
-    try:
-        import mlx_whisper  # type: ignore[import-untyped]  # noqa: F401
-    except ImportError:
-        return False
-    return True
-
-
-def _resolve_backend() -> str:
-    """Concrete backend: 'auto' resolves to mlx on Apple Silicon, else openai."""
-    if _BACKEND == "auto":
-        return "mlx" if _mlx_available() else "openai"
-    return _BACKEND
-
-
-def _resolve_mlx_repo() -> str:
-    return _MLX_REPOS.get(_MODEL or DEFAULT_MLX_MODEL, _MODEL or DEFAULT_MLX_MODEL)
-
-
-def _resolve_openai_model() -> str:
-    return _MODEL or DEFAULT_WHISPER_MODEL
-
-
-def describe_whisper() -> str:
-    """One-line resolved backend+model, e.g. 'auto→mlx (large-v3-turbo)'.
-
-    Lets startup logging confirm whether MLX (GPU) is actually in use vs a
-    silent fall-back to openai-whisper (CPU).
-    """
-    backend = _resolve_backend()
-    model = (_MODEL or DEFAULT_MLX_MODEL) if backend == "mlx" else _resolve_openai_model()
-    prefix = f"auto→{backend}" if _BACKEND == "auto" else backend
-    return f"{prefix} ({model})"
-
 
 # Each whisper `_MODELS` URL is of the form:
 #   https://openaipublic.azureedge.net/main/whisper/models/<sha256>/<name>.pt
@@ -272,23 +199,18 @@ def verify_whisper_model_integrity(model_name: str) -> None:
         )
 
 
-def _run_whisper(audio_path: Path, language: str | None = None) -> list[dict[str, Any]]:
-    """Transcribe `audio_path` with the resolved backend; return segment dicts.
-
-    Dispatches to MLX (Apple-Silicon GPU) or openai-whisper (CPU) per
-    `configure_whisper`. Segments have keys: start, end, text.
-    """
-    if _resolve_backend() == "mlx":
-        return _run_whisper_mlx(audio_path, language)
-    return _run_whisper_openai(audio_path, _resolve_openai_model(), language)
-
-
-def _run_whisper_openai(
+def _run_whisper(
     audio_path: Path,
-    model_name: str,
-    language: str | None,
+    model_name: str = DEFAULT_WHISPER_MODEL,
+    language: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Run openai-whisper (CPU/PyTorch). Verifies the cached model first."""
+    """Run openai-whisper on the audio file and return segments.
+
+    Returns a list of segment dicts with keys: start, end, text.
+    Raises TranscriptNotAvailable if whisper is not installed or fails,
+    or if the cached model file has been tampered with (see
+    `verify_whisper_model_integrity`).
+    """
     try:
         import whisper  # type: ignore[import-untyped]
     except ImportError as e:
@@ -309,27 +231,6 @@ def _run_whisper_openai(
         raise TranscriptNotAvailable(f"whisper_transcribe_failed: {e}") from e
 
     return result.get("segments", [])
-
-
-def _run_whisper_mlx(audio_path: Path, language: str | None) -> list[dict[str, Any]]:
-    """Run mlx-whisper (Apple-Silicon GPU). Model weights come from HF cache."""
-    try:
-        import mlx_whisper  # type: ignore[import-untyped]
-    except ImportError as e:
-        raise TranscriptNotAvailable("mlx_whisper_not_installed") from e
-
-    try:
-        result = mlx_whisper.transcribe(
-            str(audio_path),
-            path_or_hf_repo=_resolve_mlx_repo(),
-            language=language,
-            verbose=False,
-        )
-    except Exception as e:
-        raise TranscriptNotAvailable(f"mlx_transcribe_failed: {e}") from e
-
-    segments = result.get("segments", [])
-    return list(segments)
 
 
 def _segments_to_snippets(segments: list[dict[str, Any]]) -> list[TranscriptSnippet]:
@@ -355,13 +256,12 @@ def fetch_whisper(
     video_id: str,
     languages: list[str],
     *,
-    media_path: Path | None = None,
+    model_name: str = DEFAULT_WHISPER_MODEL,
 ) -> TranscriptResult:
     """Tier 3 fetcher: download audio + Whisper transcribe.
 
     Acquires a file-based global lock before running. Only one Whisper
-    instance runs at a time regardless of --concurrency. The backend/model
-    are chosen by `configure_whisper` (MLX on Apple Silicon, else openai).
+    instance runs at a time regardless of --concurrency.
 
     Parameters
     ----------
@@ -370,23 +270,14 @@ def fetch_whisper(
     languages:
         Preferred languages. The first entry is used as Whisper's
         `language` hint. If empty, Whisper auto-detects.
-    media_path:
-        When given, transcribe this **local** file directly instead of
-        downloading the audio (used by ``--local-media`` / fully-offline mode).
-        Whisper reads any ffmpeg-decodable container (mp4/mkv/…). The local
-        file is never deleted; only a self-downloaded temp file is cleaned up.
+    model_name:
+        Whisper model size (tiny/base/small/medium/large).
     """
-    # Check the resolved backend's runtime is importable before acquiring lock.
-    if _resolve_backend() == "mlx":
-        try:
-            import mlx_whisper  # type: ignore[import-untyped]  # noqa: F401
-        except ImportError as e:
-            raise TranscriptNotAvailable("mlx_whisper_not_installed") from e
-    else:
-        try:
-            import whisper  # type: ignore[import-untyped]  # noqa: F401
-        except ImportError as e:
-            raise TranscriptNotAvailable("whisper_not_installed") from e
+    # Check whisper is importable before acquiring lock
+    try:
+        import whisper  # type: ignore[import-untyped]  # noqa: F401
+    except ImportError as e:
+        raise TranscriptNotAvailable("whisper_not_installed") from e
 
     # File-based lock — only one whisper process at a time
     try:
@@ -400,15 +291,11 @@ def fetch_whisper(
     lock_ctx = filelock.FileLock(_LOCK_PATH, timeout=-1) if filelock else _noop_lock()
 
     with lock_ctx:
-        downloaded: Path | None = None
+        audio_path: Path | None = None
         try:
-            if media_path is not None:
-                source_path = media_path
-            else:
-                downloaded = _download_audio(video_id)
-                source_path = downloaded
+            audio_path = _download_audio(video_id)
             lang_hint = languages[0] if languages else None
-            segments = _run_whisper(source_path, language=lang_hint)
+            segments = _run_whisper(audio_path, model_name=model_name, language=lang_hint)
             snippets = _segments_to_snippets(segments)
 
             if not snippets:
@@ -421,11 +308,10 @@ def fetch_whisper(
                 snippets=snippets,
             )
         finally:
-            # Only clean up a file we downloaded ourselves — never the user's
-            # local --local-media file.
-            if downloaded is not None:
+            # Clean up audio file
+            if audio_path is not None:
                 with contextlib.suppress(OSError):
-                    downloaded.unlink(missing_ok=True)
+                    audio_path.unlink(missing_ok=True)
 
 
 class _noop_lock:

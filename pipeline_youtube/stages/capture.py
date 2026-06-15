@@ -308,7 +308,6 @@ def run_stage_capture(
     dry_run: bool = False,
     prefetched_video_path: Path | None = None,
     backend: CaptureBackend | None = None,
-    delete_video: bool = True,
 ) -> CaptureResult:
     """Download the video, extract animated frames, update the 03 md.
 
@@ -437,11 +436,8 @@ def run_stage_capture(
             capture_format=ext,
         )
     finally:
-        # delete_video=False preserves a caller-owned source (e.g. the user's
-        # --local-media file); only clean up files this stage downloaded.
-        if delete_video:
-            with contextlib.suppress(OSError):
-                tmp_video_path.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            tmp_video_path.unlink(missing_ok=True)
 
 
 # =====================================================
