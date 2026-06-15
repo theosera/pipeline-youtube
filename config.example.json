@@ -12,7 +12,5 @@
   "capture_docker_image": "pipeline-youtube-capture:latest",
   "synthesis_timeout": "auto",
   "synthesis_profile": "auto",
-  "glossary_path": null,
-  "whisper_backend": "auto",
-  "whisper_model": null
+  "glossary_path": null
 }

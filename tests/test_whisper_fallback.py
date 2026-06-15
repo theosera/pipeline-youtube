@@ -146,6 +146,4 @@ class TestFetchWhisper:
             result = fetch_whisper("test_id", [])
 
         assert result.language is None
-        # Backend/model is resolved inside _run_whisper now (via configure_whisper),
-        # so fetch_whisper passes only the path + language hint.
-        mock_run.assert_called_once_with(audio_file, language=None)
+        mock_run.assert_called_once_with(audio_file, model_name="small", language=None)
