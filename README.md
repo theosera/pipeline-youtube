@@ -81,6 +81,10 @@ cd __skills/pipeline-youtube
 uv sync
 # Whisper フォールバック (3次) を使う場合は別途インストール (torch 含み ~2GB):
 #   uv sync --extra whisper
+# ★重要: Whisper は optional extra なので、素の `uv run ...` は実行時に環境を
+#   ロックへ同期し直して Whisper を毎回アンインストールする。Whisper を効かせる
+#   実行は必ず `uv run --extra whisper ...` を使うこと (下の実行例も同様)。
+#   字幕が IP ブロックされた動画は、この Whisper フォールバックだけが命綱になる。
 
 # 編集可能インストール (main.py の import エラー防止)
 uv pip install -e .
@@ -126,6 +130,10 @@ cp config.example.json config.json
 ```bash
 # 通常実行: プレイリスト全体を 01〜05 まで処理
 uv run python -m pipeline_youtube.main "https://www.youtube.com/playlist?list=PLxxx"
+
+# Whisper フォールバックを効かせて実行 (字幕が無い/IP ブロックされた動画を音声から
+# 文字起こし)。★`--extra whisper` を付けないと uv が Whisper を毎回剥がす点に注意。
+uv run --extra whisper python -m pipeline_youtube.main "https://www.youtube.com/playlist?list=PLxxx"
 
 # dry-run (Vault 書き込みなし、stdout に全 md を出力)
 uv run python -m pipeline_youtube.main "https://www.youtube.com/playlist?list=PLxxx" --dry-run
@@ -315,7 +323,8 @@ uv run pytest tests/ -q
 | `config.json vault_root is not configured` | `cp config.example.json config.json` してから `vault_root` を実在するパスに書き換える |
 | `claude: command not found` (stage 02/04/05 が失敗) | Claude Code CLI (`claude` コマンド) を `npm i -g @anthropic-ai/claude-code` 等でインストール → `claude login` で OAuth を通す |
 | stage 03 の capture が `format_unavailable` | ffmpeg が PATH に無い、または libwebp / gif2webp 両方が欠落。`--capture-format gif` を明示するか `brew install ffmpeg webp` |
-| stage 01 が `all transcript tiers failed` | 字幕なし動画では Whisper extra が必要: `uv sync --extra whisper`。それでも NG なら動画が非公開 / リージョンブロック |
+| stage 01 が `all transcript tiers failed` | コンソールの `reason=(...)` か `logs/transcript_stats_YYYY-MM-DD.jsonl` の `fallback_reason` で原因を特定する。`whisper:whisper_not_installed` → **`uv run --extra whisper ...` で実行** (素の `uv run` は extra を毎回剥がす)。`auto:ip_blocked` → 後述の IP ブロック行へ。`retrieve_failed:VideoUnplayable` → 動画が非公開 / 削除 / リージョンブロック |
+| stage 01 が `auto:ip_blocked` で多発 (字幕が大量に落ちる) | **YouTube 側の IP スロットリング (外部要因)**。`--sub-agents` を下げる (1〜2) / 並列を抑える / 実行間隔を空ける。`uv run --extra whisper` を有効にしておけば、字幕がブロックされても音声から Whisper で文字起こしして回避できる |
 | stage 05 が `[skip] only N videos succeeded` | プレイリストの stage 04 成功数が `--min-playlist-size` (デフォルト 3) 未満。成功数を増やすか `--min-playlist-size 2` で緩和 |
 | Templater が 04 の md を空ファイルと誤認してリネーム | stage 04 は placeholder を作らず直接書き込むよう設計済み。該当フォルダの Templater テンプレート指定を解除するのが確実 |
 | `--synthesis-only` で `04 folder not found` | 指定日付のフォルダに該当プレイリストの 04 md が存在しないときに出る。まず 01〜04 を通す |
