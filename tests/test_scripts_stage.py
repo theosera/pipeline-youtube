@@ -99,6 +99,7 @@ class TestRunStageScripts:
         returned TranscriptResult.snippets (consumed by Stage 02), not only in
         the rendered 01 markdown."""
         from pipeline_youtube.transcript.chunking import Chunk
+        from pipeline_youtube.transcript.correction import CorrectionEntry, CorrectionResult
 
         video = _video()
         run_time = datetime(2026, 4, 14, 21, 41)
@@ -110,11 +111,22 @@ class TestRunStageScripts:
             "fetch_with_fallback",
             lambda video_id, languages, fetchers: _fake_fetch_success()(video_id, languages),
         )
-        # Stub the LLM correction: tag each chunk so we can detect propagation.
+        # Stub the LLM correction: tag each chunk + one audit entry.
         monkeypatch.setattr(
             scripts_stage,
             "correct_chunks",
-            lambda chunks, *, model: [Chunk(start=c.start, text=c.text + " [FIX]") for c in chunks],
+            lambda chunks, *, model: CorrectionResult(
+                chunks=[Chunk(start=c.start, text=c.text + " [FIX]") for c in chunks],
+                entries=[
+                    CorrectionEntry(
+                        mmss="00:00",
+                        before="x",
+                        after="x [FIX]",
+                        note="誤変換を訂正",
+                        sources=("https://example.com",),
+                    )
+                ],
+            ),
         )
 
         result = scripts_stage.run_stage_scripts(
@@ -128,6 +140,12 @@ class TestRunStageScripts:
         assert result.snippets[0].start == 0.0
         # ...and the rendered 01 md also has it.
         assert "[FIX]" in scripts_path.read_text(encoding="utf-8")
+        # ...and an audit report is written next to the 01 note.
+        report_path = scripts_path.with_name(f"{scripts_path.stem} — corrections.md")
+        assert report_path.exists()
+        report = report_path.read_text(encoding="utf-8")
+        assert "誤変換を訂正" in report
+        assert "https://example.com" in report
 
     def test_dry_run_does_not_touch_file(self, vault, monkeypatch):
         video = _video()

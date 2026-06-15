@@ -12,13 +12,20 @@ original chunk ``start`` to each corrected text, so the model can never move a
 timestamp. Anything that doesn't round-trip cleanly (bad JSON, missing index)
 falls back to the original chunk — correction is best-effort and must never
 break Stage 01 or shift the timeline that Stage 02/03 depend on.
+
+Alongside the corrected text, the model returns a short ``note`` (why it
+changed a line) and the ``sources`` (URLs it consulted via web search). These
+are surfaced as a sibling ``… — corrections.md`` audit report so a human can see
+*why* each correction was made (see ``render_correction_report``).
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 
+from ..playlist import VideoMeta
 from ..providers.claude_cli import ClaudeCliError, ClaudeResponse, invoke_claude
 from .base import TranscriptSnippet
 from .chunking import Chunk
@@ -43,13 +50,36 @@ CORRECTION_SYSTEM_PROMPT = (
     "- 行の統合・分割・並べ替え・idx や時刻の改変は禁止。入力の idx と1:1で対応させる。\n"
     "\n"
     "出力は **JSON 配列のみ**（前置き・コードフェンス・説明文を一切付けない）。"
-    'スキーマ: [{"idx": <int>, "text": "<校正後テキスト>"}, ...]。'
-    "入力の各 idx をちょうど1回ずつ含めること。"
+    'スキーマ: [{"idx": <int>, "text": "<校正後テキスト>", "note": "<訂正理由 or 空文字>", '
+    '"sources": ["<参照URL>", ...]}, ...]。\n'
+    "- text を変更した行のみ、**なぜそう直したか**を `note` に簡潔に書き、web 検索で参照した"
+    "URL を `sources` に列挙する（検索していなければ空配列）。\n"
+    "- 変更しなかった行は `note` を空文字、`sources` を空配列にする。\n"
+    "- 入力の各 idx をちょうど1回ずつ含めること。"
 )
 
 # An invoke callable matching `invoke_claude`'s keyword interface — injectable
 # so tests can stub the LLM without touching the network.
 InvokeFn = Callable[..., ClaudeResponse]
+
+
+@dataclass(frozen=True)
+class CorrectionEntry:
+    """One audited correction: what changed at ``mmss`` and why."""
+
+    mmss: str
+    before: str
+    after: str
+    note: str
+    sources: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CorrectionResult:
+    """Corrected chunks plus the per-change audit entries."""
+
+    chunks: list[Chunk]
+    entries: list[CorrectionEntry]
 
 
 def _build_prompt(batch: list[tuple[int, Chunk]]) -> str:
@@ -61,7 +91,6 @@ def _strip_code_fence(text: str) -> str:
     """Drop a leading/trailing markdown code fence if the model added one."""
     stripped = text.strip()
     if stripped.startswith("```"):
-        # Remove the opening fence line (``` or ```json) and the closing fence.
         lines = stripped.splitlines()
         if lines and lines[0].startswith("```"):
             lines = lines[1:]
@@ -71,17 +100,24 @@ def _strip_code_fence(text: str) -> str:
     return stripped
 
 
-def _parse_corrections(text: str) -> dict[int, str]:
-    """Parse the model's JSON array into ``{idx: corrected_text}``.
+@dataclass(frozen=True)
+class _Correction:
+    text: str
+    note: str
+    sources: tuple[str, ...]
 
-    Raises ``ValueError`` if the payload is not a JSON array of
-    ``{"idx": int, "text": str}`` objects, so the caller can fall back to the
-    raw chunks for this batch.
+
+def _parse_corrections(text: str) -> dict[int, _Correction]:
+    """Parse the model's JSON array into ``{idx: _Correction}``.
+
+    Raises ``ValueError`` if the payload is not a JSON array of objects with at
+    least ``idx`` (int) and ``text`` (str), so the caller can fall back to the
+    raw chunks for this batch. ``note``/``sources`` are optional.
     """
     payload = json.loads(_strip_code_fence(text))
     if not isinstance(payload, list):
         raise ValueError(f"expected a JSON array, got {type(payload).__name__}")
-    mapping: dict[int, str] = {}
+    mapping: dict[int, _Correction] = {}
     for item in payload:
         if not isinstance(item, dict) or "idx" not in item or "text" not in item:
             raise ValueError("each item must be an object with 'idx' and 'text'")
@@ -89,7 +125,15 @@ def _parse_corrections(text: str) -> dict[int, str]:
         corrected = item["text"]
         if not isinstance(idx, int) or not isinstance(corrected, str):
             raise ValueError("'idx' must be int and 'text' must be str")
-        mapping[idx] = corrected
+        note = item.get("note")
+        note = note if isinstance(note, str) else ""
+        raw_sources = item.get("sources")
+        sources = (
+            tuple(s for s in raw_sources if isinstance(s, str))
+            if isinstance(raw_sources, list)
+            else ()
+        )
+        mapping[idx] = _Correction(text=corrected, note=note, sources=sources)
     return mapping
 
 
@@ -101,19 +145,21 @@ def correct_chunks(
     batch_size: int = DEFAULT_BATCH_SIZE,
     timeout: int = DEFAULT_TIMEOUT,
     allowed_tools: tuple[str, ...] = ("WebSearch",),
-) -> list[Chunk]:
-    """Return chunks with corrected text and unchanged timestamps.
+) -> CorrectionResult:
+    """Return corrected chunks (timestamps unchanged) plus audit entries.
 
     Processes ``chunks`` in batches; each batch is corrected by one LLM call
     with web search enabled. A batch that fails to round-trip (LLM error, bad
-    JSON) is left untouched. Per-chunk: if the model returned a non-empty
-    correction for that index, use it; otherwise keep the original text. The
+    JSON) is left untouched. Per-chunk: if the model returned a non-empty,
+    *different* text for that index, use it and record a ``CorrectionEntry``
+    (before/after/note/sources); otherwise keep the original text. The
     ``start`` of every chunk is preserved verbatim.
     """
     if not chunks:
-        return chunks
+        return CorrectionResult(chunks=chunks, entries=[])
 
     corrected: list[Chunk] = list(chunks)
+    entries: list[CorrectionEntry] = []
     for batch_start in range(0, len(chunks), batch_size):
         batch = [
             (i, chunks[i]) for i in range(batch_start, min(batch_start + batch_size, len(chunks)))
@@ -132,10 +178,45 @@ def correct_chunks(
             # breaking Stage 01 or shifting the timeline.
             continue
         for idx, chunk in batch:
-            new_text = mapping.get(idx)
-            if new_text:
-                corrected[idx] = Chunk(start=chunk.start, text=new_text)
-    return corrected
+            correction = mapping.get(idx)
+            if correction is None or not correction.text or correction.text == chunk.text:
+                continue
+            corrected[idx] = Chunk(start=chunk.start, text=correction.text)
+            entries.append(
+                CorrectionEntry(
+                    mmss=chunk.mmss,
+                    before=chunk.text,
+                    after=correction.text,
+                    note=correction.note,
+                    sources=correction.sources,
+                )
+            )
+    return CorrectionResult(chunks=corrected, entries=entries)
+
+
+def render_correction_report(video: VideoMeta, entries: list[CorrectionEntry]) -> str:
+    """Render the per-change audit report (the sibling ``… — corrections.md``).
+
+    Lists each changed chunk with before→after, the model's reason, and the web
+    sources it consulted — so a human can see *why* the transcript was changed.
+    """
+    lines: list[str] = [
+        f"# 訂正レポート — {video.title}",
+        "",
+        f"Stage 01b の誤変換訂正で変更した {len(entries)} 箇所の根拠（before→after / 理由 / 参照）。",
+        "",
+    ]
+    for e in entries:
+        lines.append(f"## [{e.mmss}]")
+        lines.append(f"- before: {e.before}")
+        lines.append(f"- after: {e.after}")
+        if e.note:
+            lines.append(f"- 理由: {e.note}")
+        if e.sources:
+            lines.append("- 参照:")
+            lines.extend(f"  - {s}" for s in e.sources)
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def chunks_to_snippets(chunks: list[Chunk], *, last_end: float) -> list[TranscriptSnippet]:
