@@ -1,6 +1,7 @@
 {
   "vault_root": "/path/to/your/Obsidian Vault parent (contains 'Permanent Note/')",
   "models": {
+    "stage_01_correct": "opus",
     "stage_02": "haiku",
     "stage_04": "sonnet",
     "alpha": "haiku",
@@ -14,5 +15,6 @@
   "synthesis_profile": "auto",
   "glossary_path": null,
   "whisper_backend": "auto",
-  "whisper_model": null
+  "whisper_model": null,
+  "transcript_correction": false
 }
