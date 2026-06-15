@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import sys
+from types import SimpleNamespace
 
 import pytest
 
+from pipeline_youtube import parallel as parallel_mod
 from pipeline_youtube.parallel import (
     build_synthesis_argv,
     build_worker_argv,
+    orchestrate_sub_agents,
     parse_video_range,
     split_into_shards,
     strip_cli_option,
@@ -118,3 +122,66 @@ class TestBuildArgv:
         assert "--code-bearing" in argv
         assert argv[argv.index("--sub-agents") + 1] == "1"
         assert "--run-timestamp" in argv
+
+
+class TestOrchestrateSubAgents:
+    def test_worker_failure_without_synthesis_returns_failure(self, tmp_path, monkeypatch) -> None:
+        returncodes = iter([0, 1])
+
+        class FakeProc:
+            def __init__(self, returncode: int) -> None:
+                self._returncode = returncode
+
+            def wait(self) -> int:
+                return self._returncode
+
+        def fake_popen(*args, **kwargs):
+            return FakeProc(next(returncodes))
+
+        monkeypatch.setattr(parallel_mod.subprocess, "Popen", fake_popen)
+
+        exit_code = orchestrate_sub_agents(
+            total_videos=2,
+            shard_count=2,
+            run_time=datetime(2026, 6, 14, 13, 0, 0),
+            logs_dir=tmp_path,
+            base_argv=["https://yt/playlist"],
+            run_synthesis=False,
+            code_bearing=False,
+        )
+
+        assert exit_code == 1
+
+    def test_worker_failure_after_synthesis_still_returns_failure(self, tmp_path, monkeypatch) -> None:
+        returncodes = iter([0, 1])
+        synthesis_calls = {"n": 0}
+
+        class FakeProc:
+            def __init__(self, returncode: int) -> None:
+                self._returncode = returncode
+
+            def wait(self) -> int:
+                return self._returncode
+
+        def fake_popen(*args, **kwargs):
+            return FakeProc(next(returncodes))
+
+        def fake_run(*args, **kwargs):
+            synthesis_calls["n"] += 1
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(parallel_mod.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(parallel_mod.subprocess, "run", fake_run)
+
+        exit_code = orchestrate_sub_agents(
+            total_videos=2,
+            shard_count=2,
+            run_time=datetime(2026, 6, 14, 13, 0, 0),
+            logs_dir=tmp_path,
+            base_argv=["https://yt/playlist"],
+            run_synthesis=True,
+            code_bearing=False,
+        )
+
+        assert synthesis_calls["n"] == 1
+        assert exit_code == 1

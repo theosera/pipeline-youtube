@@ -566,6 +566,7 @@ def _process_video(
             dry_run=dry_run,
             prefetched_video_path=prefetched_path,
             backend=capture_backend,
+            allow_download=media_path is None,
             # Never delete the user's --local-media source file.
             delete_video=media_path is None,
         )
@@ -1116,6 +1117,9 @@ def cli(
 
         if skip_synthesis:
             click.echo("[skip] --skip-synthesis: stage 05 bypassed")
+            if video_range is not None and failed:
+                click.echo("[fail] sub-agent shard had video failures")
+                sys.exit(1)
             return
 
         if len(succeeded) < min_playlist_size:

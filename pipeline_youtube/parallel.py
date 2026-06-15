@@ -177,8 +177,8 @@ def orchestrate_sub_agents(
 ) -> int:
     """Run stages 01-04 across parallel shard workers, then Stage 05 once.
 
-    Returns a process exit code: 0 when at least one shard produced output and
-    (when requested) Stage 05 succeeded; 1 otherwise.
+    Returns a process exit code: 0 only when every shard completed and (when
+    requested) Stage 05 succeeded; 1 otherwise.
     """
     shards = split_into_shards(total_videos, shard_count)
     if not shards:
@@ -236,7 +236,7 @@ def orchestrate_sub_agents(
 
     if not run_synthesis:
         click.echo("[skip] --skip-synthesis: stage 05 bypassed")
-        return 1 if all_failed else 0
+        return 1 if failures else 0
 
     if all_failed:
         click.echo("[skip] all shards failed; stage 05 has no input")
@@ -249,5 +249,8 @@ def orchestrate_sub_agents(
     ).returncode
     if synth_returncode != 0:
         click.echo(f"stage 05 synthesis failed (exit {synth_returncode})")
+        return 1
+    if failures:
+        click.echo("stage 05 completed with missing shard output; marking run failed")
         return 1
     return 0

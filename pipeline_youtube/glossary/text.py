@@ -95,6 +95,19 @@ def compile_variant_pattern(surfaces: list[str]) -> re.Pattern[str] | None:
     return re.compile("|".join(_bounded(s) for s in ordered), re.IGNORECASE)
 
 
+def _canonical_spans(text: str, glossary: Glossary) -> tuple[tuple[int, int], ...]:
+    canonicals = [entry.canonical for entry in glossary.entries if fold_term(entry.canonical)]
+    pattern = compile_variant_pattern(canonicals)
+    if pattern is None:
+        return ()
+    return tuple(match.span() for match in pattern.finditer(text))
+
+
+def _is_inside_canonical(match: re.Match[str], spans: tuple[tuple[int, int], ...]) -> bool:
+    start, end = match.span()
+    return any(start >= span_start and end <= span_end for span_start, span_end in spans)
+
+
 def normalize_text(text: str, glossary: Glossary) -> str:
     """Rewrite every known variant spelling in ``text`` to its canonical.
 
@@ -111,7 +124,14 @@ def normalize_text(text: str, glossary: Glossary) -> str:
     pattern = compile_variant_pattern(variant_surfaces(glossary))
     if pattern is None:
         return text
-    return pattern.sub(lambda m: normalizer.normalize(m.group(0)), text)
+    canonical_spans = _canonical_spans(text, glossary)
+
+    def replace(match: re.Match[str]) -> str:
+        if _is_inside_canonical(match, canonical_spans):
+            return match.group(0)
+        return normalizer.normalize(match.group(0))
+
+    return pattern.sub(replace, text)
 
 
 __all__ = ["compile_variant_pattern", "normalize_text", "variant_surfaces"]

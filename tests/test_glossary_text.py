@@ -74,6 +74,28 @@ def test_normalization_is_idempotent() -> None:
     assert normalize_text(once, _GLOSSARY) == once
 
 
+def test_ascii_alias_inside_own_canonical_is_not_rewritten() -> None:
+    glossary = Glossary(entries=(GlossaryEntry(canonical="Vibe Coding", aliases=["Coding"]),))
+    assert normalize_text("Vibe Coding is already canonical", glossary) == (
+        "Vibe Coding is already canonical"
+    )
+    assert normalize_text("Coding alone is a variant", glossary) == (
+        "Vibe Coding alone is a variant"
+    )
+
+
+def test_ascii_alias_inside_another_canonical_is_not_rewritten() -> None:
+    glossary = Glossary(
+        entries=(
+            GlossaryEntry(canonical="Vibe Coding", aliases=["ビブコーディング"]),
+            GlossaryEntry(canonical="Code", aliases=["Coding"]),
+        )
+    )
+    assert normalize_text("Vibe Coding is stable; Coding alone changes", glossary) == (
+        "Vibe Coding is stable; Code alone changes"
+    )
+
+
 def test_conflicting_glossary_raises() -> None:
     a = GlossaryEntry(canonical="Vibe Coding", aliases=["バイブコーディング"])
     b = GlossaryEntry(canonical="Bibe Coding", aliases=["バイブコーディング"])

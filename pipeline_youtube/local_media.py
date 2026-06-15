@@ -29,7 +29,7 @@ MEDIA_EXTENSIONS = frozenset({".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi"})
 # A YouTube id is exactly 11 chars of [A-Za-z0-9_-]. Match either a stem that
 # *is* the id, or a bracketed `[id]` suffix (yt-dlp `%(title)s [%(id)s]`).
 _BARE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
-_BRACKET_ID_RE = re.compile(r"\[([A-Za-z0-9_-]{11})\]")
+_BRACKET_ID_RE = re.compile(r"\[([A-Za-z0-9_-]{11})\]\s*$")
 
 
 def extract_video_id(stem: str) -> str | None:

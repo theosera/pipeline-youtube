@@ -308,6 +308,7 @@ def run_stage_capture(
     dry_run: bool = False,
     prefetched_video_path: Path | None = None,
     backend: CaptureBackend | None = None,
+    allow_download: bool = True,
     delete_video: bool = True,
 ) -> CaptureResult:
     """Download the video, extract animated frames, update the 03 md.
@@ -330,6 +331,9 @@ def run_stage_capture(
         Optional existing mp4 file prepared by a background thread
         (see `prefetch_video_download`). When supplied and present,
         the internal yt-dlp download is skipped.
+    allow_download:
+        Set to `False` for caller-owned local media. If the provided source is
+        missing, Stage 03 fails closed instead of reaching out to YouTube.
     """
     if not summary_md_path.exists():
         return CaptureResult(ranges=[], error="summary_md_not_found")
@@ -369,6 +373,12 @@ def run_stage_capture(
     tmp_video_path = prefetched_video_path or _tmp_video_path(video)
 
     if prefetched_video_path is None or not prefetched_video_path.exists():
+        if not allow_download:
+            return CaptureResult(
+                ranges=ranges,
+                capture_format=ext,
+                error=f"local_media_file_missing: {prefetched_video_path}",
+            )
         try:
             _download_video(
                 video.watch_url,

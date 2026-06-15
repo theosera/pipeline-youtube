@@ -24,6 +24,13 @@ class TestExtractVideoId:
     def test_bracketed_id(self) -> None:
         assert extract_video_id("My Great Talk [dQw4w9WgXcQ]") == "dQw4w9WgXcQ"
 
+    def test_uses_trailing_bracketed_id_when_title_contains_id_shaped_token(self) -> None:
+        stem = "01 [abcdefghijk] Talk [dQw4w9WgXcQ]"
+        assert extract_video_id(stem) == "dQw4w9WgXcQ"
+
+    def test_non_trailing_bracketed_token_is_not_trusted_as_id(self) -> None:
+        assert extract_video_id("01 [abcdefghijk] Talk") is None
+
     def test_no_id_returns_none(self) -> None:
         assert extract_video_id("just a plain title") is None
 
