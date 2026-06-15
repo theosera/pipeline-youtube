@@ -126,6 +126,18 @@ def _resolve_openai_model() -> str:
     return _MODEL or DEFAULT_WHISPER_MODEL
 
 
+def describe_whisper() -> str:
+    """One-line resolved backend+model, e.g. 'auto→mlx (large-v3-turbo)'.
+
+    Lets startup logging confirm whether MLX (GPU) is actually in use vs a
+    silent fall-back to openai-whisper (CPU).
+    """
+    backend = _resolve_backend()
+    model = (_MODEL or DEFAULT_MLX_MODEL) if backend == "mlx" else _resolve_openai_model()
+    prefix = f"auto→{backend}" if _BACKEND == "auto" else backend
+    return f"{prefix} ({model})"
+
+
 # Each whisper `_MODELS` URL is of the form:
 #   https://openaipublic.azureedge.net/main/whisper/models/<sha256>/<name>.pt
 # where `<sha256>` is the expected 64-char hex hash of the .pt file.

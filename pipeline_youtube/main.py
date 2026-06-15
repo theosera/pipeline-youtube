@@ -57,7 +57,7 @@ from .stages.summary import run_stage_summary
 from .stages.synthesis import MIN_PLAYLIST_SIZE, log_synthesis_preflight, run_stage_synthesis
 from .stats import record_transcript_stat
 from .synthesis.agents import compute_synthesis_timeouts
-from .transcript.whisper_fallback import configure_whisper
+from .transcript.whisper_fallback import configure_whisper, describe_whisper
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
@@ -914,6 +914,7 @@ def cli(
     click.echo(f"vault_root: {vault_root}")
     click.echo(f"dry_run: {dry_run}")
     click.echo(f"model: {model}")
+    click.echo(f"whisper: {describe_whisper()}")
     click.echo(f"capture_format: {capture_format}")
     click.echo(f"concurrency: {concurrency}")
     click.echo(f"min_playlist_size: {min_playlist_size}")
