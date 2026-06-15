@@ -561,6 +561,8 @@ def _process_video(
             dry_run=dry_run,
             prefetched_video_path=prefetched_path,
             backend=capture_backend,
+            # Never delete the user's --local-media source file.
+            delete_video=media_path is None,
         )
         if capture_result.error and not capture_result.outcomes:
             click.echo(f" FAILED: {capture_result.error}")

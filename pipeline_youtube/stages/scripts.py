@@ -98,7 +98,9 @@ def run_stage_scripts(
     body = _render_chunks(video, chunk_by_window(result.snippets, window_seconds))
 
     code_section = ""
-    if include_code_blocks:
+    # Skip the description fetch under --local-media: it hits YouTube (yt-dlp),
+    # defeating the fully-offline guarantee this mode provides.
+    if include_code_blocks and media_path is None:
         # Fetching description + raw code is best-effort. If anything
         # fails, we silently skip — the transcript is the primary asset.
         description = fetch_video_description(video.video_id)
