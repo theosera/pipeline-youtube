@@ -98,8 +98,27 @@ cp config.example.json config.json
 #   - synthesis_timeout (任意): "auto" (デフォルト, 300 + 60×動画数) または秒数の整数
 #   - synthesis_profile (任意): "auto" (デフォルト) / "standard" / "parallel" /
 #     "full" / "parallel+full"。詳細: docs/agent-teams-profiles.md
+#   - glossary_path (任意): 固有名詞辞書 (JSON) のパス。指定すると Stage 02 が
+#     既知の誤変換を決定論的に正規化 (例: ビブコーディング → Vibe Coding)。
+#     未指定 (null) なら正規化なし。相対パスは config.json 基準で解決。
 # 他のノブ (capture-format / concurrency / min-playlist-size / max-chapters 等) は
 # 都度変わる運用値なので CLI フラグで渡す設計。
+```
+
+### 固有名詞の正規化辞書 (`glossary_path`)
+
+`glossary_path` に辞書 JSON を指定すると、Stage 02 の出力本文・ONE_LINER の **既知の誤変換を
+決定論的に正規化** します。文脈推論ではなく辞書照合なので幻覚は起きず、辞書に無い語はそのまま
+残ります (`null` で無効)。
+
+```json
+{
+  "version": 1,
+  "entries": [
+    {"canonical": "Vibe Coding", "aliases": ["ビブコーディング", "バイブコーディング"],
+     "reading": "ヴァイブコーディング", "category": "concept"}
+  ]
+}
 ```
 
 ## 使い方
