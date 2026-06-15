@@ -57,6 +57,7 @@ from .stages.summary import run_stage_summary
 from .stages.synthesis import MIN_PLAYLIST_SIZE, log_synthesis_preflight, run_stage_synthesis
 from .stats import record_transcript_stat
 from .synthesis.agents import compute_synthesis_timeouts
+from .transcript.whisper_fallback import configure_whisper
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
@@ -86,6 +87,12 @@ class CliConfig:
     # Proper-noun normalization glossary (Stage 02). None → no normalization
     # (prior behavior); set via config.json "glossary_path".
     glossary: Glossary | None = None
+    # Local-transcription backend/model (Stage 01 Whisper tier). backend:
+    # "auto" (MLX on Apple Silicon, else openai), "mlx", or "openai".
+    # model: None → backend default; else a logical name (small/medium/
+    # large-v3-turbo). Set via config.json "whisper_backend"/"whisper_model".
+    whisper_backend: str = "auto"
+    whisper_model: str | None = None
 
 
 def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
@@ -170,6 +177,15 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
 
     glossary = _load_glossary_from_config(data, config_path)
 
+    whisper_backend = str(data.get("whisper_backend") or "auto").lower()
+    if whisper_backend not in {"auto", "mlx", "openai"}:
+        raise click.UsageError(
+            "config.json: whisper_backend must be one of ['auto', 'mlx', 'openai'], "
+            f"got {whisper_backend!r}"
+        )
+    whisper_model_raw = data.get("whisper_model")
+    whisper_model = str(whisper_model_raw) if whisper_model_raw else None
+
     return CliConfig(
         vault_root=path,
         models=models,
@@ -179,6 +195,8 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
         synthesis_timeout=synthesis_timeout,
         synthesis_profile=synthesis_profile,
         glossary=glossary,
+        whisper_backend=whisper_backend,
+        whisper_model=whisper_model,
     )
 
 
@@ -838,6 +856,7 @@ def cli(
     except VaultRootError as exc:
         raise click.UsageError(str(exc)) from exc
     set_dry_run(dry_run)
+    configure_whisper(backend=cfg.whisper_backend, model=cfg.whisper_model)
     vault_root = cfg.vault_root
     models = cfg.models
     filler_words = cfg.filler_words
@@ -920,7 +939,9 @@ def cli(
         click.echo(f"local-media: {len(videos)} file(s) from {local_media}")
     else:
         if url is None:
-            raise click.UsageError("A playlist/video URL is required unless --local-media is given.")
+            raise click.UsageError(
+                "A playlist/video URL is required unless --local-media is given."
+            )
         click.echo("fetching metadata...")
         videos = fetch_metadata(url)
         if not videos:

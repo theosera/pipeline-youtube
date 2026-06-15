@@ -50,8 +50,10 @@ id が無いファイルは**ファイル名から決定論的に合成した 11
 
 ## 前提・注意
 
-- **Whisper 必須**: 字幕はローカル Whisper のみ。`uv run --extra whisper ...` で実行
-  （素の `uv run` は extra を毎回剥がす）。長尺は CPU で時間がかかる。
+- **Whisper 必須**: 字幕はローカル Whisper のみ。**Apple Silicon は `uv run --extra mlx ...`
+  （MLX/GPU・高速・低メモリ）推奨**、CPU 環境は `uv run --extra whisper ...`。バックエンド/
+  モデルは `config.json` の `whisper_backend`/`whisper_model` で選択（[docs/whisper.md](whisper.md)）。
+  素の `uv run` は extra を毎回剥がす点に注意。長尺は時間がかかる。
 - **capture backend**: `host`（既定）を想定。
 - `--synthesis-only` と併用すると、フォルダから動画一覧を作って既存 04 を読み 05 のみ再実行。
 - 既知の限界: ファイル名に id が無い場合の合成 id は元動画 URL がダミーになる。
