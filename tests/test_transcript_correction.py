@@ -11,6 +11,7 @@ from pipeline_youtube.providers.claude_cli import ClaudeCliError, ClaudeResponse
 from pipeline_youtube.transcript.chunking import Chunk
 from pipeline_youtube.transcript.correction import (
     _parse_corrections,
+    chunks_to_snippets,
     correct_chunks,
 )
 
@@ -93,6 +94,18 @@ class TestCorrectChunks:
 
     def test_empty_input(self) -> None:
         assert correct_chunks([], model="opus", invoke=_stub_invoke("[]")) == []
+
+    def test_chunks_to_snippets_preserves_timeline(self) -> None:
+        chunks = [
+            Chunk(start=0.0, text="A"),
+            Chunk(start=30.0, text="B"),
+            Chunk(start=70.0, text="C"),
+        ]
+        snippets = chunks_to_snippets(chunks, last_end=95.0)
+        assert [s.text for s in snippets] == ["A", "B", "C"]
+        assert [s.start for s in snippets] == [0.0, 30.0, 70.0]
+        # duration spans to next chunk; last runs to last_end.
+        assert [s.duration for s in snippets] == [30.0, 40.0, 25.0]
 
     def test_batching_splits_calls(self) -> None:
         chunks = [Chunk(start=float(i), text=str(i)) for i in range(5)]

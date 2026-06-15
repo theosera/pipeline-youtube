@@ -19,6 +19,7 @@ a ``## 関連コード`` section after the transcript.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from ..code_fetch import (
@@ -31,7 +32,7 @@ from ..playlist import VideoMeta
 from ..transcript.auto import fetch_auto
 from ..transcript.base import Fetcher, TranscriptResult, fetch_with_fallback
 from ..transcript.chunking import Chunk, chunk_by_window
-from ..transcript.correction import correct_chunks
+from ..transcript.correction import chunks_to_snippets, correct_chunks
 from ..transcript.official import fetch_official
 
 DEFAULT_LANGUAGES: list[str] = ["ja", "en"]
@@ -103,9 +104,15 @@ def run_stage_scripts(
     chunks = chunk_by_window(result.snippets, window_seconds)
     # Stage 01b: repair ASR/caption errors with an LLM + web search. Best-effort
     # and timestamp-preserving — never blocks the run. Skipped on dry runs (it
-    # is a paid LLM call) and when there is nothing to correct.
+    # is a paid LLM call) and when there is nothing to correct. The corrected
+    # text is folded back into `result.snippets` so Stage 02/03/04 (which
+    # re-chunk the TranscriptResult) consume the correction, not just the 01 md.
     if correct_model and not dry_run and chunks:
         chunks = correct_chunks(chunks, model=correct_model)
+        last = result.snippets[-1]
+        result = replace(
+            result, snippets=chunks_to_snippets(chunks, last_end=last.start + last.duration)
+        )
     body = _render_chunks(video, chunks)
 
     code_section = ""

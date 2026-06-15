@@ -20,6 +20,7 @@ import json
 from collections.abc import Callable
 
 from ..providers.claude_cli import ClaudeCliError, ClaudeResponse, invoke_claude
+from .base import TranscriptSnippet
 from .chunking import Chunk
 
 # How many chunks to correct per LLM call. Long videos produce hundreds of
@@ -135,3 +136,20 @@ def correct_chunks(
             if new_text:
                 corrected[idx] = Chunk(start=chunk.start, text=new_text)
     return corrected
+
+
+def chunks_to_snippets(chunks: list[Chunk], *, last_end: float) -> list[TranscriptSnippet]:
+    """Turn corrected chunks back into transcript snippets for downstream stages.
+
+    The corrected text must flow into the ``TranscriptResult`` that Stage 02
+    (and thus 03/04) consumes — not just the rendered 01 markdown. Each chunk
+    becomes one snippet; ``start`` is preserved and ``duration`` spans to the
+    next chunk (the last chunk runs to ``last_end``, the original transcript's
+    end), so the timeline is unchanged.
+    """
+    snippets: list[TranscriptSnippet] = []
+    for i, chunk in enumerate(chunks):
+        next_start = chunks[i + 1].start if i + 1 < len(chunks) else last_end
+        duration = max(next_start - chunk.start, 0.0)
+        snippets.append(TranscriptSnippet(text=chunk.text, start=chunk.start, duration=duration))
+    return snippets
