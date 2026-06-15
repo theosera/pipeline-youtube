@@ -11,5 +11,6 @@
   "capture_backend": "host",
   "capture_docker_image": "pipeline-youtube-capture:latest",
   "synthesis_timeout": "auto",
-  "synthesis_profile": "auto"
+  "synthesis_profile": "auto",
+  "glossary_path": null
 }

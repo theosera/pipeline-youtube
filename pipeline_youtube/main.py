@@ -30,6 +30,7 @@ from .checkpoint import (
 )
 from .config import VaultRootError, set_dry_run, set_vault_root
 from .genres import CODE_BEARING_GENRES, classify_playlist_genre
+from .glossary import Glossary, GlossaryParseError, load_glossary
 from .obsidian import format_playlist_folder_name
 from .parallel import orchestrate_sub_agents, parse_video_range, strip_cli_option
 from .path_safety import ensure_safe_path
@@ -76,6 +77,9 @@ class CliConfig:
     capture_docker_image: str = "pipeline-youtube-capture:latest"
     synthesis_timeout: int | None = None
     synthesis_profile: str | None = None
+    # Proper-noun normalization glossary (Stage 02). None → no normalization
+    # (prior behavior); set via config.json "glossary_path".
+    glossary: Glossary | None = None
 
 
 def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
@@ -158,6 +162,8 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
             f"{list(_SYNTHESIS_PROFILE_CHOICES)!r}, got {synthesis_profile_raw!r}"
         )
 
+    glossary = _load_glossary_from_config(data, config_path)
+
     return CliConfig(
         vault_root=path,
         models=models,
@@ -166,7 +172,31 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
         capture_docker_image=capture_docker_image,
         synthesis_timeout=synthesis_timeout,
         synthesis_profile=synthesis_profile,
+        glossary=glossary,
     )
+
+
+def _load_glossary_from_config(data: dict[str, Any], config_path: Path) -> Glossary | None:
+    """Load the optional proper-noun glossary referenced by ``glossary_path``.
+
+    ``glossary_path`` is optional (absent → ``None`` → Stage 02 normalization
+    disabled). A relative path resolves against config.json's directory so the
+    glossary travels with the config. A malformed/missing file is a
+    configuration error surfaced as ``UsageError`` (fail fast, not silently
+    skipped).
+    """
+    raw = data.get("glossary_path")
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        raise click.UsageError("config.json: glossary_path must be a non-empty string")
+    glossary_path = Path(raw).expanduser()
+    if not glossary_path.is_absolute():
+        glossary_path = (config_path.parent / glossary_path).resolve()
+    try:
+        return load_glossary(glossary_path)
+    except (GlossaryParseError, OSError) as exc:
+        raise click.UsageError(f"config.json: glossary_path could not be loaded: {exc}") from exc
 
 
 @dataclass
@@ -422,6 +452,7 @@ def _process_video(
     stop_after_capture: bool = False,
     capture_backend: Any = None,
     code_bearing: bool = False,
+    glossary: Glossary | None = None,
 ) -> VideoRunResult:
     try:
         paths = compute_note_paths(video, run_time)
@@ -460,6 +491,7 @@ def _process_video(
             transcript,
             model=models["stage_02"],
             filler_words=filler_words,
+            glossary=glossary,
             dry_run=dry_run,
         )
         click.echo(
@@ -551,6 +583,7 @@ async def _run_videos_concurrent(
     stop_after_capture: bool = False,
     capture_backend: Any = None,
     code_bearing: bool = False,
+    glossary: Glossary | None = None,
 ) -> list[VideoRunResult]:
     """Process multiple videos concurrently with bounded parallelism."""
     sem = asyncio.Semaphore(concurrency)
@@ -569,6 +602,7 @@ async def _run_videos_concurrent(
                 stop_after_capture=stop_after_capture,
                 capture_backend=capture_backend,
                 code_bearing=code_bearing,
+                glossary=glossary,
             )
 
     tasks = [_task(i, v) for i, v in enumerate(videos, 1)]
@@ -952,6 +986,7 @@ def cli(
                     stop_after_capture=stop_after_capture,
                     capture_backend=active_capture_backend,
                     code_bearing=code_bearing,
+                    glossary=cfg.glossary,
                 )
             )
             results.extend(concurrent_results)
@@ -968,6 +1003,7 @@ def cli(
                     stop_after_capture=stop_after_capture,
                     capture_backend=active_capture_backend,
                     code_bearing=code_bearing,
+                    glossary=cfg.glossary,
                 )
                 results.append(result)
 
