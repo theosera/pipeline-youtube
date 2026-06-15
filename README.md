@@ -79,11 +79,13 @@ CI で動かすのは lint / format / type-check / 単体テストのみです�
 # 前提: Python 3.13, uv, yt-dlp, ffmpeg, claude CLI が PATH にあること
 cd __skills/pipeline-youtube
 uv sync
-# Whisper フォールバック (3次) を使う場合は別途インストール (torch 含み ~2GB):
-#   uv sync --extra whisper
-# ★重要: Whisper は optional extra なので、素の `uv run ...` は実行時に環境を
-#   ロックへ同期し直して Whisper を毎回アンインストールする。Whisper を効かせる
-#   実行は必ず `uv run --extra whisper ...` を使うこと (下の実行例も同様)。
+# Whisper フォールバック (3次) を使う場合は別途インストール。バックエンド/モデルは
+# config.json の whisper_backend / whisper_model で選ぶ (詳細: docs/whisper.md):
+#   uv sync --extra mlx       # Apple Silicon 推奨: MLX(GPU)・高速・低メモリ・高精度
+#   uv sync --extra whisper   # 互換/CPU: openai-whisper (torch ~2GB)
+# ★重要: Whisper 系は optional extra なので、素の `uv run ...` は実行時に環境を
+#   ロックへ同期し直して毎回アンインストールする。効かせる実行は必ず対応する
+#   `uv run --extra mlx ...` (または `--extra whisper`) を使うこと (下の実行例も同様)。
 #   字幕が IP ブロックされた動画は、この Whisper フォールバックだけが命綱になる。
 
 # 編集可能インストール (main.py の import エラー防止)
