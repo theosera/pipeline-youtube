@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from ..playlist import VideoMeta
 from ..providers.claude_cli import ClaudeCliError, ClaudeResponse, invoke_claude
@@ -57,6 +58,11 @@ CORRECTION_SYSTEM_PROMPT = (
     "- 変更しなかった行は `note` を空文字、`sources` を空配列にする。\n"
     "- 入力の各 idx をちょうど1回ずつ含めること。"
 )
+
+# Marks a file as one of our own correction reports, so re-runs overwrite it
+# but an unrelated Obsidian note that happens to share the name is never
+# clobbered (see `correction_report_path`).
+REPORT_TITLE_PREFIX = "# 訂正レポート"
 
 # An invoke callable matching `invoke_claude`'s keyword interface — injectable
 # so tests can stub the LLM without touching the network.
@@ -201,7 +207,7 @@ def render_correction_report(video: VideoMeta, entries: list[CorrectionEntry]) -
     sources it consulted — so a human can see *why* the transcript was changed.
     """
     lines: list[str] = [
-        f"# 訂正レポート — {video.title}",
+        f"{REPORT_TITLE_PREFIX} — {video.title}",
         "",
         f"Stage 01b の誤変換訂正で変更した {len(entries)} 箇所の根拠（before→after / 理由 / 参照）。",
         "",
@@ -217,6 +223,36 @@ def render_correction_report(video: VideoMeta, entries: list[CorrectionEntry]) -
             lines.extend(f"  - {s}" for s in e.sources)
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def correction_report_path(scripts_md_path: Path) -> Path:
+    """Pick the sibling ``… — corrections.md`` path, never clobbering a foreign note.
+
+    The 01 note path is already collision-resolved, but the derived report name
+    could coincide with another video's note (e.g. a video literally titled
+    ``… — corrections``). Overwrite the report only when it's one of *our* prior
+    reports (recognized by the title prefix); otherwise fall back to a numbered
+    sibling so an unrelated Obsidian note is never destroyed.
+    """
+    base = scripts_md_path.with_name(
+        f"{scripts_md_path.stem} — corrections{scripts_md_path.suffix}"
+    )
+    if not base.exists():
+        return base
+    try:
+        head = base.read_text(encoding="utf-8")[: len(REPORT_TITLE_PREFIX)]
+    except OSError:
+        head = ""
+    if head == REPORT_TITLE_PREFIX:
+        return base  # our own previous report — safe to overwrite (re-run)
+    n = 1
+    while True:
+        candidate = scripts_md_path.with_name(
+            f"{scripts_md_path.stem} — corrections-{n}{scripts_md_path.suffix}"
+        )
+        if not candidate.exists():
+            return candidate
+        n += 1
 
 
 def chunks_to_snippets(chunks: list[Chunk], *, last_end: float) -> list[TranscriptSnippet]:

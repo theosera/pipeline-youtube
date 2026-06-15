@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -11,9 +12,11 @@ from pipeline_youtube.playlist import VideoMeta
 from pipeline_youtube.providers.claude_cli import ClaudeCliError, ClaudeResponse
 from pipeline_youtube.transcript.chunking import Chunk
 from pipeline_youtube.transcript.correction import (
+    REPORT_TITLE_PREFIX,
     _parse_corrections,
     chunks_to_snippets,
     correct_chunks,
+    correction_report_path,
     render_correction_report,
 )
 
@@ -157,6 +160,27 @@ class TestCorrectChunks:
         out = correct_chunks(chunks, model="opus", invoke=invoke, batch_size=2)
         assert all(c.text == "ok" for c in out.chunks)
         assert [c.start for c in out.chunks] == [0.0, 1.0, 2.0, 3.0, 4.0]
+
+
+class TestCorrectionReportPath:
+    def test_fresh_path(self, tmp_path: Path) -> None:
+        note = tmp_path / "2026-06-15 Talk.md"
+        assert correction_report_path(note) == tmp_path / "2026-06-15 Talk — corrections.md"
+
+    def test_overwrites_our_own_prior_report(self, tmp_path: Path) -> None:
+        note = tmp_path / "Talk.md"
+        report = tmp_path / "Talk — corrections.md"
+        report.write_text(f"{REPORT_TITLE_PREFIX} — Talk\n", encoding="utf-8")
+        assert correction_report_path(note) == report  # reuse → overwrite on re-run
+
+    def test_does_not_clobber_foreign_note(self, tmp_path: Path) -> None:
+        note = tmp_path / "Talk.md"
+        # A different Obsidian note happens to share the derived name.
+        foreign = tmp_path / "Talk — corrections.md"
+        foreign.write_text("# 別の動画ノート\n本文", encoding="utf-8")
+        chosen = correction_report_path(note)
+        assert chosen == tmp_path / "Talk — corrections-1.md"
+        assert foreign.read_text(encoding="utf-8") == "# 別の動画ノート\n本文"  # untouched
 
 
 class TestRenderCorrectionReport:

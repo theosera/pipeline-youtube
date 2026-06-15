@@ -32,7 +32,12 @@ from ..playlist import VideoMeta
 from ..transcript.auto import fetch_auto
 from ..transcript.base import Fetcher, TranscriptResult, fetch_with_fallback
 from ..transcript.chunking import Chunk, chunk_by_window
-from ..transcript.correction import chunks_to_snippets, correct_chunks, render_correction_report
+from ..transcript.correction import (
+    chunks_to_snippets,
+    correct_chunks,
+    correction_report_path,
+    render_correction_report,
+)
 from ..transcript.official import fetch_official
 
 DEFAULT_LANGUAGES: list[str] = ["ja", "en"]
@@ -108,6 +113,11 @@ def run_stage_scripts(
     # text is folded back into `result.snippets` so Stage 02/03/04 (which
     # re-chunk the TranscriptResult) consume the correction, not just the 01 md.
     if correct_model and not dry_run and chunks:
+        # Validate the placeholder up front: don't pay for the correction LLM
+        # call or write an orphan report if the 01 note is missing (_append_body
+        # would raise below anyway).
+        if not scripts_md_path.exists():
+            raise FileNotFoundError(f"placeholder md not found: {scripts_md_path}")
         correction = correct_chunks(chunks, model=correct_model)
         chunks = correction.chunks
         last = result.snippets[-1]
@@ -117,9 +127,7 @@ def run_stage_scripts(
         # Write the audit report ("why each correction was made") next to the
         # 01 note so the web-search reasoning is reviewable.
         if correction.entries:
-            report_path = scripts_md_path.with_name(
-                f"{scripts_md_path.stem} — corrections{scripts_md_path.suffix}"
-            )
+            report_path = correction_report_path(scripts_md_path)
             report_path.write_text(
                 render_correction_report(video, correction.entries), encoding="utf-8"
             )
