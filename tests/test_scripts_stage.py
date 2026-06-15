@@ -115,9 +115,10 @@ class TestRunStageScripts:
         monkeypatch.setattr(
             scripts_stage,
             "correct_chunks",
-            lambda chunks, *, model: CorrectionResult(
+            lambda chunks, *, model, known_terms=None: CorrectionResult(
                 chunks=[Chunk(start=c.start, text=c.text + " [FIX]") for c in chunks],
                 cost_usd=0.42,
+                confirmed_terms=["Anthropic"],
             ),
         )
 
@@ -132,6 +133,8 @@ class TestRunStageScripts:
         assert result.snippets[0].start == 0.0
         # ...and the correction cost rides along on the result.
         assert result.correction_cost_usd == 0.42
+        # ...and the confirmed proper nouns ride along too.
+        assert result.confirmed_terms == ("Anthropic",)
         # ...and the rendered 01 md also has it.
         assert "[FIX]" in scripts_path.read_text(encoding="utf-8")
 

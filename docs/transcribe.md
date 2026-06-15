@@ -35,10 +35,33 @@ Stage 01 は2段構成:
   `stage_01_correct` を `sonnet` に下げる、または `transcript_correction: false` のままにする。
 - `--dry-run` では 01b はスキップ（課金回避）。
 
+- **コスト表記**: 01b は Stage 01 唯一の課金処理。実行時は `[01]` 行に `cost=$...` を表示し、
+  実行末尾の「Cost breakdown」表にも `stage_01` として集計する（02/04 と同様）。
+
 ## 仕組み（タイムスタンプ保持）
 
-LLM には `[idx] (MM:SS) text` 形式で番号付きチャンクを渡し、`[{"idx", "text"}]` の **JSON で 1:1 訂正**を
-返させる。行の統合・分割・並べ替え・時刻改変は禁止。idx で元チャンクへ写し戻し、`start` を再付与する。
+LLM には `[idx] (MM:SS) text` 形式で番号付きチャンクを渡し、
+`{"corrections": [{"idx", "text"}], "terms": [...]}` の **JSON で 1:1 訂正**を返させる。
+行の統合・分割・並べ替え・時刻改変は禁止。idx で元チャンクへ写し戻し、`start` を再付与する。
+`terms` は 01b が確定した固有名詞リスト（次節の辞書に書き込む）。
+
+## 固有名詞辞書（プレイリスト単位の TSV）
+
+検索コスト削減と人手訂正のため、01b は確定した固有名詞をプレイリスト単位の TSV に蓄積する。
+`transcript_correction: true` のときのみ動作する。
+
+- **置き場所**: `01_Scripts_Processing_Unit/<プレイリストフォルダ>/__proper_nouns.tsv`。
+- **形式**: 動画ごとに `## [video_id] タイトル` の見出しセクション。各行は
+  `<システム確定語><TAB><ユーザー訂正>`。**右列が空ならシステム確定語を採用**、書けばユーザー訂正を正とする。
+- **次回実行でコスト削減**: 既知語は 01b の system prompt に「確定済み辞書（再検索不要）」として渡され、
+  web 検索を省いて確定表記をそのまま使う。
+- **Stage 05 へ反映**: ユーザーが右列に書いた訂正は、Stage 05 の MOC・各章へ
+  決定論的に書き換え適用される（variant→canonical、`glossary.normalize_text`）。02 の小まとめは訂正せず許容。
+- **glossary.json への昇格**: ユーザーが訂正した行のみ、`config.json` の `glossary_path` が指す
+  `glossary.json` に取り込む（訂正語=canonical / システム語=alias）。マージは非破壊・競合耐性あり。
+
+> 編集タイミング: 同一 run 内では 01→05 が連続実行されるため、訂正を反映させたい場合は
+> 一度 run して `__proper_nouns.tsv` を編集 → `--synthesis-only` で 05 を再実行するか、次回 run で反映する。
 
 ## 注意（claude CLI / OAuth）
 
