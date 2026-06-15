@@ -57,6 +57,7 @@ from .stages.summary import run_stage_summary
 from .stages.synthesis import MIN_PLAYLIST_SIZE, log_synthesis_preflight, run_stage_synthesis
 from .stats import record_transcript_stat
 from .synthesis.agents import compute_synthesis_timeouts
+from .transcript.whisper_fallback import configure_whisper, describe_whisper
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
@@ -86,6 +87,12 @@ class CliConfig:
     # Proper-noun normalization glossary (Stage 02). None → no normalization
     # (prior behavior); set via config.json "glossary_path".
     glossary: Glossary | None = None
+    # Local-transcription backend/model (Stage 01 Whisper tier). backend:
+    # "auto" (MLX on Apple Silicon, else openai), "mlx", or "openai".
+    # model: None → backend default; else a logical name (small/medium/
+    # large-v3-turbo). Set via config.json "whisper_backend"/"whisper_model".
+    whisper_backend: str = "auto"
+    whisper_model: str | None = None
 
 
 def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
@@ -170,6 +177,20 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
 
     glossary = _load_glossary_from_config(data, config_path)
 
+    whisper_backend = str(data.get("whisper_backend") or "auto").lower()
+    if whisper_backend not in {"auto", "mlx", "openai"}:
+        raise click.UsageError(
+            "config.json: whisper_backend must be one of ['auto', 'mlx', 'openai'], "
+            f"got {whisper_backend!r}"
+        )
+    whisper_model_raw = data.get("whisper_model")
+    if whisper_model_raw is None or whisper_model_raw == "":
+        whisper_model = None
+    elif isinstance(whisper_model_raw, str):
+        whisper_model = whisper_model_raw
+    else:
+        raise click.UsageError("config.json: whisper_model must be a string or null")
+
     return CliConfig(
         vault_root=path,
         models=models,
@@ -179,6 +200,8 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
         synthesis_timeout=synthesis_timeout,
         synthesis_profile=synthesis_profile,
         glossary=glossary,
+        whisper_backend=whisper_backend,
+        whisper_model=whisper_model,
     )
 
 
@@ -466,6 +489,7 @@ def _process_video(
     capture_backend: Any = None,
     code_bearing: bool = False,
     glossary: Glossary | None = None,
+    media_path: Path | None = None,
 ) -> VideoRunResult:
     try:
         paths = compute_note_paths(video, run_time)
@@ -477,6 +501,7 @@ def _process_video(
             paths["scripts"],
             dry_run=dry_run,
             include_code_blocks=code_bearing,
+            media_path=media_path,
         )
         with contextlib.suppress(Exception):
             record_transcript_stat(video, transcript)
@@ -501,8 +526,10 @@ def _process_video(
         # Kick off Stage 03 video download in parallel with Stage 02 LLM call.
         # Stage 03 still waits for Stage 02's output to parse timeline ranges,
         # but the download — the bulk of Stage 03's wall time — can overlap.
+        # In --local-media mode the file is already on disk, so skip the
+        # network prefetch entirely (Stage 03 uses media_path directly below).
         prefetch = None
-        if not dry_run:
+        if media_path is None and not dry_run:
             with contextlib.suppress(Exception):
                 prefetch = prefetch_video_download(video, backend=capture_backend)
 
@@ -522,7 +549,9 @@ def _process_video(
             f" cost=${summary_resp.total_cost_usd or 0:.3f}"
         )
 
-        prefetched_path = None
+        # Local file (if any) is the capture source; otherwise use the
+        # prefetched download. Both None → run_stage_capture downloads itself.
+        prefetched_path = media_path
         if prefetch is not None:
             err = prefetch.wait()
             if err is None and prefetch.path.exists():
@@ -537,6 +566,11 @@ def _process_video(
             dry_run=dry_run,
             prefetched_video_path=prefetched_path,
             backend=capture_backend,
+            # Local media is offline-only: if the file is missing, fail closed
+            # rather than silently downloading from YouTube.
+            allow_download=media_path is None,
+            # Never delete the user's --local-media source file.
+            delete_video=media_path is None,
         )
         if capture_result.error and not capture_result.outcomes:
             click.echo(f" FAILED: {capture_result.error}")
@@ -606,9 +640,11 @@ async def _run_videos_concurrent(
     capture_backend: Any = None,
     code_bearing: bool = False,
     glossary: Glossary | None = None,
+    media_map: dict[str, Path] | None = None,
 ) -> list[VideoRunResult]:
     """Process multiple videos concurrently with bounded parallelism."""
     sem = asyncio.Semaphore(concurrency)
+    media = media_map or {}
 
     async def _task(i: int, video: VideoMeta) -> VideoRunResult:
         async with sem:
@@ -625,6 +661,7 @@ async def _run_videos_concurrent(
                 capture_backend=capture_backend,
                 code_bearing=code_bearing,
                 glossary=glossary,
+                media_path=media.get(video.video_id),
             )
 
     tasks = [_task(i, v) for i, v in enumerate(videos, 1)]
@@ -634,6 +671,18 @@ async def _run_videos_concurrent(
 @click.command()
 @click.argument("url", required=False)
 @click.option("--dry-run", is_flag=True, help="Do not write to vault; print to stdout only.")
+@click.option(
+    "--local-media",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+    default=None,
+    help=(
+        "Build hands-on from a LOCAL folder of the playlist's video files "
+        "(fully offline — no YouTube access). Stage 01 transcribes each file "
+        "with Whisper (run with --extra whisper); Stage 03 captures from it. "
+        "URL becomes optional. Name files with the 11-char video_id, e.g. "
+        "yt-dlp '%(id)s.%(ext)s' or 'Title [%(id)s].mp4'. See docs/local-media.md."
+    ),
+)
 @click.option(
     "--concurrency",
     type=click.IntRange(1, 5),
@@ -780,16 +829,19 @@ def cli(
     capture_backend: str | None,
     synthesis_timeout: int | None,
     synthesis_profile: str | None,
+    local_media: Path | None,
 ) -> None:
     """Process a YouTube playlist or single-video URL end-to-end."""
-    if not url:
+    if not url and not local_media:
         click.echo("Usage: pipeline-youtube <playlist-or-video-url> [options]")
+        click.echo("   or: pipeline-youtube --local-media <dir>   (fully offline)")
         sys.exit(2)
 
-    try:
-        validate_youtube_url(url)
-    except ValueError as exc:
-        raise click.UsageError(str(exc)) from exc
+    if url:
+        try:
+            validate_youtube_url(url)
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
 
     # Mutually-exclusive phase flags
     phase_flags = sum(bool(x) for x in (stop_after_capture, resume_reviewed, synthesis_only))
@@ -814,6 +866,7 @@ def cli(
     except VaultRootError as exc:
         raise click.UsageError(str(exc)) from exc
     set_dry_run(dry_run)
+    configure_whisper(backend=cfg.whisper_backend, model=cfg.whisper_model)
     vault_root = cfg.vault_root
     models = cfg.models
     filler_words = cfg.filler_words
@@ -840,7 +893,22 @@ def cli(
     # the docker daemon happens to be unavailable at that moment.
     active_capture_backend: Any = None
     backend_choice = capture_backend or cfg.capture_backend
-    will_run_capture = not (synthesis_only or resume_reviewed)
+    # Capture runs in every mode except --synthesis-only (which only re-runs
+    # Stage 05 over existing 04 md). In particular --resume-reviewed still calls
+    # _process_video()/Stage 03, so it must run the docker preflight and be
+    # subject to the local-media guard below.
+    will_run_capture = not synthesis_only
+    # --local-media files live outside the container's bind mounts (tmp/ + the
+    # Vault assets folder), so the docker backend's ffmpeg can't read them.
+    # Reject the combination up front instead of failing per-video deep inside
+    # Stage 03.
+    if local_media and backend_choice == "docker" and will_run_capture:
+        raise click.UsageError(
+            "--local-media is incompatible with the docker capture backend: the "
+            "hardened container only mounts tmp/ and the Vault assets folder, so "
+            "your media directory is not visible to ffmpeg. Re-run with the host "
+            "backend (--capture-backend host)."
+        )
     if backend_choice == "docker":
         assets_dir = vault_root / ASSETS_REL_PATH
         assets_dir.mkdir(parents=True, exist_ok=True)
@@ -871,6 +939,7 @@ def cli(
     click.echo(f"vault_root: {vault_root}")
     click.echo(f"dry_run: {dry_run}")
     click.echo(f"model: {model}")
+    click.echo(f"whisper: {describe_whisper()}")
     click.echo(f"capture_format: {capture_format}")
     click.echo(f"concurrency: {concurrency}")
     click.echo(f"min_playlist_size: {min_playlist_size}")
@@ -882,11 +951,28 @@ def cli(
     )
     click.echo(f"synthesis_profile: {effective_synthesis_profile}")
 
-    click.echo("fetching metadata...")
-    videos = fetch_metadata(url)
-    if not videos:
-        click.echo("No videos found.")
-        sys.exit(1)
+    # --local-media: build the video list from a local folder (no YouTube).
+    # media_map (video_id → file path) is threaded into stages 01/03 so they
+    # transcribe/capture the local file instead of downloading. Empty otherwise.
+    media_map: dict[str, Path] = {}
+    if local_media:
+        from .local_media import build_local_videos
+
+        videos, media_map = build_local_videos(local_media)
+        if not videos:
+            click.echo(f"No media files found in {local_media}")
+            sys.exit(1)
+        click.echo(f"local-media: {len(videos)} file(s) from {local_media}")
+    else:
+        if url is None:
+            raise click.UsageError(
+                "A playlist/video URL is required unless --local-media is given."
+            )
+        click.echo("fetching metadata...")
+        videos = fetch_metadata(url)
+        if not videos:
+            click.echo("No videos found.")
+            sys.exit(1)
 
     playlist_title = videos[0].playlist_title or videos[0].title or "single video"
     click.echo(f"playlist: {playlist_title!r}")
@@ -1009,6 +1095,7 @@ def cli(
                     capture_backend=active_capture_backend,
                     code_bearing=code_bearing,
                     glossary=cfg.glossary,
+                    media_map=media_map,
                 )
             )
             results.extend(concurrent_results)
@@ -1026,6 +1113,7 @@ def cli(
                     capture_backend=active_capture_backend,
                     code_bearing=code_bearing,
                     glossary=cfg.glossary,
+                    media_path=media_map.get(video.video_id),
                 )
                 results.append(result)
 

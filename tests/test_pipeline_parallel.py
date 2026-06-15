@@ -116,3 +116,47 @@ class TestPrefetchedPathConsumed:
         assert called["download"] == 0
         assert called["extract"] == 1
         assert result.outcomes and result.outcomes[0].success
+        # No network download happened, so the flag must report False.
+        assert result.video_downloaded is False
+
+    def test_capture_fails_closed_when_local_media_source_missing(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """--local-media (allow_download=False) must never fall back to YouTube."""
+        from pipeline_youtube.stages import capture as cap_mod
+
+        summary_md = tmp_path / "02.md"
+        summary_md.write_text(
+            "---\n---\n\n## 要点タイムライン\n### [00:00 ~ 00:05] heading\n本文\n",
+            encoding="utf-8",
+        )
+        capture_md = tmp_path / "03.md"
+        capture_md.write_text("---\n---\n", encoding="utf-8")
+        missing_video = tmp_path / "missing.mp4"
+
+        called: dict[str, int] = {"download": 0}
+
+        def never_download(*args: Any, **kwargs: Any) -> None:
+            called["download"] += 1
+
+        monkeypatch.setattr(cap_mod, "_download_video", never_download)
+        monkeypatch.setattr(
+            cap_mod,
+            "_resolve_capture_format",
+            lambda _req, _backend: cap_mod._FormatChoice(ext="webp", strategy="direct"),
+        )
+        monkeypatch.setattr(cap_mod, "get_vault_root", lambda: tmp_path)
+        monkeypatch.setattr(cap_mod, "ensure_safe_path", lambda p: p)
+
+        result = cap_mod.run_stage_capture(
+            _video(),
+            summary_md,
+            capture_md,
+            prefetched_video_path=missing_video,
+            allow_download=False,
+        )
+
+        assert called["download"] == 0
+        assert result.error is not None
+        assert result.error.startswith("local_media_file_missing")
+        assert result.outcomes == []
