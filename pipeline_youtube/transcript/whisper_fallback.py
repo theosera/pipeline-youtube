@@ -257,6 +257,7 @@ def fetch_whisper(
     languages: list[str],
     *,
     model_name: str = DEFAULT_WHISPER_MODEL,
+    media_path: Path | None = None,
 ) -> TranscriptResult:
     """Tier 3 fetcher: download audio + Whisper transcribe.
 
@@ -272,6 +273,11 @@ def fetch_whisper(
         `language` hint. If empty, Whisper auto-detects.
     model_name:
         Whisper model size (tiny/base/small/medium/large).
+    media_path:
+        When given, transcribe this **local** file directly instead of
+        downloading the audio (used by ``--local-media`` / fully-offline mode).
+        Whisper reads any ffmpeg-decodable container (mp4/mkv/…). The local
+        file is never deleted; only a self-downloaded temp file is cleaned up.
     """
     # Check whisper is importable before acquiring lock
     try:
@@ -291,11 +297,15 @@ def fetch_whisper(
     lock_ctx = filelock.FileLock(_LOCK_PATH, timeout=-1) if filelock else _noop_lock()
 
     with lock_ctx:
-        audio_path: Path | None = None
+        downloaded: Path | None = None
         try:
-            audio_path = _download_audio(video_id)
+            if media_path is not None:
+                source_path = media_path
+            else:
+                downloaded = _download_audio(video_id)
+                source_path = downloaded
             lang_hint = languages[0] if languages else None
-            segments = _run_whisper(audio_path, model_name=model_name, language=lang_hint)
+            segments = _run_whisper(source_path, model_name=model_name, language=lang_hint)
             snippets = _segments_to_snippets(segments)
 
             if not snippets:
@@ -308,10 +318,11 @@ def fetch_whisper(
                 snippets=snippets,
             )
         finally:
-            # Clean up audio file
-            if audio_path is not None:
+            # Only clean up a file we downloaded ourselves — never the user's
+            # local --local-media file.
+            if downloaded is not None:
                 with contextlib.suppress(OSError):
-                    audio_path.unlink(missing_ok=True)
+                    downloaded.unlink(missing_ok=True)
 
 
 class _noop_lock:

@@ -466,6 +466,7 @@ def _process_video(
     capture_backend: Any = None,
     code_bearing: bool = False,
     glossary: Glossary | None = None,
+    media_path: Path | None = None,
 ) -> VideoRunResult:
     try:
         paths = compute_note_paths(video, run_time)
@@ -477,6 +478,7 @@ def _process_video(
             paths["scripts"],
             dry_run=dry_run,
             include_code_blocks=code_bearing,
+            media_path=media_path,
         )
         with contextlib.suppress(Exception):
             record_transcript_stat(video, transcript)
@@ -501,8 +503,10 @@ def _process_video(
         # Kick off Stage 03 video download in parallel with Stage 02 LLM call.
         # Stage 03 still waits for Stage 02's output to parse timeline ranges,
         # but the download — the bulk of Stage 03's wall time — can overlap.
+        # In --local-media mode the file is already on disk, so skip the
+        # network prefetch entirely (Stage 03 uses media_path directly below).
         prefetch = None
-        if not dry_run:
+        if media_path is None and not dry_run:
             with contextlib.suppress(Exception):
                 prefetch = prefetch_video_download(video, backend=capture_backend)
 
@@ -522,7 +526,9 @@ def _process_video(
             f" cost=${summary_resp.total_cost_usd or 0:.3f}"
         )
 
-        prefetched_path = None
+        # Local file (if any) is the capture source; otherwise use the
+        # prefetched download. Both None → run_stage_capture downloads itself.
+        prefetched_path = media_path
         if prefetch is not None:
             err = prefetch.wait()
             if err is None and prefetch.path.exists():
@@ -606,9 +612,11 @@ async def _run_videos_concurrent(
     capture_backend: Any = None,
     code_bearing: bool = False,
     glossary: Glossary | None = None,
+    media_map: dict[str, Path] | None = None,
 ) -> list[VideoRunResult]:
     """Process multiple videos concurrently with bounded parallelism."""
     sem = asyncio.Semaphore(concurrency)
+    media = media_map or {}
 
     async def _task(i: int, video: VideoMeta) -> VideoRunResult:
         async with sem:
@@ -625,6 +633,7 @@ async def _run_videos_concurrent(
                 capture_backend=capture_backend,
                 code_bearing=code_bearing,
                 glossary=glossary,
+                media_path=media.get(video.video_id),
             )
 
     tasks = [_task(i, v) for i, v in enumerate(videos, 1)]
@@ -634,6 +643,18 @@ async def _run_videos_concurrent(
 @click.command()
 @click.argument("url", required=False)
 @click.option("--dry-run", is_flag=True, help="Do not write to vault; print to stdout only.")
+@click.option(
+    "--local-media",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+    default=None,
+    help=(
+        "Build hands-on from a LOCAL folder of the playlist's video files "
+        "(fully offline — no YouTube access). Stage 01 transcribes each file "
+        "with Whisper (run with --extra whisper); Stage 03 captures from it. "
+        "URL becomes optional. Name files with the 11-char video_id, e.g. "
+        "yt-dlp '%(id)s.%(ext)s' or 'Title [%(id)s].mp4'. See docs/local-media.md."
+    ),
+)
 @click.option(
     "--concurrency",
     type=click.IntRange(1, 5),
@@ -780,16 +801,19 @@ def cli(
     capture_backend: str | None,
     synthesis_timeout: int | None,
     synthesis_profile: str | None,
+    local_media: Path | None,
 ) -> None:
     """Process a YouTube playlist or single-video URL end-to-end."""
-    if not url:
+    if not url and not local_media:
         click.echo("Usage: pipeline-youtube <playlist-or-video-url> [options]")
+        click.echo("   or: pipeline-youtube --local-media <dir>   (fully offline)")
         sys.exit(2)
 
-    try:
-        validate_youtube_url(url)
-    except ValueError as exc:
-        raise click.UsageError(str(exc)) from exc
+    if url:
+        try:
+            validate_youtube_url(url)
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
 
     # Mutually-exclusive phase flags
     phase_flags = sum(bool(x) for x in (stop_after_capture, resume_reviewed, synthesis_only))
@@ -882,11 +906,26 @@ def cli(
     )
     click.echo(f"synthesis_profile: {effective_synthesis_profile}")
 
-    click.echo("fetching metadata...")
-    videos = fetch_metadata(url)
-    if not videos:
-        click.echo("No videos found.")
-        sys.exit(1)
+    # --local-media: build the video list from a local folder (no YouTube).
+    # media_map (video_id → file path) is threaded into stages 01/03 so they
+    # transcribe/capture the local file instead of downloading. Empty otherwise.
+    media_map: dict[str, Path] = {}
+    if local_media:
+        from .local_media import build_local_videos
+
+        videos, media_map = build_local_videos(local_media)
+        if not videos:
+            click.echo(f"No media files found in {local_media}")
+            sys.exit(1)
+        click.echo(f"local-media: {len(videos)} file(s) from {local_media}")
+    else:
+        if url is None:
+            raise click.UsageError("A playlist/video URL is required unless --local-media is given.")
+        click.echo("fetching metadata...")
+        videos = fetch_metadata(url)
+        if not videos:
+            click.echo("No videos found.")
+            sys.exit(1)
 
     playlist_title = videos[0].playlist_title or videos[0].title or "single video"
     click.echo(f"playlist: {playlist_title!r}")
@@ -1009,6 +1048,7 @@ def cli(
                     capture_backend=active_capture_backend,
                     code_bearing=code_bearing,
                     glossary=cfg.glossary,
+                    media_map=media_map,
                 )
             )
             results.extend(concurrent_results)
@@ -1026,6 +1066,7 @@ def cli(
                     capture_backend=active_capture_backend,
                     code_bearing=code_bearing,
                     glossary=cfg.glossary,
+                    media_path=media_map.get(video.video_id),
                 )
                 results.append(result)
 
