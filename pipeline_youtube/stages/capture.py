@@ -374,6 +374,9 @@ def run_stage_capture(
 
     tmp_video_path = prefetched_video_path or _tmp_video_path(video)
 
+    # Track whether we actually pulled the file from YouTube so the result's
+    # `video_downloaded` flag stays accurate for prefetched / local-media runs.
+    downloaded = False
     if prefetched_video_path is None or not prefetched_video_path.exists():
         if not allow_download:
             return CaptureResult(
@@ -388,6 +391,7 @@ def run_stage_capture(
                 resolution=resolution,
                 backend=active_backend,
             )
+            downloaded = True
         except Exception as e:
             return CaptureResult(
                 ranges=ranges,
@@ -445,7 +449,7 @@ def run_stage_capture(
         return CaptureResult(
             ranges=ranges,
             outcomes=outcomes,
-            video_downloaded=True,
+            video_downloaded=downloaded,
             capture_format=ext,
         )
     finally:
