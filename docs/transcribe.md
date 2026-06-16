@@ -33,6 +33,12 @@ YouTube モード（`--local-media` でないとき）の字幕取得はフォ�
 - **効かせ方**: bot ブロックを避けるために `--local-media`（オフライン）へ逃げていた場合、
   対象動画が YouTube 上に字幕を持つなら **local-media をやめて YouTube モードで回す**と
   tier0 で字幕が取れ、Whisper（全体の85〜90%）を回避できる。
+- **player ホスト**: `youtubei.googleapis.com`（正準APIホスト・bot 干渉が少ない）を優先、
+  `www.youtube.com` をフォールバック。字幕XML(`baseUrl`)は YouTube が返す通り
+  `www.youtube.com/api/timedtext` 固定。
+- **実地検証**: 取得を行うマシン（住宅IP）で
+  `uv run python scripts/verify_innertube.py <video_id|URL> [lang ...]` を実行すると、
+  player→トラック選択→XML取得→パースを通しで確認できる（成功で先頭数行を表示）。
 
 ## 有効化（オプトイン）
 
