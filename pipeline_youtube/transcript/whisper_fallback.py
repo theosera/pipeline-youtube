@@ -152,6 +152,18 @@ def _ensure_tmp() -> None:
     _TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _audio_candidates(video_id: str) -> list[Path]:
+    """Return downloaded audio candidates for ``video_id``, excluding lock files."""
+    return sorted(p for p in _TMP_DIR.glob(f"whisper_{video_id}.*") if p.suffix != ".lock")
+
+
+def _remove_stale_audio_candidates(video_id: str) -> None:
+    """Remove leftovers from previous failed runs before a fresh yt-dlp download."""
+    for candidate in _audio_candidates(video_id):
+        with contextlib.suppress(OSError):
+            candidate.unlink()
+
+
 def _download_audio(video_id: str) -> Path:
     """Download audio-only track via yt-dlp as m4a/mp3.
 
@@ -159,6 +171,7 @@ def _download_audio(video_id: str) -> Path:
     Raises TranscriptNotAvailable on download failure.
     """
     _ensure_tmp()
+    _remove_stale_audio_candidates(video_id)
     out_template = str(_TMP_DIR / f"whisper_{video_id}.%(ext)s")
     url = f"https://www.youtube.com/watch?v={video_id}"
 
@@ -189,8 +202,7 @@ def _download_audio(video_id: str) -> Path:
         raise TranscriptNotAvailable(f"audio_download_failed: {e}") from e
 
     # Find the downloaded file (extension may vary)
-    candidates = sorted(_TMP_DIR.glob(f"whisper_{video_id}.*"))
-    candidates = [c for c in candidates if c.suffix != ".lock"]
+    candidates = _audio_candidates(video_id)
     if not candidates:
         raise TranscriptNotAvailable("audio_file_not_found_after_download")
     return candidates[0]

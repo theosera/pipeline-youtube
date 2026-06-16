@@ -139,6 +139,15 @@ class TestBuildLocalVideos:
         second, _ = build_local_videos(media)
         assert first[0].video_id == second[0].video_id
 
+    def test_duplicate_video_id_raises(self, tmp_path: Path) -> None:
+        media = tmp_path / "pl"
+        media.mkdir()
+        self._touch(media, "01 Talk [dQw4w9WgXcQ].mp4")
+        self._touch(media, "02 Same Upload [dQw4w9WgXcQ].mkv")
+
+        with pytest.raises(ValueError, match="duplicate video id"):
+            build_local_videos(media)
+
     def test_empty_dir(self, tmp_path: Path) -> None:
         media = tmp_path / "empty"
         media.mkdir()
