@@ -99,6 +99,7 @@ class TestRunStageScripts:
         returned TranscriptResult.snippets (consumed by Stage 02), not only in
         the rendered 01 markdown."""
         from pipeline_youtube.transcript.chunking import Chunk
+        from pipeline_youtube.transcript.correction import CorrectionResult
 
         video = _video()
         run_time = datetime(2026, 4, 14, 21, 41)
@@ -110,15 +111,26 @@ class TestRunStageScripts:
             "fetch_with_fallback",
             lambda video_id, languages, fetchers: _fake_fetch_success()(video_id, languages),
         )
-        # Stub the LLM correction: tag each chunk so we can detect propagation.
-        monkeypatch.setattr(
-            scripts_stage,
-            "correct_chunks",
-            lambda chunks, *, model: [Chunk(start=c.start, text=c.text + " [FIX]") for c in chunks],
-        )
+        # Stub the LLM correction: tag each chunk so we can detect propagation,
+        # and capture known_terms to lock down the pass-through contract.
+        seen: dict[str, object] = {}
+
+        def _fake_correct(chunks, *, model, known_terms=None):
+            seen["known_terms"] = known_terms
+            return CorrectionResult(
+                chunks=[Chunk(start=c.start, text=c.text + " [FIX]") for c in chunks],
+                cost_usd=0.42,
+                confirmed_terms=["Anthropic"],
+            )
+
+        monkeypatch.setattr(scripts_stage, "correct_chunks", _fake_correct)
 
         result = scripts_stage.run_stage_scripts(
-            video, scripts_path, window_seconds=30.0, correct_model="opus"
+            video,
+            scripts_path,
+            window_seconds=30.0,
+            correct_model="opus",
+            known_terms=[("ぐぐる", "Google")],
         )
 
         # Corrected text is in the returned snippets (downstream input)...
@@ -126,6 +138,12 @@ class TestRunStageScripts:
         assert all("[FIX]" in s.text for s in result.snippets)
         # ...and timestamps are preserved (first chunk starts at 0).
         assert result.snippets[0].start == 0.0
+        # ...and the correction cost rides along on the result.
+        assert result.correction_cost_usd == 0.42
+        # ...and the sheet's known terms reached correct_chunks (web-search skip).
+        assert seen["known_terms"] == [("ぐぐる", "Google")]
+        # ...and the confirmed proper nouns ride along too.
+        assert result.confirmed_terms == ("Anthropic",)
         # ...and the rendered 01 md also has it.
         assert "[FIX]" in scripts_path.read_text(encoding="utf-8")
 
