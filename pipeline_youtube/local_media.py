@@ -85,8 +85,9 @@ def build_local_videos(media_dir: Path) -> tuple[list[VideoMeta], dict[str, Path
 
     Files are taken in sorted filename order (so a ``NN_`` / playlist-index
     prefix preserves playlist order). The directory name becomes
-    ``playlist_title`` for output-folder naming. Duplicate ids keep the first
-    file. Raises ``ValueError`` if the path is not a directory.
+    ``playlist_title`` for output-folder naming. Duplicate ids raise
+    ``ValueError`` instead of silently dropping one file. Raises ``ValueError``
+    if the path is not a directory.
     """
     if not media_dir.is_dir():
         raise ValueError(f"--local-media is not a directory: {media_dir}")
@@ -110,7 +111,10 @@ def build_local_videos(media_dir: Path) -> tuple[list[VideoMeta], dict[str, Path
             f"{media_dir_key}/{path.name}"
         )
         if video_id in media_map:
-            continue
+            raise ValueError(
+                "--local-media has duplicate video id "
+                f"{video_id!r}: {media_map[video_id].name!r} and {path.name!r}"
+            )
         videos.append(
             VideoMeta(
                 video_id=video_id,

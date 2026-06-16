@@ -6,12 +6,16 @@ download or model inference happens.
 
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from pipeline_youtube.transcript import whisper_fallback as whisper_mod
 from pipeline_youtube.transcript.base import TranscriptNotAvailable, TranscriptSource
 from pipeline_youtube.transcript.whisper_fallback import (
+    _download_audio,
     _noop_lock,
     _segments_to_snippets,
     fetch_whisper,
@@ -59,6 +63,39 @@ class TestNoopLock:
 
 
 class TestFetchWhisper:
+    def test_download_audio_removes_stale_candidates_before_selecting_result(
+        self, tmp_path, monkeypatch
+    ):
+        """A leftover audio file from a failed run must not be transcribed."""
+        video_id = "dQw4w9WgXcQ"
+        stale = tmp_path / f"whisper_{video_id}.m4a"
+        stale.write_text("old audio", encoding="utf-8")
+        lock = tmp_path / f"whisper_{video_id}.lock"
+        lock.write_text("lock", encoding="utf-8")
+
+        class FakeYDL:
+            def __init__(self, _opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def download(self, _urls):
+                (tmp_path / f"whisper_{video_id}.mp3").write_text("new audio", encoding="utf-8")
+
+        monkeypatch.setattr(whisper_mod, "_TMP_DIR", tmp_path)
+        monkeypatch.setitem(sys.modules, "yt_dlp", SimpleNamespace(YoutubeDL=FakeYDL))
+
+        downloaded = _download_audio(video_id)
+
+        assert downloaded == tmp_path / f"whisper_{video_id}.mp3"
+        assert downloaded.read_text(encoding="utf-8") == "new audio"
+        assert not stale.exists()
+        assert lock.exists()
+
     @patch("pipeline_youtube.transcript.whisper_fallback.whisper", create=True)
     def test_whisper_not_installed_raises(self, _mock_whisper):
         """When whisper import fails, TranscriptNotAvailable is raised."""

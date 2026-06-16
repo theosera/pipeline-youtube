@@ -69,14 +69,34 @@ def _promote_corrections_to_glossary(sheet: ProperNounSheet, glossary_path: Path
 def _sheet_write_lock(sheet_path: Path) -> contextlib.AbstractContextManager[Any]:
     """Cross-process lock guarding the shared proper-noun sheet.
 
-    Mirrors the whisper-fallback idiom: use ``filelock`` when installed, else a
-    no-op (single-process runs are unaffected either way).
+    Prefer ``filelock`` when installed (Windows-compatible). On POSIX systems,
+    fall back to ``fcntl.flock`` so a base install still serializes
+    ``--sub-agents`` workers. Only platforms with neither mechanism fall back to
+    no-op locking.
     """
+    lock_path = Path(str(sheet_path) + ".lock")
     try:
         import filelock  # type: ignore[import-untyped]
     except ImportError:
-        return contextlib.nullcontext()
-    return filelock.FileLock(str(sheet_path) + ".lock", timeout=-1)
+        return _posix_file_lock(lock_path)
+    return filelock.FileLock(str(lock_path), timeout=-1)
+
+
+@contextlib.contextmanager
+def _posix_file_lock(lock_path: Path) -> Any:
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _update_proper_noun_sheet(sheet_path: Path, results: list[VideoRunResult]) -> None:

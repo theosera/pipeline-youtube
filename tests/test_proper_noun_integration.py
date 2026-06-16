@@ -6,7 +6,12 @@ helpers) and to the Stage 05 output (synthesis._apply_proper_nouns).
 
 from __future__ import annotations
 
+import multiprocessing
+import sys
 from pathlib import Path
+from queue import Empty
+
+import pytest
 
 from pipeline_youtube import proper_noun_sheet as main_mod
 from pipeline_youtube.glossary import (
@@ -26,6 +31,30 @@ from pipeline_youtube.synthesis.scoring import (
     SynthesisChapterBody,
     SynthesisMoc,
 )
+
+
+def _sheet_lock_worker(
+    sheet_path_raw: str,
+    video_id: str,
+    term: str,
+    started,
+    entered,
+    release,
+) -> None:
+    sheet_path = Path(sheet_path_raw)
+    started.put(video_id)
+    with main_mod._sheet_write_lock(sheet_path):
+        sheet = load_sheet(sheet_path)
+        entered.put(video_id)
+        if not release.wait(timeout=10):
+            raise TimeoutError("test did not release sheet lock")
+        sheet = main_mod.upsert_video_terms(
+            sheet,
+            video_id=video_id,
+            title=f"Title {video_id}",
+            terms=[term],
+        )
+        main_mod.write_sheet(sheet_path, sheet)
 
 
 def _video(video_id: str = "v1") -> VideoMeta:
@@ -127,6 +156,50 @@ class TestUpdateProperNounSheet:
             sheet_path,
             [main_mod.VideoRunResult(video=_video("v2"), confirmed_terms=("Claude",))],
         )
+        sheet = load_sheet(sheet_path)
+        assert sheet.section_for("v1") is not None
+        assert sheet.section_for("v2") is not None
+
+    def test_posix_lock_serializes_separate_processes_without_filelock(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        if "fork" not in multiprocessing.get_all_start_methods():
+            pytest.skip("requires fork so monkeypatched imports reach child workers")
+
+        # Base installs do not include filelock. The fcntl fallback still has to
+        # serialize shard workers, or each process can load an old sheet and
+        # overwrite another shard's confirmed terms.
+        monkeypatch.setitem(sys.modules, "filelock", None)
+        ctx = multiprocessing.get_context("fork")
+        started = ctx.Queue()
+        entered = ctx.Queue()
+        release = ctx.Event()
+        sheet_path = tmp_path / "__proper_nouns.tsv"
+
+        p1 = ctx.Process(
+            target=_sheet_lock_worker,
+            args=(str(sheet_path), "v1", "Anthropic", started, entered, release),
+        )
+        p2 = ctx.Process(
+            target=_sheet_lock_worker,
+            args=(str(sheet_path), "v2", "Claude", started, entered, release),
+        )
+        p1.start()
+        assert started.get(timeout=5) == "v1"
+        assert entered.get(timeout=5) == "v1"
+
+        p2.start()
+        assert started.get(timeout=5) == "v2"
+        with pytest.raises(Empty):
+            entered.get(timeout=0.3)
+
+        release.set()
+        assert entered.get(timeout=5) == "v2"
+        p1.join(timeout=5)
+        p2.join(timeout=5)
+        assert p1.exitcode == 0
+        assert p2.exitcode == 0
+
         sheet = load_sheet(sheet_path)
         assert sheet.section_for("v1") is not None
         assert sheet.section_for("v2") is not None
