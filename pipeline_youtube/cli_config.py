@@ -79,7 +79,12 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
             f"config.json not found at {config_path}. "
             "Copy config.example.json to config.json and set vault_root."
         )
-    data = json.loads(config_path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise click.UsageError(f"config.json could not be read: {exc}") from exc
+    if not isinstance(data, dict):
+        raise click.UsageError("config.json root must be a JSON object")
     vault_root = data.get("vault_root")
     if not vault_root or vault_root == "/path/to/your/Obsidian Vault":
         raise click.UsageError("config.json vault_root is not configured.")
@@ -90,6 +95,11 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
     models_raw = data.get("models") or {}
     if not isinstance(models_raw, dict):
         raise click.UsageError("config.json: 'models' must be an object")
+    for key, value in models_raw.items():
+        if not isinstance(value, str) or not value.strip():
+            raise click.UsageError(
+                f"config.json: model override {key!r} must be a non-empty string, got {value!r}"
+            )
     unknown = set(models_raw) - _MODEL_KEYS - _DEPRECATED_MODEL_KEYS
     if unknown:
         raise click.UsageError(
@@ -128,7 +138,11 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
     synthesis_timeout_raw = data.get("synthesis_timeout")
     if synthesis_timeout_raw is None or synthesis_timeout_raw == "auto":
         synthesis_timeout: int | None = None
-    elif isinstance(synthesis_timeout_raw, int) and synthesis_timeout_raw > 0:
+    elif (
+        isinstance(synthesis_timeout_raw, int)
+        and not isinstance(synthesis_timeout_raw, bool)
+        and synthesis_timeout_raw > 0
+    ):
         synthesis_timeout = synthesis_timeout_raw
     else:
         raise click.UsageError(

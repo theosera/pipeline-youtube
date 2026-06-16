@@ -156,15 +156,18 @@ def _collect_existing_learning_bodies(
         # and contains the sanitized playlist title as a substring. Handles
         # both the new YYYY-MM-DD HHmm <title> format and the legacy
         # YYYY-MM-DD <title> format from runs before the HHmm fix.
-        from .obsidian import sanitize_title_for_filename
+        from .obsidian import _strip_playlist_category_prefix, sanitize_title_for_filename
 
         date_prefix = run_time.strftime("%Y-%m-%d")
-        title_needle = sanitize_title_for_filename(playlist_title)
-        candidates = [
-            p
-            for p in base_dir.iterdir()
-            if p.is_dir() and p.name.startswith(date_prefix) and title_needle in p.name
-        ]
+        display_title = _strip_playlist_category_prefix(playlist_title)
+        title_needle = sanitize_title_for_filename(display_title)
+        candidates = []
+        if title_needle:
+            candidates = [
+                p
+                for p in base_dir.iterdir()
+                if p.is_dir() and p.name.startswith(date_prefix) and title_needle in p.name
+            ]
         if candidates:
             candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
             learning_dir = candidates[0]
