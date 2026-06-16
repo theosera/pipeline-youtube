@@ -33,6 +33,7 @@ from ..transcript.auto import fetch_auto
 from ..transcript.base import Fetcher, TranscriptResult, fetch_with_fallback
 from ..transcript.chunking import Chunk, chunk_by_window
 from ..transcript.correction import chunks_to_snippets, correct_chunks
+from ..transcript.innertube import fetch_innertube
 from ..transcript.official import fetch_official
 
 DEFAULT_LANGUAGES: list[str] = ["ja", "en"]
@@ -48,6 +49,7 @@ def run_stage_scripts(
     media_path: Path | None = None,
     correct_model: str | None = None,
     known_terms: list[tuple[str, str]] | None = None,
+    use_innertube: bool = True,
 ) -> TranscriptResult:
     """Fetch transcript, chunk it, and append the body to `scripts_md_path`.
 
@@ -95,10 +97,19 @@ def run_stage_scripts(
             video.video_id, langs, fetchers=[("whisper-local", local_fetcher)]
         )
     else:
+        # Tier 0 (InnerTube iOS client) is tried first: it fetches existing
+        # YouTube captions without the bot/PO-token challenges that increasingly
+        # block youtube-transcript-api, keeping caption-bearing videos off the
+        # slow Whisper path. It is best-effort — on any failure the chain falls
+        # through to the youtube-transcript-api tiers and then Whisper.
+        innertube_tier: tuple[str, Fetcher | None] = (
+            ("innertube", fetch_innertube) if use_innertube else ("innertube", None)
+        )
         result = fetch_with_fallback(
             video.video_id,
             langs,
             fetchers=[
+                innertube_tier,
                 ("official", fetch_official),
                 ("auto", fetch_auto),
                 ("whisper", whisper_fetcher),
