@@ -12,8 +12,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pipeline_youtube.transcript.base import TranscriptNotAvailable, TranscriptSource
 from pipeline_youtube.transcript import whisper_fallback as whisper_mod
+from pipeline_youtube.transcript.base import TranscriptNotAvailable, TranscriptSource
 from pipeline_youtube.transcript.whisper_fallback import (
     _download_audio,
     _noop_lock,
