@@ -104,7 +104,8 @@ def run_stage_scripts(
         # slow Whisper path. It is best-effort — on any failure the chain falls
         # through to the youtube-transcript-api tiers and then Whisper.
         innertube_tier: tuple[str, Fetcher | None] = (
-            ("innertube", fetch_innertube) if use_innertube else ("innertube", None)
+            "innertube",
+            fetch_innertube if use_innertube else None,
         )
         result = fetch_with_fallback(
             video.video_id,

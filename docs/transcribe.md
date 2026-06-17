@@ -26,7 +26,8 @@ YouTube モード（`--local-media` でないとき）の字幕取得はフォ�
   方式なら字幕がある動画を Whisper に落とさず数秒で取れる。
 - **ベストエフォート**: tier0 が失敗（到達不可・bot ブロック・字幕無し・パース不能）したら
   例外で次階層へ。タイムスタンプ契約も `TranscriptResult` 契約も不変。
-- **無効化**: `run_stage_scripts(..., use_innertube=False)` で tier0 を外せる。
+- **無効化**: `config.json` に `"use_innertube": false` を設定すると tier0 を外せる
+  （各動画 Stage 01 に適用。データセンターIP で 403 が出る環境向け）。
 - **脆さ・適用範囲**: InnerTube は非公開で YouTube 変更に脆い。API キー/クライアントバージョンは
   公開 iOS 値（`transcript/innertube.py` 上部、必要時に更新）。**住宅IP・低頻度**前提で、
   データセンターIPや大量アクセスでは 403/bot 判定が出るため、必ずフォールバックの裏に置く。
