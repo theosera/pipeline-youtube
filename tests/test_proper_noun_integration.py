@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import multiprocessing
 import sys
-import time
 from pathlib import Path
 from queue import Empty
 
@@ -63,11 +62,13 @@ def _glossary_promote_worker(
     canonical: str,
     alias: str,
     started,
+    finished,
 ) -> None:
     glossary_path = Path(glossary_path_raw)
     sheet = ProperNounSheet(sections=(VideoSection("v1", "T", (ProperNounRow(alias, canonical),)),))
     started.put(canonical)
     main_mod._promote_corrections_to_glossary(sheet, glossary_path)
+    finished.put(canonical)
 
 
 def _video(video_id: str = "v1") -> VideoMeta:
@@ -128,17 +129,21 @@ class TestPromoteCorrectionsToGlossary:
         write_glossary(glossary_path, Glossary())
         ctx = multiprocessing.get_context("fork")
         started = ctx.Queue()
+        finished = ctx.Queue()
 
         with main_mod._sheet_write_lock(glossary_path):
             p = ctx.Process(
                 target=_glossary_promote_worker,
-                args=(str(glossary_path), "Beta", "べーた", started),
+                args=(str(glossary_path), "Beta", "べーた", started, finished),
             )
             p.start()
             assert started.get(timeout=5) == "Beta"
-            # If promotion does not use this lock, the child can write now and
-            # this overwrite would silently drop its correction.
-            time.sleep(0.3)
+            # The child must block on the held lock: it cannot finish (and thus
+            # cannot write) while we hold it. If promotion ignored the lock, the
+            # child would finish here and its write would be lost to the
+            # overwrite below.
+            with pytest.raises(Empty):
+                finished.get(timeout=0.3)
             write_glossary(glossary_path, Glossary(entries=(GlossaryEntry(canonical="Alpha"),)))
 
         p.join(timeout=5)

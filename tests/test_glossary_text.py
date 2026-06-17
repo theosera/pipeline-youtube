@@ -73,6 +73,9 @@ def test_wikilink_targets_are_not_rewritten() -> None:
     text = "参照: [[2026-01-01 ビブコーディング入門#^00-00]] と本文のビブコーディング"
     expected = "参照: [[2026-01-01 ビブコーディング入門#^00-00]] と本文のVibe Coding"
     assert normalize_text(text, _GLOSSARY) == expected
+    embed_text = "参照: ![[2026-01-01 ビブコーディング入門#^00-00]] と本文のビブコーディング"
+    embed_expected = "参照: ![[2026-01-01 ビブコーディング入門#^00-00]] と本文のVibe Coding"
+    assert normalize_text(embed_text, _GLOSSARY) == embed_expected
 
 
 def test_normalization_is_idempotent() -> None:

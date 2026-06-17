@@ -66,10 +66,14 @@ def sanitize_untrusted_text(
     cleaned = _CONTROL_CHARS_RE.sub("", raw)
     cleaned = _ZERO_WIDTH_RE.sub("", cleaned)
     cleaned = cleaned.replace("\x00", "")
-    cleaned = _neutralize_untrusted_delimiters(cleaned)
+    # Measure the removal metric from stripping only. Delimiter neutralization
+    # below escapes (expands) text rather than removing it, so doing it first
+    # would shrink — or negate — `removed` and mask the >=5-removed injection
+    # signal (e.g. zero-width run followed by a literal <untrusted_content>).
     removed = before_len - len(cleaned)
     if removed >= _ALERT_REMOVED_THRESHOLD:
         _emit_alert(context, before_len, len(cleaned), raw[:64])
+    cleaned = _neutralize_untrusted_delimiters(cleaned)
     return cleaned[:max_length]
 
 

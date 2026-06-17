@@ -71,6 +71,7 @@ class TestSanitizeUntrustedText:
         assert UNTRUSTED_CLOSE not in result
         assert UNTRUSTED_OPEN not in result
         assert "&lt;/untrusted_content&gt;" in result
+        assert "&lt;untrusted_content&gt;" in result
 
 
 class TestWrapUntrusted:
