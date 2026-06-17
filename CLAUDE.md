@@ -5,7 +5,7 @@ any modification is visible in `git diff` and requires review.
 
 > 3 層設計: 普遍ルール (行動原則 / セキュリティ境界 / エスカレーション) は共通グローバル層
 > `CLAUDE.global.md` (= `~/.claude/CLAUDE.md` 想定) にある。本ファイル = リポ固有ハードルール。
-> 下記の Git hooks / Security posture はこのリポ固有のハードルールなのでここに残す。
+> 下記の Architecture invariant / Git hooks / Security posture はこのリポ固有のハードルールなのでここに残す。
 
 ## スキル発火表
 
@@ -17,6 +17,28 @@ Git hooks / Security posture はハードルールとして常時ロードに置
 ## Project
 
 YouTube playlist → Obsidian vault learning pipeline written in Python 3.13.
+
+## Architecture invariant: main.py is a thin orchestrator
+
+`main.py` は合成ルート (composition root)。残してよいのは
+**CLI 定義 (引数/オプション)・段階の実行順序・モジュールの配線・終了/エラー処理**のみ。
+グローバル CLAUDE.md が普遍ルールだけを持つのと同じ発想で、main.py には「普遍的な制御フロー」
+だけを置き、各機能の HOW はモジュールへ出す (これが 2026 年の ~1372 行肥大化を招いた反省)。
+
+- 機能の HOW (ロジック / パース / I/O / 分岐) は専用モジュールへ置き、main.py からは
+  **呼び出す・配線する**だけにする (例: `cli_config.py` / `video_processing.py` /
+  `run_result.py` / `resume.py` / `proper_noun_sheet.py`)。
+- 切替・モードは `if/elif` の累積ではなく **config 値 + registry/strategy** で表現する
+  (例: フォールバック chain の `fetchers=[("innertube", …), ("official", …), …]`、
+  `use_innertube` のような config フラグ)。
+- 1 機能で main.py に増えてよいのは原則「呼び出し or 配線 数行」。これを超える追加は、
+  **先に対象モジュールへ抽出**してから行う。
+- 目安: `main.py` ≤ ~500 行。超過が見込まれる変更は抽出を着手条件とする。
+- リトマス試験: main.py を 2 分読んで「何が・どの順で・何に繋がって起きるか」が分かること。
+  HOW が漏れていたら抽出のサイン。
+
+> 新機能の着手前に「配置先モジュール」と「main.py への変更 = なし / 配線のみ (想定行数)」を
+> 要件として宣言する。オーケストレータを編集せずに足せない設計は、まだ main.py 依存が残っている。
 
 ## Commands
 
