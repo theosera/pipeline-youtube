@@ -499,6 +499,7 @@ def cli(
                     media_map=media_map,
                     correct_transcript=cfg.transcript_correction,
                     known_terms=known_terms,
+                    use_innertube=cfg.use_innertube,
                 )
             )
             results.extend(concurrent_results)
@@ -519,6 +520,7 @@ def cli(
                     media_path=media_map.get(video.video_id),
                     correct_transcript=cfg.transcript_correction,
                     known_terms=known_terms,
+                    use_innertube=cfg.use_innertube,
                 )
                 results.append(result)
 

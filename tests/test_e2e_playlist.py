@@ -189,7 +189,10 @@ def vault(tmp_path: Path):
 
 class TestE2EPlaylist:
     def test_full_cli_3_videos(self, vault: Path, monkeypatch):
-        # Mock Stage 01 transcripts (bypass real youtube-transcript-api)
+        # Mock Stage 01 transcripts (bypass real youtube-transcript-api). Capture
+        # use_innertube to lock the config→run_stage_scripts threading contract.
+        seen_innertube: list[bool] = []
+
         def fake_scripts(
             video,
             path,
@@ -199,7 +202,9 @@ class TestE2EPlaylist:
             media_path=None,
             correct_model=None,
             known_terms=None,
+            use_innertube=True,
         ):
+            seen_innertube.append(use_innertube)
             return _transcript_result(video.video_id)
 
         monkeypatch.setattr(vp_mod, "run_stage_scripts", fake_scripts)
@@ -232,9 +237,12 @@ class TestE2EPlaylist:
         monkeypatch.setattr(learning_mod, "invoke_claude", fake_invoke)
         monkeypatch.setattr(agents_mod, "invoke_claude", fake_invoke)
 
-        # Write a minimal config.json pointing at the vault
+        # Write a minimal config.json pointing at the vault. use_innertube=false
+        # so the captured value below proves the flag threads through to Stage 01.
         cfg = vault / "config.json"
-        cfg.write_text(json.dumps({"vault_root": str(vault)}), encoding="utf-8")
+        cfg.write_text(
+            json.dumps({"vault_root": str(vault), "use_innertube": False}), encoding="utf-8"
+        )
 
         runner = CliRunner()
         result = runner.invoke(
@@ -248,6 +256,8 @@ class TestE2EPlaylist:
         )
 
         assert result.exit_code == 0, result.output
+        # config use_innertube=false propagated all the way to Stage 01.
+        assert seen_innertube and all(v is False for v in seen_innertube)
         # Stages executed
         assert "[01] scripts" in result.output
         assert "[02] summary" in result.output
@@ -308,6 +318,7 @@ class TestE2EPlaylist:
             media_path=None,
             correct_model=None,
             known_terms=None,
+            use_innertube=True,
         ):
             return _transcript_result(video.video_id)
 
