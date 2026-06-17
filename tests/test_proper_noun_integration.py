@@ -65,9 +65,7 @@ def _glossary_promote_worker(
     started,
 ) -> None:
     glossary_path = Path(glossary_path_raw)
-    sheet = ProperNounSheet(
-        sections=(VideoSection("v1", "T", (ProperNounRow(alias, canonical),)),)
-    )
+    sheet = ProperNounSheet(sections=(VideoSection("v1", "T", (ProperNounRow(alias, canonical),)),))
     started.put(canonical)
     main_mod._promote_corrections_to_glossary(sheet, glossary_path)
 

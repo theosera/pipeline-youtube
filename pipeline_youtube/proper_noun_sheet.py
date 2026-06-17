@@ -77,16 +77,27 @@ def _promote_corrections_to_glossary(sheet: ProperNounSheet, glossary_path: Path
 def _sheet_write_lock(sheet_path: Path) -> contextlib.AbstractContextManager[Any]:
     """Cross-process lock guarding the shared proper-noun sheet.
 
-    Prefer ``filelock`` when installed (Windows-compatible). On POSIX systems,
-    fall back to ``fcntl.flock`` so a base install still serializes
-    ``--sub-agents`` workers. Only platforms with neither mechanism fall back to
-    no-op locking.
+    Prefer POSIX ``fcntl.flock``. A flock is owned by the open file description,
+    so a forked ``--sub-agents`` worker that opens its own fd correctly blocks
+    on a sibling's lock. ``filelock`` instead keeps thread-local bookkeeping that
+    a fork inherits verbatim, which either misfires as a false "deadlock" or
+    (with ``is_singleton``) silently skips the lock and drops a concurrent
+    worker's promoted corrections. Use ``filelock`` only where ``fcntl`` is
+    unavailable (Windows); fall back to no-op locking only when neither exists.
     """
     lock_path = Path(str(sheet_path) + ".lock")
     try:
+        import fcntl  # noqa: F401  (availability probe; _posix_file_lock re-imports it)
+
+        has_fcntl = True
+    except ImportError:
+        has_fcntl = False
+    if has_fcntl:
+        return _posix_file_lock(lock_path)
+    try:
         import filelock  # type: ignore[import-untyped]
     except ImportError:
-        return _posix_file_lock(lock_path)
+        return _posix_file_lock(lock_path)  # neither fcntl nor filelock → no-op
     return filelock.FileLock(str(lock_path), timeout=-1)
 
 
