@@ -28,6 +28,7 @@ graph TD
 
     subgraph INPUT["② 入力・分類"]
         PLAYLIST["playlist.py<br/>fetch_metadata → VideoMeta"]
+        LOCALMEDIA["local_media.py<br/>build_local_videos（--local-media / 動的 import）"]
         GENRES["genres.py<br/>classify_playlist_genre"]
     end
 
@@ -42,6 +43,7 @@ graph TD
         CAPTURE["stages/capture.py"]
         SUMMARY["stages/summary.py"]
         LEARNING["stages/learning.py"]
+        CAPBACKEND["stages/capture_backend.py<br/>DockerCaptureBackend（docker preflight）"]
         RR["run_result.py<br/>VideoRunResult / _print_cost_breakdown"]
     end
 
@@ -61,8 +63,10 @@ graph TD
 
     MAIN --> CFG & CONF & CLAUDEBIN & WHISPER & SANI
     MAIN --> PLAYLIST & GENRES
+    MAIN -.->|"--local-media"| LOCALMEDIA
     MAIN --> RES & CKPT
     MAIN --> VP
+    MAIN --> CAPTURE & CAPBACKEND
     MAIN --> PNS & GLOSS
     MAIN --> SYNTH & AGENTS
     MAIN --> PAR
@@ -71,6 +75,7 @@ graph TD
     %% 一段下の主要な関係（HOW はモジュール側に閉じている）
     VP --> SCRIPTS & CAPTURE & SUMMARY & LEARNING
     VP --> RR
+    CAPBACKEND -.->|"capture_backend を委譲"| VP
     PNS --> GLOSS
     SYNTH --> AGENTS
 
@@ -85,9 +90,9 @@ graph TD
 | 段階 | main.py がやること（普遍的な制御フロー） | HOW を持つモジュール（呼ぶだけ） |
 |---|---|---|
 | ① 設定 | config.json 読込・vault/whisper/alert の初期化を**配線** | `cli_config` / `config` / `providers/claude_cli` / `whisper_fallback` / `sanitize` |
-| ② 入力 | URL 検証 → メタdata 取得 → ジャンル分類を**呼ぶ** | `playlist` / `genres` |
+| ② 入力 | URL 検証 → メタdata 取得 → ジャンル分類を**呼ぶ**（`--local-media` 時はローカル走査に切替） | `playlist` / `local_media`（動的） / `genres` |
 | ③ 再開 | 既存出力・完了IDの探索を**呼ぶ**（resume / synthesis-only 経路） | `resume` / `checkpoint` |
-| ④ 動画処理 | 逐次 or 並列で 1 動画パイプラインを**起動** | `video_processing`（内部で `stages/*` を駆動し `VideoRunResult` を返す） |
+| ④ 動画処理 | 逐次 or 並列で 1 動画パイプラインを**起動**。stale tmp 掃除・docker capture backend の preflight も**配線** | `video_processing` / `stages/capture`（`sweep_stale_tmp`） / `stages/capture_backend`（内部で `stages/*` を駆動し `VideoRunResult` を返す） |
 | ⑤ 固有名詞 | シート更新・用語集昇格を**呼ぶ** | `proper_noun_sheet` / `glossary` |
 | ⑥ 統合 | Stage 05 を**呼ぶ** | `stages/synthesis` / `synthesis/agents` |
 | 出力 | コスト集計の表示を**呼ぶ** | `run_result._print_cost_breakdown` |
