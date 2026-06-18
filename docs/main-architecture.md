@@ -4,108 +4,85 @@
 絞った関係図。`main.py` リファクタを継続する際の地図として使う。
 
 > ⚠️ **同期ルール（main.py と連動）**
-> この図は `pipeline_youtube/main.py` の **import / オーケストレーション配線**を反映したもの。
-> **main.py の import・呼び出し・段階の順序を変えたら、この図も同じ PR で更新すること。**
+> この図は `pipeline_youtube/main.py` → `cli.py` → `command.py` の **import /
+> オーケストレーション配線**を反映したもの。
+> **入口〜配線層（main / cli / command / cli_validation / runtime / input_resolver /
+> execution_plan / pipeline_runner / synthesis_runner / reporting）の import・呼び出し・
+> 段階の順序を変えたら、この図も同じ PR で更新すること。**
 > `CLAUDE.md` の「Architecture invariant: main.py is a thin orchestrator」と対になる資料で、
-> 「main.py に HOW が漏れていないか（＝この図のノードが増えていないか / 矢印が複雑化していないか）」
-> を点検するために使う。図が読みづらくなったら、それは main.py が太りはじめたサイン。
+> 「入口層に HOW が漏れていないか（＝この図のノードが増えていないか / 矢印が複雑化していないか）」
+> を点検するために使う。図が読みづらくなったら、それは入口層が太りはじめたサイン。
 
-## 関係図
+## 現構成（層A 抽出後）
+
+`main.py` は **入口だけ**（`cli` を re-export する console entrypoint、~20 行）。
+CLI 定義は `cli.py`、実行要求への変換と全体実行の起点は `command.py` に分離し、
+各段階の HOW は専用モジュールへ出してある。
 
 ```mermaid
-graph TD
-    CLI([CLI 引数 / オプション]) --> MAIN
+flowchart TD
+    MAIN["main.py<br/>入口だけ / console entrypoint<br/>cli を re-export"]
+    CLI["cli.py<br/>Click の CLI 定義<br/>引数・オプション・ヘルプ → CliRequest"]
+    CMD["command.py<br/>CliRequest（受付票）+ run()<br/>全体実行の起点・配線のみ"]
 
-    MAIN["<b>main.py</b><br/>合成ルート / オーケストレータ<br/>(CLI定義・実行順序・配線・終了/エラー処理 のみ)"]
+    VALID["cli_validation.py<br/>排他/必須フラグ検証<br/>（config 不要の前提チェック）"]
+    RUNTIME["runtime.py<br/>実行時依存の組み立て → Runtime<br/>config/vault/whisper/claude/capture/logger"]
+    INPUT["input_resolver.py<br/>入力解決 → ResolvedInput<br/>YouTube / local-media + genre 分類"]
+    PLAN["execution_plan.py<br/>RunMode 判定 → ExecutionPlan<br/>run_time / shard 範囲"]
+    RUNNER["pipeline_runner.py<br/>計画通りに実行（現場監督）<br/>checkpoint/resume・01-04・固有名詞・05 接続"]
 
-    subgraph CONFIG["① 設定・前提（起動時の配線）"]
-        CFG["cli_config.py<br/>_load_config → CliConfig"]
-        CONF["config.py<br/>set_vault_root / set_dry_run"]
-        CLAUDEBIN["providers/claude_cli.py<br/>get_resolved_claude_binary"]
-        WHISPER["transcript/whisper_fallback.py<br/>configure_whisper"]
-        SANI["sanitize.py<br/>configure_alert_sink"]
-    end
+    VIDEO["video_processing.py<br/>動画単位の Stage 01-04"]
+    SYNTH_RUN["synthesis_runner.py<br/>Stage 05 周辺制御"]
+    REPORT["reporting.py<br/>実行レポート（summary/cost）"]
 
-    subgraph INPUT["② 入力・分類"]
-        PLAYLIST["playlist.py<br/>fetch_metadata → VideoMeta"]
-        LOCALMEDIA["local_media.py<br/>build_local_videos（--local-media / 動的 import）"]
-        GENRES["genres.py<br/>classify_playlist_genre"]
-    end
+    STAGES["stages/<br/>各 Stage 本体<br/>scripts/summary/capture/learning/synthesis"]
+    SYNAGENTS["synthesis/agents.py<br/>Agent Teams / timeouts"]
+    PROVIDERS["providers/claude_cli.py<br/>claude バイナリ解決・invoke"]
 
-    subgraph RESUME["③ 再開・チェックポイント"]
-        RES["resume.py<br/>_load_existing_04_body / _filter_to_reviewed /<br/>_collect_existing_learning_bodies"]
-        CKPT["checkpoint.py<br/>get_completed_video_ids"]
-    end
-
-    subgraph PERVIDEO["④ 動画ごとの処理（Stage 01-04）"]
-        VP["video_processing.py<br/>_process_video / _run_videos_concurrent"]
-        SCRIPTS["stages/scripts.py<br/>run_stage_scripts（字幕取得 tier0-3）"]
-        CAPTURE["stages/capture.py"]
-        SUMMARY["stages/summary.py"]
-        LEARNING["stages/learning.py"]
-        CAPBACKEND["stages/capture_backend.py<br/>DockerCaptureBackend（docker preflight）"]
-        RR["run_result.py<br/>VideoRunResult / _print_cost_breakdown"]
-    end
-
-    subgraph PN["⑤ 固有名詞・用語集"]
-        PNS["proper_noun_sheet.py<br/>_update_proper_noun_sheet /<br/>_promote_corrections_to_glossary"]
-        GLOSS["glossary.py<br/>load_sheet / correction_glossary"]
-    end
-
-    subgraph SYN["⑥ 統合（Stage 05）"]
-        SYNTH["stages/synthesis.py<br/>run_stage_synthesis"]
-        AGENTS["synthesis/agents.py<br/>compute_synthesis_timeouts"]
-    end
-
-    subgraph SUBAGENT["並列 sub-agents 経路"]
-        PAR["parallel.py<br/>orchestrate_sub_agents / parse_video_range"]
-    end
-
-    MAIN --> CFG & CONF & CLAUDEBIN & WHISPER & SANI
-    MAIN --> PLAYLIST & GENRES
-    MAIN -.->|"--local-media"| LOCALMEDIA
-    MAIN --> RES & CKPT
-    MAIN --> VP
-    MAIN --> CAPTURE & CAPBACKEND
-    MAIN --> PNS & GLOSS
-    MAIN --> SYNTH & AGENTS
-    MAIN --> PAR
-    MAIN --> RR
-
-    %% 一段下の主要な関係（HOW はモジュール側に閉じている）
-    VP --> SCRIPTS & CAPTURE & SUMMARY & LEARNING
-    VP --> RR
-    CAPBACKEND -.->|"capture_backend を委譲"| VP
-    PNS --> GLOSS
-    SYNTH --> AGENTS
+    MAIN --> CLI --> CMD
+    CMD --> VALID & RUNTIME & INPUT & PLAN & RUNNER
+    RUNNER --> VIDEO & SYNTH_RUN & REPORT
+    VIDEO --> STAGES
+    SYNTH_RUN --> STAGES & SYNAGENTS
+    RUNTIME --> PROVIDERS
 
     classDef root fill:#1f6feb,color:#fff,stroke:#0b3d91,stroke-width:2px;
-    classDef ext fill:#eee,color:#333,stroke:#999,stroke-dasharray:3 3;
     class MAIN root;
-    class CLI ext;
 ```
 
-## 読み方（main.py の責務 = 配線のみ）
+## 読み方（入口層の責務 = 配線のみ）
 
-| 段階 | main.py がやること（普遍的な制御フロー） | HOW を持つモジュール（呼ぶだけ） |
+`command.run()` は次の一直線の配線だけを持つ（HOW は各モジュール側に閉じている）:
+
+```text
+validate_request(request)            # cli_validation: 排他/必須フラグ
+runtime  = build_runtime(request)    # runtime:        道具を揃える（config/claude/capture…）
+resolved = resolve_input(request, …) # input_resolver: 材料を揃える（動画リスト + genre）
+plan     = build_plan(request, …)    # execution_plan: 作業計画書（RunMode/run_time/shard）
+run_pipeline(request, runtime, …)    # pipeline_runner: 計画通りに実行 → 05 → レポート
+```
+
+| 段階 | 入口層がやること（普遍的な制御フロー） | HOW を持つモジュール（呼ぶだけ） |
 |---|---|---|
-| ① 設定 | config.json 読込・vault/whisper/alert の初期化を**配線** | `cli_config` / `config` / `providers/claude_cli` / `whisper_fallback` / `sanitize` |
-| ② 入力 | URL 検証 → メタdata 取得 → ジャンル分類を**呼ぶ**（`--local-media` 時はローカル走査に切替） | `playlist` / `local_media`（動的） / `genres` |
-| ③ 再開 | 既存出力・完了IDの探索を**呼ぶ**（resume / synthesis-only 経路） | `resume` / `checkpoint` |
-| ④ 動画処理 | 逐次 or 並列で 1 動画パイプラインを**起動**。stale tmp 掃除・docker capture backend の preflight も**配線** | `video_processing` / `stages/capture`（`sweep_stale_tmp`） / `stages/capture_backend`（内部で `stages/*` を駆動し `VideoRunResult` を返す） |
-| ⑤ 固有名詞 | シート更新・用語集昇格を**呼ぶ** | `proper_noun_sheet` / `glossary` |
-| ⑥ 統合 | Stage 05 を**呼ぶ** | `stages/synthesis` / `synthesis/agents` |
-| 出力 | コスト集計の表示を**呼ぶ** | `run_result._print_cost_breakdown` |
-| 並列 | `--sub-agents` 時の分散を**委譲** | `parallel.orchestrate_sub_agents` |
+| 受付 | オプション定義 → `CliRequest` 詰め替え | `cli.py` |
+| 起点 | 検証→runtime→入力→計画→実行を**配線** | `command.py` |
+| 検証 | 排他/必須フラグを弾く | `cli_validation` |
+| 道具 | config 読込・vault/whisper/claude/capture/logger 初期化 | `runtime`（→ `cli_config` / `config` / `providers/claude_cli` / `whisper_fallback` / `sanitize` / `stages/capture_backend`） |
+| 材料 | URL→メタデータ or local-media 走査 → genre 分類 | `input_resolver`（→ `playlist` / `local_media` / `genres`） |
+| 計画 | RunMode（normal/local-media/synthesis-only/resume-reviewed/sub-agent parent\|worker）と run_time/shard を確定 | `execution_plan`（→ `parallel` / `resume`） |
+| 実行 | sub-agent 分散・shard 切出し・checkpoint/resume・01-04 起動・固有名詞シート更新・05 接続 | `pipeline_runner`（→ `video_processing` / `checkpoint` / `resume` / `proper_noun_sheet` / `parallel`） |
+| 統合 | Stage 05 入力準備・実行 | `synthesis_runner`（→ `stages/synthesis` / `synthesis/agents`） |
+| 出力 | 動画サマリ・05 結果・コスト内訳の表示 | `reporting`（→ `run_result._print_cost_breakdown`） |
 
-ポイント：矢印はすべて **main.py → モジュール（呼び出し / 配線）** か、
-**モジュール → モジュール（HOW の内部関係）**。`main.py` 自身にロジック・分岐・I/O は無い。
-新機能で **main.py から伸びる矢印が増える＝配線**、**main.py の中に処理が増える＝抽出のサイン**。
+ポイント：矢印はすべて **入口層 → モジュール（呼び出し / 配線）** か
+**モジュール → モジュール（HOW の内部関係）**。`main.py` / `cli.py` / `command.py` 自身に
+ロジック・分岐・I/O は無い。新機能で **配線が増える**のは可、**入口層の中に処理が増える**のは抽出のサイン。
 
 ## 継続リファクタの指針
 
 - 新しい段階・切替は **既存モジュールへ寄せる**か **新モジュールを足してこの図にノード追加**。
-  `main.py` の本体には `if/elif` を生やさず、config 値 + registry/strategy で表現する
-  （例: `stages/scripts.py` の `fetchers=[("innertube", …), ("official", …), …]`）。
-- この図の **subgraph（①〜⑥）= main.py の実行フェーズ**。フェーズ内が太ったら、その subgraph を
-  さらに 1 モジュールへ括り出せないか検討する。
+  入口層には `if/elif` を生やさず、`RunMode` などの値 + registry/strategy で表現する。
+- `pipeline_runner` のフェーズ（checkpoint / 01-04 / 05 接続）が太ったら、その単位を
+  さらに 1 モジュール（または stage）へ括り出せないか検討する。
+- 次段（層B）の構想：`domain/`（純粋な型・契約）/ `services/`（cache・checkpoint・sanitize・
+  path_safety の共通基盤）/ `agents/` への再パッケージング。差分が大きいので別 PR で段階的に。
