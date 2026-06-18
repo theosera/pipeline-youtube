@@ -36,6 +36,8 @@ YouTube playlist → Obsidian vault learning pipeline written in Python 3.13.
 - 目安: `main.py` ≤ ~500 行。超過が見込まれる変更は抽出を着手条件とする。
 - リトマス試験: main.py を 2 分読んで「何が・どの順で・何に繋がって起きるか」が分かること。
   HOW が漏れていたら抽出のサイン。
+- 関係図: `docs/main-architecture.md`（main.py の import / 配線を中心にした地図）。
+  **main.py の import・配線・段階の順序を変えたら、同じ PR でこの図も更新する**（連動必須）。
 
 > 新機能の着手前に「配置先モジュール」と「main.py への変更 = なし / 配線のみ (想定行数)」を
 > 要件として宣言する。オーケストレータを編集せずに足せない設計は、まだ main.py 依存が残っている。
