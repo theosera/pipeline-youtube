@@ -8,37 +8,19 @@ capture backend を初期化し、その結果を不変の ``Runtime`` にまと
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import click
 
-from .cli_config import DEFAULT_CONFIG_PATH, CliConfig, _load_config
+from .cli_config import DEFAULT_CONFIG_PATH, _load_config
+from .cli_types import CliRequest, Runtime
 from .config import VaultRootError, set_dry_run, set_vault_root
 from .providers.claude_cli import ClaudeBinaryError, get_resolved_claude_binary
 from .sanitize import configure_alert_sink
 from .stages.capture import ASSETS_REL_PATH, sweep_stale_tmp
 from .stages.capture_backend import DockerBackendNotReady, DockerCaptureBackend
 from .transcript.whisper_fallback import configure_whisper, describe_whisper
-
-if TYPE_CHECKING:
-    from .command import CliRequest
-
-
-@dataclass(frozen=True, slots=True)
-class Runtime:
-    """Assembled runtime dependencies for one invocation (the "道具一式")."""
-
-    cfg: CliConfig
-    vault_root: Path
-    models: dict[str, str]
-    filler_words: tuple[str, ...]
-    project_root: Path
-    logs_dir: Path
-    capture_backend: Any
-    synthesis_timeout: int | None
-    synthesis_profile: str
 
 
 def build_runtime(request: CliRequest) -> Runtime:
