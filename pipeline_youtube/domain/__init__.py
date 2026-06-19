@@ -6,6 +6,13 @@
 
 from __future__ import annotations
 
+from .errors import (
+    ClaudeBinaryError,
+    GlossaryConflictError,
+    GlossaryParseError,
+    SynthesisParseError,
+    VaultRootError,
+)
 from .results import VideoRunResult
 from .transcript import (
     TranscriptNotAvailable,
@@ -16,10 +23,15 @@ from .transcript import (
 from .video import VideoMeta
 
 __all__ = [
+    "ClaudeBinaryError",
+    "GlossaryConflictError",
+    "GlossaryParseError",
+    "SynthesisParseError",
     "TranscriptNotAvailable",
     "TranscriptResult",
     "TranscriptSnippet",
     "TranscriptSource",
+    "VaultRootError",
     "VideoMeta",
     "VideoRunResult",
 ]

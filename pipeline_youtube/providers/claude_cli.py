@@ -51,16 +51,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..domain.errors import ClaudeBinaryError as ClaudeBinaryError
+
 # Resolved absolute path to the `claude` binary, cached after the first
 # lookup. Fixed at call time to defeat PATH-hijack attempts that place
 # a malicious `claude` earlier in PATH between CLI startup and later
 # invocations.
 _CLAUDE_BIN: str | None = None
 _CLAUDE_VERSION: str | None = None
-
-
-class ClaudeBinaryError(RuntimeError):
-    """Raised when the `claude` binary is missing, unverifiable, or overridden to a bad path."""
 
 
 def _resolve_claude_binary() -> str:
