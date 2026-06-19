@@ -55,8 +55,18 @@ class TestDomainPackageAll:
     def test_all_contains_transcript_result(self):
         assert "TranscriptResult" in domain_pkg.__all__
 
-    def test_all_has_exactly_six_names(self):
-        assert len(domain_pkg.__all__) == 6
+    def test_all_contains_domain_errors(self):
+        for name in (
+            "VaultRootError",
+            "ClaudeBinaryError",
+            "SynthesisParseError",
+            "GlossaryParseError",
+            "GlossaryConflictError",
+        ):
+            assert name in domain_pkg.__all__
+
+    def test_all_has_expected_names(self):
+        assert len(domain_pkg.__all__) == 11
 
     def test_video_meta_accessible(self):
         assert domain_pkg.VideoMeta is DomainVideoMeta

@@ -54,7 +54,7 @@ def run_pipeline(
             run_time=plan.run_time,
             logs_dir=runtime.logs_dir,
             base_argv=strip_cli_option(sys.argv[1:], "--sub-agents"),
-            run_synthesis=not request.skip_synthesis,
+            run_synthesis=not plan.skip_synthesis,
             code_bearing=resolved.code_bearing,
         )
         sys.exit(exit_code)
@@ -84,12 +84,20 @@ def run_pipeline(
     click.echo(f"run_time: {run_time.isoformat(timespec='seconds')}")
 
     proper_noun_sheet_path, known_terms = _prepare_proper_noun_sheet(
-        request, runtime, videos, run_time
+        runtime, videos, run_time, plan
     )
 
     results: list[VideoRunResult] = []
     selection = _select_synthesis_inputs(
-        request, runtime, resolved, videos, run_time, proper_noun_sheet_path, known_terms, results
+        request,
+        runtime,
+        resolved,
+        videos,
+        run_time,
+        proper_noun_sheet_path,
+        known_terms,
+        results,
+        plan,
     )
     if selection is None:
         return
@@ -107,12 +115,15 @@ def run_pipeline(
     )
     report_synthesis(synthesis_result)
 
-    if not request.synthesis_only:
+    if not plan.synthesis_only:
         report_costs(results, synthesis_result)
 
 
 def _prepare_proper_noun_sheet(
-    request: CliRequest, runtime: Runtime, videos: list[VideoMeta], run_time: datetime
+    runtime: Runtime,
+    videos: list[VideoMeta],
+    run_time: datetime,
+    plan: ExecutionPlan,
 ) -> tuple[Path | None, list[tuple[str, str]] | None]:
     """Load the per-playlist proper-noun sheet and seed known terms / glossary.
 
@@ -123,7 +134,7 @@ def _prepare_proper_noun_sheet(
     """
     from .glossary import known_pairs, load_sheet
 
-    if not (runtime.cfg.transcript_correction and not request.dry_run):
+    if not (runtime.cfg.transcript_correction and not plan.dry_run):
         return None, None
     proper_noun_sheet_path = _proper_noun_sheet_path(videos[0], run_time)
     start_sheet = load_sheet(proper_noun_sheet_path)
@@ -146,6 +157,7 @@ def _select_synthesis_inputs(
     proper_noun_sheet_path: Path | None,
     known_terms: list[tuple[str, str]] | None,
     results: list[VideoRunResult],
+    plan: ExecutionPlan,
 ) -> tuple[list[VideoMeta], list[str], str | None] | None:
     """Pick the (videos, bodies, folder_override) feeding Stage 05.
 
@@ -153,7 +165,7 @@ def _select_synthesis_inputs(
     checkpoint/resume-filtered set. ``results`` is populated in place for the
     cost breakdown. Returns None to signal an early stop (nothing to synthesize).
     """
-    if request.synthesis_only:
+    if plan.synthesis_only:
         click.echo("\n=== --synthesis-only: loading existing 04 md files ===")
         matched_videos, matched_bodies, folder_override = _collect_existing_learning_bodies(
             videos, resolved.playlist_title, run_time
@@ -168,7 +180,15 @@ def _select_synthesis_inputs(
         return matched_videos, matched_bodies, folder_override
 
     succeeded = _process_all_videos(
-        request, runtime, resolved, videos, run_time, proper_noun_sheet_path, known_terms, results
+        request,
+        runtime,
+        resolved,
+        videos,
+        run_time,
+        proper_noun_sheet_path,
+        known_terms,
+        results,
+        plan,
     )
     if succeeded is None:
         return None
@@ -184,6 +204,7 @@ def _process_all_videos(
     proper_noun_sheet_path: Path | None,
     known_terms: list[tuple[str, str]] | None,
     results: list[VideoRunResult],
+    plan: ExecutionPlan,
 ) -> list[VideoRunResult] | None:
     """Run stages 01-04 over the checkpoint/resume-filtered set.
 
@@ -195,9 +216,7 @@ def _process_all_videos(
 
     # Checkpoint: detect already-completed videos in one pass
     force_set = set(request.force_video)
-    completed_ids = (
-        get_completed_video_ids(playlist_title, run_time) if not request.dry_run else set()
-    )
+    completed_ids = get_completed_video_ids(playlist_title, run_time) if not plan.dry_run else set()
     if completed_ids:
         skippable = completed_ids - force_set
         if skippable:
@@ -214,7 +233,7 @@ def _process_all_videos(
         else:
             to_process.append((i, video))
 
-    if request.resume_reviewed:
+    if plan.resume_reviewed:
         # Phase 3: filter to videos whose 02_Summary.md has `reviewed: true`.
         to_process = _filter_to_reviewed(to_process, playlist_title, run_time)
 
@@ -226,11 +245,11 @@ def _process_all_videos(
                 process_videos,
                 run_time,
                 concurrency=request.concurrency,
-                dry_run=request.dry_run,
+                dry_run=plan.dry_run,
                 capture_format=request.capture_format,
                 models=runtime.models,
                 filler_words=runtime.filler_words,
-                stop_after_capture=request.stop_after_capture,
+                stop_after_capture=plan.stop_after_capture,
                 capture_backend=runtime.capture_backend,
                 code_bearing=resolved.code_bearing,
                 glossary=cfg.glossary,
@@ -247,11 +266,11 @@ def _process_all_videos(
             result = _process_video(
                 video,
                 run_time,
-                dry_run=request.dry_run,
+                dry_run=plan.dry_run,
                 capture_format=request.capture_format,
                 models=runtime.models,
                 filler_words=runtime.filler_words,
-                stop_after_capture=request.stop_after_capture,
+                stop_after_capture=plan.stop_after_capture,
                 capture_backend=runtime.capture_backend,
                 code_bearing=resolved.code_bearing,
                 glossary=cfg.glossary,
@@ -269,7 +288,7 @@ def _process_all_videos(
     if proper_noun_sheet_path is not None:
         _update_proper_noun_sheet(proper_noun_sheet_path, results)
 
-    if request.stop_after_capture:
+    if plan.stop_after_capture:
         click.echo(
             "\n[stop-after-capture] Phase 1 complete. Review 02_Summary.md, "
             "set `reviewed: true`, then re-run with --resume-reviewed."
@@ -280,7 +299,7 @@ def _process_all_videos(
     failed = [r for r in results if not r.ok]
     report_video_summary(len(videos), succeeded, failed)
 
-    if request.skip_synthesis:
+    if plan.skip_synthesis:
         click.echo("[skip] --skip-synthesis: stage 05 bypassed")
         return None
 

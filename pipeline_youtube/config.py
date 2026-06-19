@@ -11,12 +11,10 @@ import os
 import warnings
 from pathlib import Path
 
+from .domain.errors import VaultRootError as VaultRootError
+
 _vault_root: Path | None = None
 _dry_run: bool = False
-
-
-class VaultRootError(ValueError):
-    """Raised when vault_root fails safety checks."""
 
 
 def set_vault_root(path: str | Path, *, strict: bool = False) -> None:
