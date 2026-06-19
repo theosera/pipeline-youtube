@@ -90,5 +90,7 @@ run_pipeline(request, runtime, …)    # pipeline_runner: 計画通りに実行 
   入口層には `if/elif` を生やさず、`RunMode` などの値 + registry/strategy で表現する。
 - `pipeline_runner` のフェーズ（checkpoint / 01-04 / 05 接続）が太ったら、その単位を
   さらに 1 モジュール（または stage）へ括り出せないか検討する。
-- 次段（層B）の構想：`domain/`（純粋な型・契約）/ `services/`（cache・checkpoint・sanitize・
-  path_safety の共通基盤）/ `agents/` への再パッケージング。差分が大きいので別 PR で段階的に。
+- 層B（再パッケージング）進行中：`domain/`（純粋な型・契約レイヤ。他のどの層にも依存しない）を新設し、
+  まず **`domain/video.py`（`VideoMeta`）/ `domain/results.py`（`VideoRunResult`）/ `domain/transcript.py`（`TranscriptSource`/`TranscriptSnippet`/`TranscriptResult` ほか）** を集約。
+  旧 `playlist` / `run_result` は後方互換のため明示的に re-export（`import X as X`）する。
+  次段：`services/`（cache・checkpoint・sanitize・path_safety の共通基盤）/ `agents/` 等への集約を別 PR で段階的に。
