@@ -103,14 +103,14 @@ class TestPrefetchedPathConsumed:
             "_resolve_capture_format",
             lambda _req, _backend: cap_mod._FormatChoice(ext="webp", strategy="direct"),
         )
-        monkeypatch.setattr(cap_mod, "get_vault_root", lambda: tmp_path)
-        monkeypatch.setattr(cap_mod, "ensure_safe_path", lambda p: p)
+        monkeypatch.setattr(cap_mod, "ensure_safe_path", lambda p, **kw: p)
 
         result = cap_mod.run_stage_capture(
             _video(),
             summary_md,
             capture_md,
             prefetched_video_path=fake_video,
+            vault_root=tmp_path,
         )
 
         assert called["download"] == 0
@@ -145,8 +145,7 @@ class TestPrefetchedPathConsumed:
             "_resolve_capture_format",
             lambda _req, _backend: cap_mod._FormatChoice(ext="webp", strategy="direct"),
         )
-        monkeypatch.setattr(cap_mod, "get_vault_root", lambda: tmp_path)
-        monkeypatch.setattr(cap_mod, "ensure_safe_path", lambda p: p)
+        monkeypatch.setattr(cap_mod, "ensure_safe_path", lambda p, **kw: p)
 
         result = cap_mod.run_stage_capture(
             _video(),
@@ -154,6 +153,7 @@ class TestPrefetchedPathConsumed:
             capture_md,
             prefetched_video_path=missing_video,
             allow_download=False,
+            vault_root=tmp_path,
         )
 
         assert called["download"] == 0

@@ -201,6 +201,7 @@ class TestRunStageWithProfile:
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
             profile="standard",
+            vault_root=config.get_vault_root(),
         )
         assert result.error is None
         assert result.profile is SynthesisProfile.STANDARD
@@ -217,6 +218,7 @@ class TestRunStageWithProfile:
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
             profile="full",
+            vault_root=config.get_vault_root(),
         )
         assert result.error is None
         assert result.profile is SynthesisProfile.FULL
@@ -239,6 +241,7 @@ class TestRunStageWithProfile:
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
             profile="full",
+            vault_root=config.get_vault_root(),
         )
         assert result.error is None
         assert result.reviewer_feedback is not None
@@ -306,6 +309,7 @@ class TestRunStageWithProfile:
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
             profile="parallel",
+            vault_root=config.get_vault_root(),
         )
         assert result.error is None
         assert result.profile is SynthesisProfile.PARALLEL
@@ -323,6 +327,7 @@ class TestRunStageWithProfile:
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
             profile="not-a-profile",
+            vault_root=config.get_vault_root(),
         )
         assert result.error is not None
         assert "invalid profile" in result.error
@@ -337,6 +342,7 @@ class TestRunStageWithProfile:
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
             profile="auto",
+            vault_root=config.get_vault_root(),
         )
         assert result.error is None
         assert result.profile is SynthesisProfile.STANDARD
@@ -351,6 +357,7 @@ class TestRunStageWithProfile:
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
             profile="standard",
+            vault_root=config.get_vault_root(),
         )
         assert result.meta_path is not None
         meta = json.loads(result.meta_path.read_text(encoding="utf-8"))
@@ -367,6 +374,7 @@ class TestRunStageWithProfile:
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
             profile="full",
+            vault_root=config.get_vault_root(),
         )
         meta = json.loads(result.meta_path.read_text(encoding="utf-8"))
         assert meta["reviewer_status"] == "ok"
@@ -394,6 +402,7 @@ class TestRunStageWithProfile:
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
             profile="full",
+            vault_root=config.get_vault_root(),
         )
         # Stage completes with the original Leader output; Reviewer's
         # failure is logged and recorded in meta.

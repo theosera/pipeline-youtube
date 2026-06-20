@@ -36,7 +36,6 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
-from ..config import get_vault_root
 from ..glossary import Glossary, normalize_text
 from ..obsidian import format_playlist_folder_name
 from ..path_safety import ensure_safe_path
@@ -237,6 +236,7 @@ def run_stage_synthesis(
     synthesis_timeout: int | None = None,
     profile: str | None = None,
     proper_noun_glossary: Glossary | None = None,
+    vault_root: Path,
 ) -> SynthesisStageResult:
     """Orchestrate α→β→Leader and write MOC + chapter md files.
 
@@ -271,6 +271,9 @@ def run_stage_synthesis(
         per-playlist proper-noun sheet. When set, the final MOC + chapters
         are rewritten through it (variant → canonical) so the user's
         spelling fixes land in the Stage 05 output.
+    vault_root:
+        Injected vault root (``runtime.vault_root``); the synthesis output
+        folder is resolved under it via ``ensure_safe_path``.
     """
     am = agent_models or {}
     alpha_model = am.get("alpha", model)
@@ -296,12 +299,11 @@ def run_stage_synthesis(
     except ValueError as e:
         return SynthesisStageResult(error=f"invalid profile: {e}")
 
-    vault_root = get_vault_root()
     playlist_folder_name = folder_name_override or format_playlist_folder_name(
         run_time, playlist_title
     )
     rel_path = f"{SYNTHESIS_BASE}/{playlist_folder_name}"
-    safe_rel = ensure_safe_path(rel_path)
+    safe_rel = ensure_safe_path(rel_path, vault_root=vault_root)
     playlist_dir = vault_root / safe_rel
 
     agent_results: list[AgentCallResult] = []
