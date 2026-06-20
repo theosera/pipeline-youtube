@@ -7,6 +7,10 @@ any modification is visible in `git diff` and requires review.
 > `CLAUDE.global.md` (= `~/.claude/CLAUDE.md` 想定) にある。本ファイル = リポ固有ハードルール。
 > 下記の Architecture invariant / Git hooks / Security posture はこのリポ固有のハードルールなのでここに残す。
 
+<!-- グローバル層を web/local 双方で確実にロードするため明示 import する。
+     web セッションは ~/.claude/ を読まないので、リポ同梱の本ファイル経由で読み込む。 -->
+@CLAUDE.global.md
+
 ## スキル発火表
 
 このリポは現状**追加スキルなし** (`.claude/skills/` を持たない)。CLAUDE.md が既に薄く、
