@@ -47,7 +47,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from ..config import get_vault_root
 from ..path_safety import ensure_safe_path
 from ..playlist import VideoMeta
 from .capture_backend import CaptureBackend, HostCaptureBackend
@@ -310,6 +309,7 @@ def run_stage_capture(
     backend: CaptureBackend | None = None,
     allow_download: bool = True,
     delete_video: bool = True,
+    vault_root: Path,
 ) -> CaptureResult:
     """Download the video, extract animated frames, update the 03 md.
 
@@ -336,6 +336,9 @@ def run_stage_capture(
         the provided source is missing, Stage 03 fails closed instead of
         reaching out to YouTube — preserving the offline contract and never
         mixing a downloaded video with locally-sourced transcripts.
+    vault_root:
+        Injected vault root (``runtime.vault_root``); the capture assets dir
+        is resolved under it via ``ensure_safe_path``.
     """
     if not summary_md_path.exists():
         return CaptureResult(ranges=[], error="summary_md_not_found")
@@ -366,9 +369,8 @@ def run_stage_capture(
     # md's parent — i.e. the same `{playlist_folder}` used by the 01~05 unit
     # dirs. Deleting a playlist's 01~05 note folders then maps to one obvious
     # assets subfolder, instead of leaving orphaned webp/gif files behind.
-    vault_root = get_vault_root()
     playlist_folder = capture_md_path.parent.name
-    assets_rel = ensure_safe_path(f"{ASSETS_REL_PATH}/{playlist_folder}")
+    assets_rel = ensure_safe_path(f"{ASSETS_REL_PATH}/{playlist_folder}", vault_root=vault_root)
     assets_dir = vault_root / assets_rel
     assets_dir.mkdir(parents=True, exist_ok=True)
 

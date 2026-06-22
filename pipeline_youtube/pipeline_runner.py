@@ -136,7 +136,9 @@ def _prepare_proper_noun_sheet(
 
     if not plan.allow_proper_noun_sheet:
         return None, None
-    proper_noun_sheet_path = _proper_noun_sheet_path(videos[0], run_time)
+    proper_noun_sheet_path = _proper_noun_sheet_path(
+        videos[0], run_time, vault_root=runtime.vault_root
+    )
     start_sheet = load_sheet(proper_noun_sheet_path)
     known_terms = known_pairs(start_sheet) or None
     if runtime.cfg.glossary_path is not None:
@@ -168,7 +170,7 @@ def _select_synthesis_inputs(
     if not plan.run_video_stages:
         click.echo("\n=== --synthesis-only: loading existing 04 md files ===")
         matched_videos, matched_bodies, folder_override = _collect_existing_learning_bodies(
-            videos, resolved.playlist_title, run_time
+            videos, resolved.playlist_title, run_time, vault_root=runtime.vault_root
         )
         click.echo(f"matched: {len(matched_videos)}/{len(videos)} videos")
         if len(matched_videos) < request.min_playlist_size:
@@ -232,14 +234,18 @@ def _process_all_videos(
         if video.video_id in completed_ids and video.video_id not in force_set:
             click.echo(f"\n[{i}/{len(videos)}] {video.video_id} {video.title}")
             click.echo("  [skip] checkpoint: stage 04 already exists")
-            body = _load_existing_04_body(video.video_id, playlist_title, run_time)
+            body = _load_existing_04_body(
+                video.video_id, playlist_title, run_time, vault_root=runtime.vault_root
+            )
             results.append(VideoRunResult(video=video, learning_md_body=body))
         else:
             to_process.append((i, video))
 
     if plan.filter_reviewed_only:
         # Phase 3: filter to videos whose 02_Summary.md has `reviewed: true`.
-        to_process = _filter_to_reviewed(to_process, playlist_title, run_time)
+        to_process = _filter_to_reviewed(
+            to_process, playlist_title, run_time, vault_root=runtime.vault_root
+        )
 
     # Process remaining videos
     if to_process and request.concurrency > 1:
@@ -261,6 +267,7 @@ def _process_all_videos(
                 correct_transcript=cfg.transcript_correction,
                 known_terms=known_terms,
                 use_innertube=cfg.use_innertube,
+                vault_root=runtime.vault_root,
             )
         )
         results.extend(concurrent_results)
@@ -282,6 +289,7 @@ def _process_all_videos(
                 correct_transcript=cfg.transcript_correction,
                 known_terms=known_terms,
                 use_innertube=cfg.use_innertube,
+                vault_root=runtime.vault_root,
             )
             results.append(result)
 

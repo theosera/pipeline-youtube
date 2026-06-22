@@ -45,10 +45,11 @@ def _process_video(
     correct_transcript: bool = False,
     known_terms: list[tuple[str, str]] | None = None,
     use_innertube: bool = True,
+    vault_root: Path,
 ) -> VideoRunResult:
     try:
-        paths = compute_note_paths(video, run_time)
-        create_placeholder_notes(video, run_time, dry_run=dry_run)
+        paths = compute_note_paths(video, run_time, vault_root=vault_root)
+        create_placeholder_notes(video, run_time, dry_run=dry_run, vault_root=vault_root)
 
         correct_model = models["stage_01_correct"] if correct_transcript else None
         if correct_model:
@@ -142,6 +143,7 @@ def _process_video(
             allow_download=media_path is None,
             # Never delete the user's --local-media source file.
             delete_video=media_path is None,
+            vault_root=vault_root,
         )
         if capture_result.error and not capture_result.outcomes:
             click.echo(f" FAILED: {capture_result.error}")
@@ -221,6 +223,7 @@ async def _run_videos_concurrent(
     correct_transcript: bool = False,
     known_terms: list[tuple[str, str]] | None = None,
     use_innertube: bool = True,
+    vault_root: Path,
 ) -> list[VideoRunResult]:
     """Process multiple videos concurrently with bounded parallelism."""
     sem = asyncio.Semaphore(concurrency)
@@ -246,6 +249,7 @@ async def _run_videos_concurrent(
                 correct_transcript=correct_transcript,
                 known_terms=known_terms,
                 use_innertube=use_innertube,
+                vault_root=vault_root,
             )
 
     tasks = [_task(i, v) for i, v in enumerate(videos, 1)]

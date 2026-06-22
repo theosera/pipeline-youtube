@@ -141,7 +141,9 @@ def _setup_case(vault: Path, summary_md_content: str = SAMPLE_SUMMARY):
     """Create placeholders + write summary md with the given content."""
     video = _video()
     run_time = datetime(2026, 4, 14, 21, 41)
-    paths = create_placeholder_notes(video, run_time, dry_run=False)
+    paths = create_placeholder_notes(
+        video, run_time, dry_run=False, vault_root=config.get_vault_root()
+    )
 
     summary_path = paths["summary"]
     existing = summary_path.read_text(encoding="utf-8")
@@ -198,6 +200,7 @@ class TestRunStageCapture:
             video,
             summary_md_path=paths["summary"],
             capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
         )
 
         assert isinstance(result, CaptureResult)
@@ -255,6 +258,7 @@ class TestRunStageCapture:
             summary_md_path=paths["summary"],
             capture_md_path=paths["capture"],
             dry_run=True,
+            vault_root=config.get_vault_root(),
         )
 
         assert result.video_downloaded is False
@@ -270,6 +274,7 @@ class TestRunStageCapture:
             video,
             summary_md_path=paths["summary"],
             capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
         )
         assert result.error == "summary_md_not_found"
         assert result.ranges == []
@@ -283,6 +288,7 @@ class TestRunStageCapture:
             video,
             summary_md_path=paths["summary"],
             capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
         )
         assert result.error == "no_ranges_parsed"
         assert result.ranges == []
@@ -299,6 +305,7 @@ class TestRunStageCapture:
             video,
             summary_md_path=paths["summary"],
             capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
         )
         assert result.error is not None
         assert "download_failed" in result.error
@@ -335,6 +342,7 @@ class TestRunStageCapture:
             video,
             summary_md_path=paths["summary"],
             capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
         )
 
         assert result.success_count == 3
@@ -379,6 +387,7 @@ class TestRunStageCapture:
             video,
             summary_md_path=paths["summary"],
             capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
         )
 
         assert len(recorded_paths) == 1

@@ -20,7 +20,10 @@ a ``## 関連コード`` section after the transcript.
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
+
+from youtube_transcript_api import YouTubeTranscriptApi
 
 from ..code_fetch import (
     extract_github_urls,
@@ -107,13 +110,16 @@ def run_stage_scripts(
             "innertube",
             fetch_innertube if use_innertube else None,
         )
+        # One YouTubeTranscriptApi per Stage-01 call, shared by the official +
+        # auto tiers below — replaces the old module-global singleton.
+        api = YouTubeTranscriptApi()
         result = fetch_with_fallback(
             video.video_id,
             langs,
             fetchers=[
                 innertube_tier,
-                ("official", fetch_official),
-                ("auto", fetch_auto),
+                ("official", partial(fetch_official, api=api)),
+                ("auto", partial(fetch_auto, api=api)),
                 ("whisper", whisper_fetcher),
             ],
         )

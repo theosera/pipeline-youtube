@@ -152,6 +152,7 @@ class TestSkipRules:
             ["body1", "body2"],
             run_time=datetime(2026, 4, 15),
             playlist_title="Small Playlist",
+            vault_root=config.get_vault_root(),
         )
         assert result.skipped is True
         assert result.skip_reason is not None
@@ -167,6 +168,7 @@ class TestSkipRules:
             bodies,
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
+            vault_root=config.get_vault_root(),
         )
         assert result.skipped is False
         assert result.error is None
@@ -180,6 +182,7 @@ class TestSkipRules:
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
             min_playlist_size=5,
+            vault_root=config.get_vault_root(),
         )
         assert result.skipped is True
         assert result.skip_reason is not None
@@ -205,6 +208,7 @@ class TestSkipRules:
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
             max_chapters=4,
+            vault_root=config.get_vault_root(),
         )
         assert "最大 4 章" in captured["prompt"]
 
@@ -214,6 +218,7 @@ class TestSkipRules:
             ["body1", "body2"],
             run_time=datetime(2026, 4, 15),
             playlist_title="x",
+            vault_root=config.get_vault_root(),
         )
         assert result.error is not None
         assert "length mismatch" in result.error
@@ -235,6 +240,7 @@ class TestHappyPath:
             bodies,
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
+            vault_root=config.get_vault_root(),
         )
 
         assert result.error is None
@@ -257,6 +263,7 @@ class TestHappyPath:
             bodies,
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
+            vault_root=config.get_vault_root(),
         )
 
         moc_content = result.moc_path.read_text(encoding="utf-8")
@@ -276,6 +283,7 @@ class TestHappyPath:
             bodies,
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
+            vault_root=config.get_vault_root(),
         )
 
         # First chapter is core → has > [!important] callout
@@ -294,6 +302,7 @@ class TestHappyPath:
             bodies,
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
+            vault_root=config.get_vault_root(),
         )
 
         assert result.meta_path is not None
@@ -317,6 +326,7 @@ class TestHappyPath:
             bodies,
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
+            vault_root=config.get_vault_root(),
         )
 
         # 3 agent calls (alpha + beta + leader); γ was replaced by a Python set diff.
@@ -335,6 +345,7 @@ class TestHappyPath:
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
             dry_run=True,
+            vault_root=config.get_vault_root(),
         )
 
         assert result.moc_path is None
@@ -356,6 +367,7 @@ class TestErrorHandling:
             ["b1", "b2", "b3"],
             run_time=datetime(2026, 4, 15),
             playlist_title="x",
+            vault_root=config.get_vault_root(),
         )
         assert result.error is not None
         assert "alpha_parse_failed" in result.error
@@ -368,6 +380,7 @@ class TestErrorHandling:
             ["b1", "b2", "b3"],
             run_time=datetime(2026, 4, 15),
             playlist_title="x",
+            vault_root=config.get_vault_root(),
         )
         assert result.error is not None
         assert "beta_parse_failed" in result.error
@@ -419,6 +432,7 @@ class TestReflexionLoop:
             bodies,
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
+            vault_root=config.get_vault_root(),
         )
 
         assert result.error is None
@@ -440,6 +454,7 @@ class TestReflexionLoop:
             [f"body{i}" for i in range(1, 4)],
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
+            vault_root=config.get_vault_root(),
         )
         assert result.error is None
         assert len(result.agent_results) == 3
@@ -456,6 +471,7 @@ class TestReflexionLoop:
             [f"body{i}" for i in range(1, 4)],
             run_time=datetime(2026, 4, 15),
             playlist_title="Test Playlist",
+            vault_root=config.get_vault_root(),
         )
         # Pipeline completes; coverage still shows the miss so Leader can handle it.
         assert result.error is None
