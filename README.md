@@ -257,7 +257,7 @@ Stage 05 はプレイリストに 3 本以上の動画があるときだけ自�
 
 `auto` (デフォルト) は動画本数から上表で選択。`--synthesis-profile` / `config.json: synthesis_profile` で明示上書き可。詳細は [`docs/agent-teams-profiles.md`](docs/agent-teams-profiles.md)。
 
-- **カバレッジ検証**: 旧 γ エージェント (LLM) を Python 集合演算 (`compute_coverage`) に置換。α の topic_ids と β の chapter.topic_ids の set diff でミクロ秒で結果が出る。漏れがあれば β に missing IDs をフィードバックして最大 `MAX_BETA_REFLEXION_RETRIES=3` 回リトライ。3 回でも残る残存ミスは Leader が「残存ミス補完ポリシー」で最も関連性の高い章末尾に `### 補足` として組み込む。
+- **カバレッジ検証**: 旧カバレッジ検証エージェント (LLM) を Python 集合演算 (`compute_coverage`) に置換。α の topic_ids と β の chapter.topic_ids の set diff でミクロ秒で結果が出る。漏れがあれば β に missing IDs をフィードバックして最大 `MAX_BETA_REFLEXION_RETRIES=3` 回リトライ。3 回でも残る残存ミスは Leader が「残存ミス補完ポリシー」で最も関連性の高い章末尾に `### 補足` として組み込む。
 - **動的タイムアウト**: 各エージェントのタイムアウトは `300 + 60 × 動画数` で自動計算。CLI `--synthesis-timeout` または config.json `synthesis_timeout` で固定値に上書き可。β は入力が軽量なため最大 600s にキャップ。
 - **プリフライトログ**: Stage 05 開始前に入力充填率・トランケーション有無・タイムアウト値をログ出力。プレイリスト fetch 直後にも早期見積もりを表示。
 - **重複度カテゴリ**: `duplication_count >= 3` → `core` (章冒頭 `> [!important]`)、`== 2` → `supporting` (本文中で **太字**)、`== 1` → `unique` (通常記述)
