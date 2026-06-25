@@ -92,3 +92,28 @@ jobs:
             1) echo "::error::pip-audit reported vulnerabilities — see job log."; exit 1 ;;
             *) echo "::error::pip-audit failed to run (exit $rc)"; exit "$rc" ;;
           esac
+
+  docker-scan:
+    name: Docker image scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      # Build the capture image so the scan covers the digest-pinned base AND the
+      # apt (ffmpeg/webp) + yt-dlp layers we add on top.
+      - name: Build capture image
+        run: docker build -f docker/Dockerfile.capture -t pipeline-youtube-capture:scan .
+
+      # Third-party action — SHA-pinned (verified to resolve to the v0.36.0
+      # release tag). Fails CI on CRITICAL/HIGH CVEs; ignore-unfixed avoids
+      # perpetually-red builds from un-patchable base-image advisories. A newer
+      # *fixable* CVE in the pinned digest surfaces here (paired with the
+      # Dependabot docker bump that resolves it).
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: pipeline-youtube-capture:scan
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
