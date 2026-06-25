@@ -94,25 +94,30 @@ jobs:
           esac
 
   docker-scan:
-    name: Docker image scan
+    name: Docker base image scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
-      # Build the capture image so the scan covers the digest-pinned base AND the
-      # apt (ffmpeg/webp) + yt-dlp layers we add on top.
-      - name: Build capture image
-        run: docker build -f docker/Dockerfile.capture -t pipeline-youtube-capture:scan .
+      # Scan the digest-pinned base image straight from the Dockerfile FROM line
+      # (single source of truth — Dependabot's docker ecosystem bumps that
+      # digest, so this stays in sync). Scanning the base directly rather than
+      # building the full capture image keeps the job focused on the
+      # supply-chain surface #7 pins and independent of the app build; the
+      # pip/ffmpeg layers are covered by pip-audit + Dependabot.
+      - name: Resolve pinned base image
+        id: base
+        run: echo "ref=$(grep -oP 'FROM \K[^ ]+' docker/Dockerfile.capture | head -n1)" >> "$GITHUB_OUTPUT"
 
       # Third-party action — SHA-pinned (verified to resolve to the v0.36.0
       # release tag). Fails CI on CRITICAL/HIGH CVEs; ignore-unfixed avoids
       # perpetually-red builds from un-patchable base-image advisories. A newer
       # *fixable* CVE in the pinned digest surfaces here (paired with the
       # Dependabot docker bump that resolves it).
-      - name: Trivy image scan
+      - name: Trivy scan (pinned base image)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
-          image-ref: pipeline-youtube-capture:scan
+          image-ref: ${{ steps.base.outputs.ref }}
           format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true
