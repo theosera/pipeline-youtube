@@ -1,8 +1,11 @@
 """JSONL stats logger for transcript-source tracking.
 
-Writes one line per video to `logs/transcript_stats_YYYY-MM-DD.jsonl`
-inside the `pipeline-youtube` project directory. The stats feed into
-decision (1) from the plan — "which channels/genres frequently need
+Writes one line per video to `transcript_stats_YYYY-MM-DD.jsonl`. The default
+output directory is `<project_root>/logs/` — outside any Obsidian vault and
+git-ignored, so run metadata (channel / title / fallback reasons) never lands in
+a synced or shared vault. Set the `PIPELINE_YOUTUBE_STATS_DIR` environment
+variable to redirect the output elsewhere (e.g. an XDG state dir). The stats
+feed into decision (1) from the plan — "which channels/genres frequently need
 Whisper fallback" — so a later agent can use them to skip ahead to
 Whisper for specific channels without retrying the doomed earlier tiers.
 
@@ -23,6 +26,7 @@ Schema per line:
 from __future__ import annotations
 
 import json
+import os
 from datetime import date
 from pathlib import Path
 
@@ -31,6 +35,10 @@ from .sanitize import sanitize_untrusted_text
 from .transcript.base import TranscriptResult
 
 _MAX_FIELD_LEN = 500
+
+# Override the stats output directory. Default keeps the path out of any vault
+# (see module docstring); set this to relocate run metadata explicitly.
+_STATS_DIR_ENV = "PIPELINE_YOUTUBE_STATS_DIR"
 
 
 def _safe(s: str | None, context: str) -> str | None:
@@ -41,10 +49,13 @@ def _safe(s: str | None, context: str) -> str | None:
 
 
 def _default_stats_path() -> Path:
-    # Project root is the parent of the `pipeline_youtube` package dir.
-    project_root = Path(__file__).resolve().parent.parent
-    logs_dir = project_root / "logs"
-    logs_dir.mkdir(exist_ok=True)
+    override = os.environ.get(_STATS_DIR_ENV, "").strip()
+    if override:
+        logs_dir = Path(override).expanduser()
+    else:
+        # Project root is the parent of the `pipeline_youtube` package dir.
+        logs_dir = Path(__file__).resolve().parent.parent / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
     return logs_dir / f"transcript_stats_{date.today().isoformat()}.jsonl"
 
 

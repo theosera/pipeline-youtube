@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from pipeline_youtube.playlist import VideoMeta
-from pipeline_youtube.stats import record_transcript_stat
+from pipeline_youtube.stats import _default_stats_path, record_transcript_stat
 from pipeline_youtube.transcript.base import (
     TranscriptSnippet,
     TranscriptSource,
@@ -95,3 +97,24 @@ class TestRecordTranscriptStat:
         path = tmp_path / "nested" / "deeper" / "stats.jsonl"
         record_transcript_stat(_video(), _result(TranscriptSource.OFFICIAL), stats_path=path)
         assert path.exists()
+
+
+class TestDefaultStatsPath:
+    def test_default_dir_is_project_logs(self, monkeypatch: pytest.MonkeyPatch):
+        # No override → the path stays under <project_root>/logs (outside any
+        # vault), the existing behaviour #13 preserves.
+        monkeypatch.delenv("PIPELINE_YOUTUBE_STATS_DIR", raising=False)
+        path = _default_stats_path()
+        assert path.parent.name == "logs"
+        assert path.name.startswith("transcript_stats_")
+
+    def test_env_override_redirects_output(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        target = tmp_path / "xdg-state" / "pipeline-youtube"
+        monkeypatch.setenv("PIPELINE_YOUTUBE_STATS_DIR", str(target))
+        path = _default_stats_path()
+        assert path.parent == target
+
+        # The default write path (no explicit stats_path) honours the override.
+        written = record_transcript_stat(_video(), _result(TranscriptSource.OFFICIAL))
+        assert written.parent == target
+        assert written.exists()
