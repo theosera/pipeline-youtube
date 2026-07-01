@@ -261,37 +261,79 @@ class TestRenderCodeSection:
 
 
 # =====================================================
-# fetch_video_description (yt-dlp mocked)
+# fetch_video_extra_metadata (yt-dlp mocked)
 # =====================================================
 
 
-class TestFetchVideoDescription:
-    def test_returns_description_string(self):
+class TestFetchVideoExtraMetadata:
+    def test_returns_description_and_chapters(self):
         fake_ydl = MagicMock()
         fake_ydl.__enter__ = lambda self: self
         fake_ydl.__exit__ = lambda *a: None
-        fake_ydl.extract_info.return_value = {"description": "some description"}
+        fake_ydl.extract_info.return_value = {
+            "description": "some description",
+            "chapters": [
+                {"title": "Intro", "start_time": 0.0},
+                {"title": "Setup", "start_time": 90.0},
+            ],
+        }
 
         with patch("yt_dlp.YoutubeDL", return_value=fake_ydl):
-            result = code_fetch.fetch_video_description("vid001")
-        assert result == "some description"
+            result = code_fetch.fetch_video_extra_metadata("vid001")
+        assert result.description == "some description"
+        assert [c.title for c in result.chapters] == ["Intro", "Setup"]
+        assert result.chapters[1].start_seconds == 90.0
 
-    def test_returns_none_on_extract_failure(self):
+    def test_returns_empty_on_extract_failure(self):
         fake_ydl = MagicMock()
         fake_ydl.__enter__ = lambda self: self
         fake_ydl.__exit__ = lambda *a: None
         fake_ydl.extract_info.side_effect = RuntimeError("boom")
 
         with patch("yt_dlp.YoutubeDL", return_value=fake_ydl):
-            result = code_fetch.fetch_video_description("vid001")
-        assert result is None
+            result = code_fetch.fetch_video_extra_metadata("vid001")
+        assert result.description is None
+        assert result.chapters == ()
 
-    def test_returns_none_when_description_missing(self):
+    def test_returns_none_description_when_missing(self):
         fake_ydl = MagicMock()
         fake_ydl.__enter__ = lambda self: self
         fake_ydl.__exit__ = lambda *a: None
         fake_ydl.extract_info.return_value = {"title": "no desc field"}
 
         with patch("yt_dlp.YoutubeDL", return_value=fake_ydl):
-            result = code_fetch.fetch_video_description("vid001")
-        assert result is None
+            result = code_fetch.fetch_video_extra_metadata("vid001")
+        assert result.description is None
+        assert result.chapters == ()
+
+    def test_chapters_without_title_skipped(self):
+        fake_ydl = MagicMock()
+        fake_ydl.__enter__ = lambda self: self
+        fake_ydl.__exit__ = lambda *a: None
+        fake_ydl.extract_info.return_value = {
+            "description": "d",
+            "chapters": [{"start_time": 0.0}, {"title": "Named", "start_time": 5.0}],
+        }
+
+        with patch("yt_dlp.YoutubeDL", return_value=fake_ydl):
+            result = code_fetch.fetch_video_extra_metadata("vid001")
+        assert [c.title for c in result.chapters] == ["Named"]
+
+    def test_malformed_chapter_entries_skipped_not_fatal(self):
+        """A non-dict entry or non-numeric start_time must not abort the
+        whole extract — only that chapter is dropped."""
+        fake_ydl = MagicMock()
+        fake_ydl.__enter__ = lambda self: self
+        fake_ydl.__exit__ = lambda *a: None
+        fake_ydl.extract_info.return_value = {
+            "description": "d",
+            "chapters": [
+                "not a dict",
+                {"title": "Bad start", "start_time": "not-a-number"},
+                {"title": "Good", "start_time": 5.0},
+            ],
+        }
+
+        with patch("yt_dlp.YoutubeDL", return_value=fake_ydl):
+            result = code_fetch.fetch_video_extra_metadata("vid001")
+        assert [c.title for c in result.chapters] == ["Good"]

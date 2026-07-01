@@ -1,18 +1,24 @@
-"""GitHub / Gist URL extraction + raw content fetch for Stage 01.
+"""Per-video yt-dlp metadata extract (description + chapters) for Stage 01.
 
-When the Router classifies a playlist as ``coding``, Stage 01 invokes
-this module to:
+Stage 01a fetches every video's description + declared chapters once via
+``fetch_video_extra_metadata`` (flat-playlist metadata has neither, so this
+is a dedicated non-flat yt-dlp extract). The result feeds two downstream
+consumers:
 
-1. Pull the video description via yt-dlp (a per-video extract — flat
-   playlist metadata doesn't include description).
-2. Scan the description for GitHub repository/file/gist URLs.
-3. Fetch each URL's raw content (capped at 5 URLs / 50KB each).
-4. Format the result as a markdown ``## 関連コード`` section that the
-   caller appends to the 01 transcript md.
+1. Stage 01b (``transcript.correction``) uses the description as known
+   context so the web-search-backed correction pass can resolve proper
+   nouns without spending a search when the description already names them.
+2. Stage 02 (``stages.summary``) uses description + chapters as passive
+   Mode-diagnosis context (never triggers a search of its own).
+
+When the Router additionally classifies a playlist as ``coding``, Stage 01
+also scans the fetched description for GitHub repository/file/gist URLs,
+fetches their raw content (capped at 5 URLs / 50KB each), and formats the
+result as a markdown ``## 関連コード`` section.
 
 The whole module is *advisory* — any failure (network, parse, rate
-limit) returns an empty section without raising, so a transcript that
-can't get its code blocks still completes Stage 01 normally.
+limit) degrades to an empty result without raising, so a transcript that
+can't get its metadata/code blocks still completes Stage 01 normally.
 
 Network safety: all HTTP fetches go through ``urllib.request`` (built-in,
 no extra deps), use a short timeout, and only allow ``raw.githubusercontent.com``
@@ -28,6 +34,8 @@ import urllib.request
 from dataclasses import dataclass
 
 import yt_dlp  # type: ignore[import-untyped]
+
+from .domain.transcript import VideoChapter
 
 # GitHub blob URL: https://github.com/<owner>/<repo>/blob/<ref>/<path>
 # Captures owner, repo, and the rest (ref + path).
@@ -108,11 +116,41 @@ class CodeSnippet:
     truncated: bool
 
 
-def fetch_video_description(video_id: str, *, timeout: int = 30) -> str | None:
-    """Fetch the description of a YouTube video by id.
+@dataclass(frozen=True)
+class VideoExtraMetadata:
+    """Description + declared chapters from one non-flat yt-dlp extract."""
 
-    Performs a single (non-flat) yt-dlp extract. Returns ``None`` on any
-    failure so the caller can fall back gracefully.
+    description: str | None
+    chapters: tuple[VideoChapter, ...] = ()
+
+
+def _parse_chapter(raw: object) -> VideoChapter | None:
+    """Parse one yt-dlp chapter entry; ``None`` on any malformed field.
+
+    A single bad chapter (non-dict entry, non-numeric ``start_time``, ...)
+    must not abort the whole extract — this stage is advisory and runs for
+    every non-local video now, not just coding playlists.
+    """
+    if not isinstance(raw, dict):
+        return None
+    title = raw.get("title")
+    if not title:
+        return None
+    try:
+        start_seconds = float(raw.get("start_time") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    return VideoChapter(title=str(title).strip(), start_seconds=start_seconds)
+
+
+def fetch_video_extra_metadata(video_id: str, *, timeout: int = 30) -> VideoExtraMetadata:
+    """Fetch a video's description + chapters via one non-video yt-dlp extract.
+
+    Flat-playlist metadata has neither field, so this is a dedicated
+    per-video extract (``skip_download=True``, no video bytes fetched).
+    Returns an empty result on any failure so the caller can fall back
+    gracefully — this module has no persistent cache (this repo doesn't
+    have a caching layer), so a failed fetch is simply retried next run.
     """
     opts = {
         "quiet": True,
@@ -127,11 +165,18 @@ def fetch_video_description(video_id: str, *, timeout: int = 30) -> str | None:
                 download=False,
             )
     except Exception:
-        return None
+        return VideoExtraMetadata(description=None)
     if info is None:
-        return None
+        return VideoExtraMetadata(description=None)
+
     desc = info.get("description")
-    return str(desc) if desc else None
+    description = str(desc) if desc else None
+    chapters = tuple(
+        chapter
+        for chapter in (_parse_chapter(c) for c in (info.get("chapters") or []))
+        if chapter is not None
+    )
+    return VideoExtraMetadata(description=description, chapters=chapters)
 
 
 def extract_github_urls(description: str) -> list[str]:

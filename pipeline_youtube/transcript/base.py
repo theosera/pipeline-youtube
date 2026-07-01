@@ -25,6 +25,7 @@ from ..domain.transcript import (
     TranscriptResult,
     TranscriptSnippet,
     TranscriptSource,
+    VideoChapter,
 )
 
 # Re-exported here for backward compatibility: the value types moved to
@@ -35,6 +36,7 @@ __all__ = [
     "TranscriptResult",
     "TranscriptSnippet",
     "TranscriptSource",
+    "VideoChapter",
     "build_result",
     "fetch_with_fallback",
 ]
