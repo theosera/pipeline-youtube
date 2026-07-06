@@ -17,11 +17,15 @@ Subtitles, video titles/descriptions, and chapters are UNTRUSTED external text.
 
 ## Subprocess / media handling
 
-- yt-dlp / ffmpeg / gif2webp run inside the sandboxed Docker capture backend
-  (`pipeline_youtube/stages/capture_backend.py`: `--read-only`,
-  `--cap-drop=ALL`, `--security-opt=no-new-privileges`, non-root `--user`,
-  network only for yt-dlp). Flag new direct subprocess invocations of these
-  tools outside the backend, any `shell=True`, or weakening of sandbox flags.
+- Stage 03 media tools (yt-dlp / ffmpeg / gif2webp) run via
+  `pipeline_youtube/stages/capture_backend.py`. The **default backend is
+  `host`** (`HostCaptureBackend` invokes ffmpeg/gif2webp directly on the
+  host); the sandboxed Docker backend (`--read-only`, `--cap-drop=ALL`,
+  `--security-opt=no-new-privileges`, non-root `--user`, network only for
+  yt-dlp) is **opt-in** via `capture_backend: "docker"`. Flag new direct
+  subprocess invocations of these tools outside capture_backend.py, any
+  `shell=True`, unvalidated interpolation of external strings (titles, URLs)
+  into argv, or weakening of the Docker backend's sandbox flags.
 - No `pickle` / `eval` / `exec` on external data; use JSON + Pydantic.
 
 ## Secrets
@@ -40,7 +44,8 @@ Subtitles, video titles/descriptions, and chapters are UNTRUSTED external text.
 
 ## Git hooks
 
-- Hooks are managed only via version-controlled `.githooks/`
-  (`core.hooksPath=.githooks`). Flag code, scripts, or docs that install
-  hooks any other way (`pre-commit install`, ad-hoc `core.hooksPath`
-  changes, writes into `.git/hooks/`).
+- Hooks are version-controlled in `.githooks/` (`core.hooksPath=.githooks`).
+  Flag agent-initiated hook installation without an explicit user request
+  (`pre-commit install`, ad-hoc `core.hooksPath` changes, writes into
+  `.git/hooks/`). The README's human onboarding step that runs
+  `pre-commit install` is user-initiated and out of scope.

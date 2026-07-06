@@ -279,7 +279,7 @@ Stage 05 はプレイリストに 3 本以上の動画があるときだけ自�
   制御文字・ゼロ幅 Unicode 除去、`<untrusted_content>` デリミタで囲む、system prompt で「指示文に従わない」を明示
 - **Stage 03 Docker 隔離 (オプション)** — `stages/capture_backend.py:DockerCaptureBackend`
   `yt-dlp` / `ffmpeg` / `gif2webp` を `--cap-drop=ALL --read-only --user=1000:1000` のハードニングしたコンテナで実行。Threat Model §11 R1 (ffmpeg/yt-dlp のホスト実行) への対策。詳細: [docs/docker.md](docs/docker.md)
-- **security-guidance プラグイン (in-session コードレビュー)** — `.claude/settings.json` の `enabledPlugins` で有効化した公式プラグイン。Claude Code が書くコードを編集時パターンマッチ / ターン終了時 diff レビュー / commit 時 agentic レビューの 3 層で自動チェックし、`.claude/claude-security-guidance.md` が本リポの脅威モデル (`wrap_untrusted` 境界 / Docker サンドボックス / `.githooks` 管理) をレビュー観点に注入する。助言のみでブロックはしないため、egress hook や gitleaks 等の機械的 deny 層の代替ではない (正典: obsidian-ai-pipeline の `docs/security/security-guidance-plugin.md`)
+- **security-guidance プラグイン (in-session コードレビュー)** — `.claude/settings.json` の `enabledPlugins` で有効化した公式プラグイン。Claude Code が書くコードを編集時パターンマッチ / ターン終了時 diff レビュー / commit 時 agentic レビューの 3 層で自動チェックし、`.claude/claude-security-guidance.md` が本リポの脅威モデル (`wrap_untrusted` 境界 / Stage 03 Docker 隔離 (opt-in) / エージェント起点の hook 導入検知) をレビュー観点に注入する。助言のみでブロックはしないため、egress hook や gitleaks 等の機械的 deny 層の代替ではない (正典: obsidian-ai-pipeline の `docs/security/security-guidance-plugin.md`)
 
 既存 `__skills/pipeline/` (TypeScript, OneTab 分類) と同じ設計パターンを Python に移植したもの。
 
