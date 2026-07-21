@@ -43,6 +43,7 @@ from ..obsidian import upsert_frontmatter_field
 from ..playlist import VideoMeta
 from ..providers.claude_cli import ClaudeResponse, invoke_claude
 from ..sanitize import sanitize_untrusted_text, wrap_untrusted
+from ..services.confusables import fold_mixed_script_confusables
 from ..synthesis.body_validator import validate_chapter_body
 from ..transcript.base import TranscriptResult
 from ..transcript.chunking import Chunk, chunk_by_window
@@ -242,6 +243,13 @@ def run_stage_summary(
             validated = normalize_text(validated, glossary)
             if one_liner is not None:
                 one_liner = normalize_text(one_liner, glossary)
+        # Homoglyph fold (last transform before disk): the model occasionally
+        # emits Cyrillic/Greek look-alikes mixed into Latin words. Fold them to
+        # Latin so the persisted note is pure-script. Deterministic, idempotent,
+        # and mixed-script-only, so Japanese / legitimate Cyrillic stays intact.
+        validated = fold_mixed_script_confusables(validated)
+        if one_liner is not None:
+            one_liner = fold_mixed_script_confusables(one_liner)
         _append_body(summary_md_path, validated)
         if one_liner is not None:
             _persist_one_liner(summary_md_path, one_liner)
