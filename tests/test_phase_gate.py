@@ -62,7 +62,10 @@ class TestFindSummaryMd:
 
         dt = datetime(2026, 4, 18, 8, 0)
         zwsp = chr(0x200B)
-        folder = f"{LEARNING_BASE}/{UNIT_DIRS['summary']}/2026-04-18-0800 Team{zwsp}Alpha"
+        folder = (
+            f"{LEARNING_BASE}/{UNIT_DIRS['summary']}/"
+            f"2026-04-18-0800 Team{zwsp}Alpha"
+        )
         summary = tmp_path / folder / "note.md"
         _write_summary(summary, _VID_1, "true")
 
