@@ -8,7 +8,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts.remediate_filenames import RenamePlan, find_wikilink_refs, scan
+from scripts.remediate_filenames import (
+    RenamePlan,
+    find_wikilink_refs,
+    rewrite_wikilink_targets,
+    scan,
+)
 
 ZW = chr(0x200B)  # ZERO WIDTH SPACE
 CYR = chr(0x430)  # CYRILLIC SMALL LETTER A
@@ -67,3 +72,20 @@ class TestWikilinkRefs:
     def test_no_refs_when_stem_absent(self, tmp_path: Path):
         (tmp_path / "note.md").write_text("[[unrelated]]\n", encoding="utf-8")
         assert find_wikilink_refs(tmp_path, {"missing stem"}) == {}
+
+
+class TestRewriteWikilinkTargets:
+    def test_preserves_prefix_alias_and_anchor(self):
+        renamed = {"old stem": "new stem"}
+        text = "[[old stem|alias]] and ![[old stem#^12-30]]"
+        out = rewrite_wikilink_targets(text, renamed)
+        assert out == "[[new stem|alias]] and ![[new stem#^12-30]]"
+
+    def test_target_equal_to_prefix_char_does_not_corrupt(self):
+        # regression: a target that also occurs in the "![[" prefix must rewrite
+        # only the target, never the link syntax (naive group(0).replace would
+        # yield "SAFE[[SAFE]]").
+        assert rewrite_wikilink_targets("![[!]]", {"!": "SAFE"}) == "![[SAFE]]"
+
+    def test_unrenamed_target_untouched(self):
+        assert rewrite_wikilink_targets("[[keep]]", {"x": "y"}) == "[[keep]]"

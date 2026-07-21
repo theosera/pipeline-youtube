@@ -132,6 +132,28 @@ def find_wikilink_refs(vault_root: Path, stems: set[str]) -> dict[Path, list[str
     return refs
 
 
+def rewrite_wikilink_targets(text: str, renamed: dict[str, str]) -> str:
+    """Rewrite ``[[old]]`` / ``![[old]]`` link targets to their renamed stems.
+
+    Replaces only the target *component* of each link — never the ``[[`` / ``![[``
+    prefix — so a target string that also occurs in the prefix (e.g. a note named
+    ``!``) cannot corrupt the link syntax. ``|alias`` and ``#anchor`` suffixes lie
+    outside the captured group and are left untouched. Unrenamed targets pass
+    through unchanged.
+    """
+
+    def _sub(m: re.Match[str]) -> str:
+        target = m.group(1).strip()
+        new = renamed.get(target)
+        if not new:
+            return m.group(0)
+        # group(0) == prefix ("[[" / "![[") + group(1); rewrite only group(1).
+        prefix = m.group(0)[: -len(m.group(1))]
+        return prefix + m.group(1).replace(target, new)
+
+    return _WIKILINK_RE.sub(_sub, text)
+
+
 def _rel(vault_root: Path, p: Path) -> str:
     try:
         return str(p.relative_to(vault_root))
@@ -191,13 +213,7 @@ def main(argv: list[str] | None = None) -> int:
 
     for md, _hits in refs.items():
         text = md.read_text(encoding="utf-8", errors="ignore")
-
-        def _sub(m: re.Match[str]) -> str:
-            target = m.group(1).strip()
-            new = renamed.get(target)
-            return m.group(0).replace(target, new) if new else m.group(0)
-
-        md.write_text(_WIKILINK_RE.sub(_sub, text), encoding="utf-8")
+        md.write_text(rewrite_wikilink_targets(text, renamed), encoding="utf-8")
         print(f"[rewrote links] {_rel(vault_root, md)}")
 
     print(f"\n[apply] {len(plans)} renamed, {len(refs)} files re-linked.")
