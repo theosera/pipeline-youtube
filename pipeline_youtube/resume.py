@@ -134,7 +134,9 @@ def _summary_folder_candidates(base: Path, playlist_title: str, run_date: dateti
             if (
                 child.is_dir()
                 and child.name.startswith(date_prefix)
-                and title_needle in child.name
+                # Pre-defense folders can retain invisible title characters;
+                # normalize both sides so reviewed summaries remain resumable.
+                and title_needle in sanitize_title_for_filename(child.name)
                 and child.name != canonical_name
             ):
                 yield child
@@ -180,7 +182,13 @@ def _collect_existing_learning_bodies(
             candidates = [
                 p
                 for p in base_dir.iterdir()
-                if p.is_dir() and p.name.startswith(date_prefix) and title_needle in p.name
+                if (
+                    p.is_dir()
+                    and p.name.startswith(date_prefix)
+                    # Keep synthesis-only compatible with folders written
+                    # before invisible characters were stripped from names.
+                    and title_needle in sanitize_title_for_filename(p.name)
+                )
             ]
         if candidates:
             candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)

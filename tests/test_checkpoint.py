@@ -87,6 +87,13 @@ class TestIsVideoComplete:
         _create_04_md(vault, "2026-04-16 AI駆動経営", _VID_A)
         assert is_video_complete(_VID_A, "AI駆動経営", dt, vault_root=vault) is True
 
+    def test_pre_concealment_folder_with_invisible_title_fallback(self, vault):
+        """Folders written before invisible stripping must remain discoverable."""
+        dt = datetime(2026, 4, 16, 9, 14)
+        zwsp = chr(0x200B)
+        _create_04_md(vault, f"2026-04-16-0914 Team{zwsp}Alpha", _VID_A)
+        assert is_video_complete(_VID_A, f"Team{zwsp}Alpha", dt, vault_root=vault) is True
+
     def test_slash_playlist_title(self, vault):
         """Playlist title with `/` — display title is last segment."""
         dt = datetime(2026, 4, 16, 9, 14)
