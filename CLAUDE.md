@@ -11,12 +11,19 @@ any modification is visible in `git diff` and requires review.
      web セッションは ~/.claude/ を読まないので、リポ同梱の本ファイル経由で読み込む。 -->
 @CLAUDE.global.md
 
-## スキル発火表
+## スキル発火表 (★着手前に必ずロード)
 
-このリポは現状**追加スキルなし** (`.claude/skills/` を持たない)。CLAUDE.md が既に薄く、
-Git hooks / Security posture はハードルールとして常時ロードに置くのが適切なため。
-将来、特定タスクでしか要らない作業規約・機能知識が増えたら `.claude/skills/` へ分離し
-本表に発火条件を追加すること。
+常時ロードは薄く保ち (Git hooks / Security posture のみハードルールとして常駐)、
+特定タスクでしか要らない知識は `.claude/skills/` へ発火条件付きで分離する。タスクが
+発火条件に一致したら**着手前に必ず対応スキルをロード**する (裁量で省略しない)。
+
+| 発火条件 (このタスクを始める前に) | 必ずロードするスキル |
+|---|---|
+| youtube-pipeline 出力 (`Permanent Note/08_YouTube学習` 配下) の homoglyph / 隠蔽系 (不可視・双方向 bidi・混在スクリプト) を外部監査・走査・トリアージする | `homoglyph-audit` |
+
+> `homoglyph-audit` は read-only の検出/トリアージ層。恒久的な予防は write-time 防御
+> (`services/confusables` を `sanitize_title_for_filename` / `build_frontmatter` /
+> `fetch_metadata` へ注入済み) が担う。両者は多層防御で、監査は予防を置き換えない。
 
 ## Project
 
