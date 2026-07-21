@@ -243,11 +243,11 @@ def run_stage_summary(
             validated = normalize_text(validated, glossary)
             if one_liner is not None:
                 one_liner = normalize_text(one_liner, glossary)
-        # Homoglyph fold (last transform before disk): the model occasionally
-        # emits Cyrillic/Greek look-alikes mixed into Latin words. Fold them to
-        # Latin so the persisted note is pure-script. Deterministic, idempotent,
-        # and mixed-script-only, so Japanese / legitimate Cyrillic stays intact.
-        validated = fold_mixed_script_confusables(validated)
+        # The body is already homoglyph-folded inside _validate_summary_output
+        # (folded BEFORE the HTML/embed/Templater strip so a Cyrillic-obfuscated
+        # tag cannot re-materialize as active markup after sanitization). The
+        # one-liner is extracted upstream of that validation, so fold it here
+        # before it is persisted to frontmatter.
         if one_liner is not None:
             one_liner = fold_mixed_script_confusables(one_liner)
         _append_body(summary_md_path, validated)
@@ -263,7 +263,14 @@ def _validate_summary_output(body: str) -> str:
     Raises `SummaryOutputError` if required sections are missing or the
     body is absurdly long. Strips disallowed HTML / Templater tokens
     and unknown `![[...]]` embeds before writing.
+
+    Homoglyphs are folded FIRST — before the section/range checks and before
+    ``validate_chapter_body`` strips active markup. Folding after the strip
+    would let a Cyrillic/Greek-obfuscated tag such as ``<sсript>`` survive the
+    strip and only then fold into a live ``<script>``; folding up front means
+    the strip operates on the canonical text. The fold is idempotent.
     """
+    body = fold_mixed_script_confusables(body)
     if len(body) > _MAX_OUTPUT_CHARS:
         raise SummaryOutputError(f"summary body exceeds {_MAX_OUTPUT_CHARS} chars: {len(body)}")
 
