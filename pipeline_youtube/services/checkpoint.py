@@ -144,7 +144,16 @@ def _find_learning_folder(
 
     for b in bases:
         for child in b.iterdir():
-            if child.is_dir() and child.name.startswith(date_prefix) and title_needle in child.name:
+            # Folders created before the concealment defense may still contain
+            # zero-width/bidi characters. Normalize the existing name with the
+            # same rule as the fetched title so those completed runs remain
+            # discoverable after upgrading.
+            normalized_child_name = sanitize_title_for_filename(child.name)
+            if (
+                child.is_dir()
+                and child.name.startswith(date_prefix)
+                and title_needle in normalized_child_name
+            ):
                 return child
     return None
 

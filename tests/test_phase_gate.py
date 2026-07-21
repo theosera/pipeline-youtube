@@ -10,7 +10,11 @@ import pytest
 from pipeline_youtube import config
 from pipeline_youtube.pipeline import LEARNING_BASE, UNIT_DIRS
 from pipeline_youtube.playlist import VideoMeta
-from pipeline_youtube.resume import _filter_to_reviewed, _find_summary_md
+from pipeline_youtube.resume import (
+    _collect_existing_learning_bodies,
+    _filter_to_reviewed,
+    _find_summary_md,
+)
 
 
 def _vid(video_id: str) -> VideoMeta:
@@ -51,6 +55,23 @@ class TestFindSummaryMd:
         _write_summary(summary, _VID_1, "true")
 
         found = _find_summary_md(_VID_1, "testlist", dt, vault_root=config.get_vault_root())
+        assert found == summary
+
+    def test_pre_concealment_folder_with_invisible_title(self, tmp_path: Path):
+        config.set_vault_root(tmp_path)
+
+        dt = datetime(2026, 4, 18, 8, 0)
+        zwsp = chr(0x200B)
+        folder = f"{LEARNING_BASE}/{UNIT_DIRS['summary']}/2026-04-18-0800 Team{zwsp}Alpha"
+        summary = tmp_path / folder / "note.md"
+        _write_summary(summary, _VID_1, "true")
+
+        found = _find_summary_md(
+            _VID_1,
+            f"Team{zwsp}Alpha",
+            dt,
+            vault_root=config.get_vault_root(),
+        )
         assert found == summary
 
     def test_missing_returns_none(self, tmp_path: Path):
@@ -97,3 +118,30 @@ class TestFilterToReviewed:
             [(1, _vid(_VID_A))], "testlist", dt, vault_root=config.get_vault_root()
         )
         assert len(kept) == 1
+
+
+class TestCollectExistingLearningBodies:
+    def test_pre_concealment_folder_with_invisible_title(self, tmp_path: Path):
+        config.set_vault_root(tmp_path)
+
+        dt = datetime(2026, 4, 18, 8, 0)
+        zwsp = chr(0x200B)
+        folder = (
+            tmp_path
+            / LEARNING_BASE
+            / UNIT_DIRS["learning"]
+            / f"2026-04-18-0800 Team{zwsp}Alpha"
+        )
+        learning = folder / "note.md"
+        _write_summary(learning, _VID_1, "true")
+
+        videos, bodies, folder_name = _collect_existing_learning_bodies(
+            [_vid(_VID_1)],
+            f"Team{zwsp}Alpha",
+            dt,
+            vault_root=config.get_vault_root(),
+        )
+
+        assert [video.video_id for video in videos] == [_VID_1]
+        assert bodies == ["body\n"]
+        assert folder_name == folder.name
