@@ -11,6 +11,7 @@ from pathlib import Path
 from scripts.remediate_filenames import (
     RenamePlan,
     find_wikilink_refs,
+    main,
     rewrite_wikilink_targets,
     scan,
 )
@@ -89,3 +90,20 @@ class TestRewriteWikilinkTargets:
 
     def test_unrenamed_target_untouched(self):
         assert rewrite_wikilink_targets("[[keep]]", {"x": "y"}) == "[[keep]]"
+
+
+class TestApply:
+    def test_rewrites_links_inside_notes_that_are_also_renamed(self, tmp_path: Path):
+        old_a = _note(tmp_path, f"A{ZW}", "A")
+        old_b = _note(tmp_path, f"B{ZW}", "B")
+        old_a.write_text(f"[[B{ZW}]]\n", encoding="utf-8")
+        old_b.write_text(f"[[A{ZW}]]\n", encoding="utf-8")
+
+        assert main(["--vault", str(tmp_path), "--apply"]) == 0
+
+        new_a = old_a.with_name("A.md")
+        new_b = old_b.with_name("B.md")
+        assert not old_a.exists()
+        assert not old_b.exists()
+        assert new_a.read_text(encoding="utf-8") == "[[B]]\n"
+        assert new_b.read_text(encoding="utf-8") == "[[A]]\n"

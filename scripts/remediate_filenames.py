@@ -205,16 +205,21 @@ def main(argv: list[str] | None = None) -> int:
 
     # --apply: rename each file (collision-safe) and rewrite wikilink targets.
     renamed: dict[str, str] = {}
+    renamed_paths: dict[Path, Path] = {}
     for p in plans:
         dest = resolve_unique_path(p.path.parent, p.new_stem, p.path.suffix)
         p.path.rename(dest)
         renamed[p.old_stem] = dest.stem
+        renamed_paths[p.path] = dest
         print(f"[renamed] {_rel(vault_root, p.path)} -> {dest.name}")
 
     for md, _hits in refs.items():
-        text = md.read_text(encoding="utf-8", errors="ignore")
-        md.write_text(rewrite_wikilink_targets(text, renamed), encoding="utf-8")
-        print(f"[rewrote links] {_rel(vault_root, md)}")
+        # A referencing note can itself be one of the files renamed above.
+        # Follow its destination instead of reopening the now-stale source path.
+        current_md = renamed_paths.get(md, md)
+        text = current_md.read_text(encoding="utf-8", errors="ignore")
+        current_md.write_text(rewrite_wikilink_targets(text, renamed), encoding="utf-8")
+        print(f"[rewrote links] {_rel(vault_root, current_md)}")
 
     print(f"\n[apply] {len(plans)} renamed, {len(refs)} files re-linked.")
     return 0
