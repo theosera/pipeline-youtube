@@ -43,7 +43,10 @@ from ..obsidian import upsert_frontmatter_field
 from ..playlist import VideoMeta
 from ..providers.claude_cli import ClaudeResponse, invoke_claude
 from ..sanitize import sanitize_untrusted_text, wrap_untrusted
-from ..services.confusables import fold_mixed_script_confusables
+from ..services.confusables import (
+    fold_markdown_mixed_script_confusables,
+    fold_mixed_script_confusables,
+)
 from ..synthesis.body_validator import validate_chapter_body
 from ..transcript.base import TranscriptResult
 from ..transcript.chunking import Chunk, chunk_by_window
@@ -270,7 +273,7 @@ def _validate_summary_output(body: str) -> str:
     strip and only then fold into a live ``<script>``; folding up front means
     the strip operates on the canonical text. The fold is idempotent.
     """
-    body = fold_mixed_script_confusables(body)
+    body = fold_markdown_mixed_script_confusables(body)
     if len(body) > _MAX_OUTPUT_CHARS:
         raise SummaryOutputError(f"summary body exceeds {_MAX_OUTPUT_CHARS} chars: {len(body)}")
 
