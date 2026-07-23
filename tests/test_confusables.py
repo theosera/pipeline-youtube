@@ -224,7 +224,10 @@ class TestFoldMarkdownMixedScriptConfusables:
     def test_folds_opted_in_generated_target_and_alias(self):
         target = f"01_C{GRK_O}re"
         raw = f"[[{target}|Vib{CYR_E}]]"
-        assert fold_markdown_mixed_script_confusables(
-            raw,
-            fold_wikilink_targets={target},
-        ) == "[[01_Core|Vibe]]"
+        assert (
+            fold_markdown_mixed_script_confusables(
+                raw,
+                fold_wikilink_targets={target},
+            )
+            == "[[01_Core|Vibe]]"
+        )
