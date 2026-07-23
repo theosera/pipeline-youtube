@@ -22,10 +22,13 @@ any modification is visible in `git diff` and requires review.
 | youtube-pipeline 出力 (`Permanent Note/08_YouTube学習` 配下) の homoglyph / 隠蔽系 (不可視・双方向 bidi・混在スクリプト) を外部監査・走査・トリアージする | `homoglyph-audit` |
 
 > `homoglyph-audit` は read-only の検出/トリアージ層。恒久的な予防は write-time 防御
-> (`services/confusables`) が担い、2 系統ある: 不可視除去・混在スクリプト**検出**は
-> `sanitize_title_for_filename` / `build_frontmatter` / `fetch_metadata` (title/filename 経路) へ、
-> 混在スクリプト **fold** (`fold_mixed_script_confusables`, Cyrillic/Greek→Latin) は
-> Stage 02 の LLM 出力を vault へ書き出す直前へ注入済み。両者は多層防御で、監査は予防を置き換えない。
+> (`services/confusables`) が担い、2 系統ある: 混在スクリプト**検出**と alert 記録は
+> fetch 境界 `fetch_metadata` (→ `analyze_filename_text`) が唯一の記録点で行う (検出のみ・生
+> タイトルを emit)。不可視文字の実際の除去は下流の `sanitize_title_for_filename` /
+> `build_frontmatter` (→ `strip_invisibles`) が担う (混在検出も再 alert もなし)。混在スクリプト
+> **fold** (`fold_mixed_script_confusables`,
+> Cyrillic/Greek→Latin) は LLM 出力を vault へ書き出す直前 (Stage 02 summary と Stage 05
+> synthesis の chapter/MOC) へ注入済み。両者は多層防御で、監査は予防を置き換えない。
 
 ## Project
 
