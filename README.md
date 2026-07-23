@@ -277,6 +277,8 @@ Stage 05 はプレイリストに 3 本以上の動画があるときだけ自�
   URL デコード迂回 / 絶対パス拒否 / 制御文字除去 / Unicode NFC 正規化 / `..` 即時拒否 / `realpath` 逃げ道検証 / パス長制限
 - **プロンプトインジェクション緩和** — `sanitize.py:sanitize_untrusted_text` + `wrap_untrusted`
   制御文字・ゼロ幅 Unicode 除去、`<untrusted_content>` デリミタで囲む、system prompt で「指示文に従わない」を明示
+- **隠蔽 (homoglyph / 不可視・bidi) 防御** — `services/confusables`
+  外部由来テキスト (YouTube タイトル/字幕、および LLM 生成本文) の隠蔽系に多層で対処する。(1) タイトル→ファイル名・frontmatter 経路で不可視/双方向/ゼロ幅文字を除去し、Latin×Cyrillic/Greek の混在スクリプト (古典的 homoglyph 偽装) を**検出**して alert に記録 (`sanitize_title_for_filename` / `build_frontmatter` / `playlist.fetch_metadata`)。(2) LLM 出力 (OpenAI/Claude が稀に吐く Cyrillic/Greek lookalike) を vault へ書き出す**直前**に、混在スクリプト語だけ少数派を Latin へ **fold** する (`fold_mixed_script_confusables`) — Stage 02 summary と Stage 05 synthesis (chapter / MOC) の両出力で、`validate_chapter_body` の HTML 無害化の**前段**に配置。fold は決定論・冪等・混在語限定で、日本語・純キリル/ギリシャ語・URL/markdown 内の正当な非ラテンは無変更 (過剰畳み込みを避ける TR39 の混在=偽装ケースのみ)。既存ノートの read-only 外部監査は `homoglyph-audit` skill、リネーム是正は `scripts/remediate_filenames.py --apply`。
 - **Stage 03 Docker 隔離 (オプション)** — `stages/capture_backend.py:DockerCaptureBackend`
   `yt-dlp` / `ffmpeg` / `gif2webp` を `--cap-drop=ALL --read-only --user=1000:1000` のハードニングしたコンテナで実行。Threat Model §11 R1 (ffmpeg/yt-dlp のホスト実行) への対策。詳細: [docs/docker.md](docs/docker.md)
 - **security-guidance プラグイン (in-session コードレビュー)** — `.claude/settings.json` の `enabledPlugins` で有効化した公式プラグイン。Claude Code が書くコードを編集時パターンマッチ / ターン終了時 diff レビュー / commit 時 agentic レビューの 3 層で自動チェックし、`.claude/claude-security-guidance.md` が本リポの脅威モデル (`wrap_untrusted` 境界 / Stage 03 Docker 隔離 (opt-in) / エージェント起点の hook 導入検知) をレビュー観点に注入する。助言のみでブロックはしないため、egress hook や gitleaks 等の機械的 deny 層の代替ではない (正典: obsidian-ai-pipeline の `docs/security/security-guidance-plugin.md`)
@@ -307,6 +309,8 @@ uv run pytest tests/ -q
 主な対象:
 - `test_path_safety.py` — 7 段階防御の回帰
 - `test_sanitize.py` — プロンプトインジェクション緩和
+- `test_confusables.py` — 隠蔽防御 (不可視除去 / 混在スクリプト検出 / homoglyph fold)
+- `test_synthesis_confusable_fold.py` — Stage 05 synthesis 出力の homoglyph fold + 日本語保全
 - `test_obsidian.py` — ファイル名規約 / フォルダ名規約 / `/` 分割ルール
 - `test_transcript_*` — 字幕フォールバック
 - `test_scripts_stage.py` / `test_summary_stage.py` / `test_capture_stage.py` / `test_learning_stage.py` — stage 01〜04
