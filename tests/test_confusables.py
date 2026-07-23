@@ -215,9 +215,7 @@ class TestFoldMixedScriptConfusables:
 class TestFoldMarkdownMixedScriptConfusables:
     def test_preserves_external_wikilink_target_but_folds_prose(self):
         raw = f"Vib{CYR_E} [[Vib{CYR_E} Coding#^00-30]]"
-        assert fold_markdown_mixed_script_confusables(raw) == (
-            f"Vibe [[Vib{CYR_E} Coding#^00-30]]"
-        )
+        assert fold_markdown_mixed_script_confusables(raw) == f"Vibe [[Vib{CYR_E} Coding#^00-30]]"
 
     def test_preserves_embed_target(self):
         raw = f"![[2026 Vib{CYR_E}/pyt_video_00.webp]]"

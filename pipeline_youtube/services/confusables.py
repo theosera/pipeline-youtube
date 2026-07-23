@@ -90,9 +90,7 @@ _TOKEN_RE = re.compile(r"\S+")
 # (`[\u043f\u0440\u0438\u0432\u0435\u0442](https://example.com)`, `|English|\u0420\u0443\u0441\u0441\u043a\u0438\u0439|`, a Unicode URL path) is
 # split into separate pure-script words -- the Latin part cannot drag an
 # adjacent legitimate Cyrillic/Greek run into a "mixed" verdict and corrupt it.
-_WORD_RE = re.compile(
-    "[A-Za-z\u00c0-\u024f\u0370-\u03ff\u0400-\u052f\u1f00-\u1fff]+"
-)
+_WORD_RE = re.compile("[A-Za-z\u00c0-\u024f\u0370-\u03ff\u0400-\u052f\u1f00-\u1fff]+")
 # Obsidian wikilink/embed syntax. Link targets are identifiers, not prose: they
 # must normally stay byte-for-byte aligned with existing filenames. Callers can
 # explicitly opt selected generated targets into folding (for example Stage 05
