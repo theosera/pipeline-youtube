@@ -8,10 +8,13 @@ allowed-tools: Read, Bash
 # homoglyph-audit — youtube-pipeline 出力の隠蔽系 外部監査
 
 パイプラインの **write-time 防御** (`services/confusables`) は「これから書くもの」を予防する層で
-2 系統ある: 不可視除去・混在スクリプト**検出**を `sanitize_title_for_filename` / `build_frontmatter`
-/ `fetch_metadata` (title/filename 経路) へ、混在スクリプト **fold** (`fold_mixed_script_confusables`,
-Cyrillic/Greek→Latin) を LLM 出力の書き出し直前 (Stage 02 summary / Stage 05 synthesis) へ注入済み。
-本スキルはその上の**検出・トリアージ層**で、既に Vault にあるノートを外部監査する。両者は
+2 系統ある: (a) 不可視除去・混在スクリプト**検出**と alert 記録は fetch 境界
+`playlist.fetch_metadata` (→ `analyze_filename_text`) が**唯一の記録点**で行い、下流の
+`sanitize_title_for_filename` / `build_frontmatter` (title/filename 経路) は不可視文字を
+防御的に再除去するのみ (混在スクリプト検出も再 alert もしない)。(b) 混在スクリプト **fold**
+(`fold_mixed_script_confusables`, Cyrillic/Greek→Latin) を LLM 出力の書き出し直前
+(Stage 02 summary / Stage 05 synthesis の chapter/MOC) へ注入済み。本スキルはその上の
+**検出・トリアージ層**で、既に Vault にあるノートを外部監査する。両者は
 守備範囲が別物であり、本スキルは予防層を置き換えない (多層防御)。
 
 ## 対象スコープ (厳守)
