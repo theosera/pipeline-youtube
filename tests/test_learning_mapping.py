@@ -79,6 +79,29 @@ class TestParseCaptureMapping:
         assert len(mappings) == 1
         assert "日本語タイトル" in mappings[0].filename
 
+    def test_path_qualified_embed_with_bracketed_playlist_folder(self):
+        r"""Stage 03 nests captures under the playlist folder; brackets survive.
+
+        Regression: ``([^\]]+?)`` stopped at the first ``]`` in
+        ``[LLM]``, so every mapping for common titles like
+        ``[LLM] Agent Teams`` vanished and Stage 04 was told ``(画像無し)``.
+        """
+        body = (
+            "[00:00 ~ 01:03]\n"
+            "![[2026-06-14-1100 [LLM] Agent Teams/pyt_x_00.webp]]\n"
+            "\n"
+            "[01:03 ~ 02:00]\n"
+            "![[2026-06-14-1100 [LLM] Agent Teams/pyt_x_01.webp]]\n"
+        )
+        mappings = parse_capture_mapping(body)
+        assert len(mappings) == 2
+        assert mappings[0].range_str == "[00:00 ~ 01:03]"
+        assert mappings[0].filename == "2026-06-14-1100 [LLM] Agent Teams/pyt_x_00.webp"
+        assert mappings[1].filename == "2026-06-14-1100 [LLM] Agent Teams/pyt_x_01.webp"
+        table = _format_mapping_table(mappings)
+        assert "(画像無し)" not in table
+        assert "pyt_x_00.webp" in table
+
 
 class TestFormatMappingTable:
     def test_formats_as_markdown_table(self):
