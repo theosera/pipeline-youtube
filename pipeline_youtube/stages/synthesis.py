@@ -40,6 +40,7 @@ from ..glossary import Glossary, normalize_text
 from ..obsidian import format_playlist_folder_name
 from ..path_safety import ensure_safe_path
 from ..playlist import VideoMeta
+from ..services.confusables import map_wikilink_targets
 from ..synthesis.agents import (
     _MAX_INPUT_CHARS,
     AgentCallResult,
@@ -53,7 +54,7 @@ from ..synthesis.agents import (
     rerun_leader_with_feedback,
 )
 from ..synthesis.body_validator import extract_allowed_embeds
-from ..synthesis.chapter import write_chapter
+from ..synthesis.chapter import chapter_note_stem, write_chapter
 from ..synthesis.moc import write_moc
 from ..synthesis.scoring import (
     ChapterPlan,
@@ -203,6 +204,11 @@ def _apply_proper_nouns(output: LeaderOutput, glossary: Glossary) -> LeaderOutpu
     Applies the per-playlist proper-noun corrections (variant → canonical) to the
     MOC title/body and each chapter's label/body. Non-destructive — only
     glossary-known variants change — so it is safe to run unconditionally.
+
+    External video-note wikilink targets stay verbatim (``normalize_text``
+    preserves them). Generated chapter links (``[[NN_<label>]]``) are aligned to
+    the rewritten labels here, then to on-disk stems at write time via
+    ``_align_chapter_wikilink_targets``.
     """
     moc = SynthesisMoc(
         title=normalize_text(output.moc.title, glossary),
@@ -218,7 +224,56 @@ def _apply_proper_nouns(output: LeaderOutput, glossary: Glossary) -> LeaderOutpu
         )
         for chapter in output.chapters
     ]
+    # normalize_text preserves wikilink targets, so a rewritten chapter label
+    # would otherwise leave MOC 章構成 pointing at the pre-correction name.
+    label_target_rewrites = {
+        f"{before.chapter_index:02d}_{before.label}": (f"{after.chapter_index:02d}_{after.label}")
+        for before, after in zip(output.chapters, chapters, strict=True)
+        if before.label != after.label
+    }
+    if label_target_rewrites:
+        moc = SynthesisMoc(
+            title=moc.title,
+            body_markdown=map_wikilink_targets(moc.body_markdown, label_target_rewrites.get),
+        )
+        chapters = [
+            SynthesisChapterBody(
+                chapter_index=chapter.chapter_index,
+                label=chapter.label,
+                category=chapter.category,
+                source_video_ids=chapter.source_video_ids,
+                body_markdown=map_wikilink_targets(
+                    chapter.body_markdown, label_target_rewrites.get
+                ),
+            )
+            for chapter in chapters
+        ]
     return LeaderOutput(moc=moc, chapters=chapters)
+
+
+def _align_chapter_wikilink_targets(text: str, chapters: list[SynthesisChapterBody]) -> str:
+    """Point ``[[NN_…]]`` chapter links at the stems ``write_chapter`` will create.
+
+    Leader emits ``[[01_<章名>]]`` using the raw label (see agents prompt), but
+    the on-disk filename runs that label through confusable fold +
+    ``chapter_filename`` (OS-unsafe char replacement, UTF-8 truncation). Without
+    this alignment, labels such as ``CI/CD`` produce ``01_CI CD….md`` while the
+    MOC still links to ``[[01_CI/CD…]]``.
+    """
+    stems_by_index = {
+        chapter.chapter_index: chapter_note_stem(chapter.chapter_index, chapter.label)
+        for chapter in chapters
+    }
+
+    def _map_base(base: str) -> str | None:
+        if len(base) < 3 or base[2] != "_" or not base[:2].isdigit():
+            return None
+        stem = stems_by_index.get(int(base[:2]))
+        if stem is None or stem == base:
+            return None
+        return stem
+
+    return map_wikilink_targets(text, _map_base)
 
 
 def run_stage_synthesis(
@@ -462,13 +517,35 @@ def run_stage_synthesis(
     playlist_dir.mkdir(parents=True, exist_ok=True)
 
     allowed_assets = extract_allowed_embeds(learning_md_bodies)
+    # Align [[NN_<label>]] targets to the exact stems write_chapter will create
+    # (fold + sanitize + truncate). Keep those stems opted into markdown folding
+    # so a residual homoglyph in a chapter link still folds with the filename.
     generated_chapter_link_targets = {
-        f"{chapter.chapter_index:02d}_{chapter.label}" for chapter in leader_output.chapters
+        chapter_note_stem(chapter.chapter_index, chapter.label)
+        for chapter in leader_output.chapters
     }
+    aligned_moc = SynthesisMoc(
+        title=leader_output.moc.title,
+        body_markdown=_align_chapter_wikilink_targets(
+            leader_output.moc.body_markdown, leader_output.chapters
+        ),
+    )
+    aligned_chapters = [
+        SynthesisChapterBody(
+            chapter_index=chapter.chapter_index,
+            label=chapter.label,
+            category=chapter.category,
+            source_video_ids=chapter.source_video_ids,
+            body_markdown=_align_chapter_wikilink_targets(
+                chapter.body_markdown, leader_output.chapters
+            ),
+        )
+        for chapter in leader_output.chapters
+    ]
 
     moc_path = playlist_dir / "00_MOC.md"
     write_moc(
-        leader_output.moc,
+        aligned_moc,
         moc_path,
         run_time=run_time,
         playlist_title=playlist_title,
@@ -477,7 +554,7 @@ def run_stage_synthesis(
     )
 
     chapter_paths: list[Path] = []
-    for chapter_body in leader_output.chapters:
+    for chapter_body in aligned_chapters:
         path = write_chapter(
             chapter_body,
             playlist_dir,
@@ -486,7 +563,6 @@ def run_stage_synthesis(
             allowed_assets=allowed_assets,
         )
         chapter_paths.append(path)
-
     meta_dir = playlist_dir / META_SUBDIR
     meta_dir.mkdir(parents=True, exist_ok=True)
     meta_path = meta_dir / DUPLICATE_SCORE_FILENAME

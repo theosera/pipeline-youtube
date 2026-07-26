@@ -120,6 +120,40 @@ def test_write_moc_only_folds_generated_chapter_link_targets(tmp_path: Path) -> 
     assert f"[[{source_target}]]" in written
 
 
+def test_align_chapter_wikilink_targets_matches_written_filename(tmp_path: Path) -> None:
+    # Leader prompt uses [[01_<章名>]] with the raw label, but write_chapter
+    # replaces OS-unsafe chars (e.g. '/' → space). Without alignment the MOC
+    # link never resolves.
+    from pipeline_youtube.stages.synthesis import _align_chapter_wikilink_targets
+
+    label = "CI/CD Foundations"
+    chapter = SynthesisChapterBody(
+        chapter_index=1,
+        label=label,
+        category="core",
+        source_video_ids=["vid1"],
+        body_markdown="body",
+    )
+    path = write_chapter(chapter, tmp_path, run_time=RUN_TIME, playlist_title="pl")
+    assert path.name == "01_CI CD Foundations.md"
+
+    moc_body = f"## 章構成\n- [[{1:02d}_{label}]] — core\n"
+    aligned = _align_chapter_wikilink_targets(moc_body, [chapter])
+    assert f"[[{path.stem}]]" in aligned
+    assert f"[[{1:02d}_{label}]]" not in aligned
+
+    moc = SynthesisMoc(title="Map", body_markdown=aligned)
+    write_moc(
+        moc,
+        tmp_path / "00_MOC.md",
+        run_time=RUN_TIME,
+        playlist_title="pl",
+        generated_chapter_link_targets={path.stem},
+    )
+    written = (tmp_path / "00_MOC.md").read_text(encoding="utf-8")
+    assert f"[[{path.stem}]]" in written
+
+
 def test_write_chapter_folds_before_html_strip(tmp_path: Path) -> None:
     # Security regression: a Cyrillic-obfuscated `<sсript>` must be folded to
     # `<script>` and then stripped by validate_chapter_body, NOT written as an
