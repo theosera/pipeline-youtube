@@ -74,7 +74,8 @@ def plan_steps(
     prompt = _build_plan_prompt(video, lecture_segments, insights, chapters, duration)
     responses: list[ClaudeResponse] = []
 
-    plan = HandsonPlan(steps=())
+    # ``missing`` starts as "everything" so a failed call degrades with all
+    # insights still accounted for; ``plan`` is assigned on both branches below.
     missing: set[str] = set(known_ids)
     try:
         response = invoke_claude(
