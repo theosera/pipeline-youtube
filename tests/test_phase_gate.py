@@ -10,11 +10,14 @@ import pytest
 from pipeline_youtube import config
 from pipeline_youtube.pipeline import LEARNING_BASE, UNIT_DIRS
 from pipeline_youtube.playlist import VideoMeta
+from pipeline_youtube.providers.claude_cli import ClaudeResponse
 from pipeline_youtube.resume import (
     _collect_existing_learning_bodies,
     _filter_to_reviewed,
+    _find_existing_04_md,
     _find_summary_md,
 )
+from pipeline_youtube.video_processing import _process_video
 
 
 def _vid(video_id: str) -> VideoMeta:
@@ -34,6 +37,24 @@ def _write_summary(path: Path, video_id: str, reviewed: str) -> None:
     path.write_text(
         f'---\ndate: 2026-04-18 08:00\ntitle: "x"\nplaylist: "testlist"\n'
         f'video_id: "{video_id}"\nreviewed: "{reviewed}"\n---\n\nbody\n',
+        encoding="utf-8",
+    )
+
+
+def _write_capture(path: Path, video_id: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f'---\ndate: 2026-04-18 08:00\ntitle: "x"\nplaylist: "testlist"\n'
+        f'video_id: "{video_id}"\n---\n\n[00:00 ~ 00:05]\n![[capture.webp]]\n',
+        encoding="utf-8",
+    )
+
+
+def _write_learning(path: Path, video_id: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f'---\ndate: 2026-04-18 08:00\ntitle: "x"\nplaylist: "testlist"\n'
+        f'video_id: "{video_id}"\n---\n\nlearning body\n',
         encoding="utf-8",
     )
 
@@ -142,3 +163,84 @@ class TestCollectExistingLearningBodies:
         assert [video.video_id for video in videos] == [_VID_1]
         assert bodies == ["body\n"]
         assert folder_name == folder.name
+
+
+class TestResumeReviewedProcessing:
+    def test_existing_04_lookup_keeps_checkpoint_skips_in_original_folder(self, tmp_path: Path):
+        config.set_vault_root(tmp_path)
+        dt = datetime(2026, 4, 18, 12, 0)
+        phase1_folder = "2026-04-18-0800 testlist"
+        learning = tmp_path / LEARNING_BASE / UNIT_DIRS["learning"] / phase1_folder / "a.md"
+        _write_learning(learning, _VID_A)
+
+        assert (
+            _find_existing_04_md(_VID_A, "testlist", dt, vault_root=config.get_vault_root())
+            == learning
+        )
+
+    def test_runs_only_stage_04_against_existing_reviewed_notes(
+        self, tmp_path: Path, monkeypatch
+    ):
+        import pipeline_youtube.video_processing as vp_mod
+
+        config.set_vault_root(tmp_path)
+        resume_time = datetime(2026, 4, 18, 12, 0)
+        phase1_folder = "2026-04-18-0800 testlist"
+        summary = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"] / phase1_folder / "a.md"
+        capture = tmp_path / LEARNING_BASE / UNIT_DIRS["capture"] / phase1_folder / "a.md"
+        _write_summary(summary, _VID_A, "true")
+        _write_capture(capture, _VID_A)
+
+        def forbidden_stage(*args, **kwargs):
+            raise AssertionError("stages 01-03 must be skipped during --resume-reviewed")
+
+        monkeypatch.setattr(vp_mod, "run_stage_scripts", forbidden_stage)
+        monkeypatch.setattr(vp_mod, "run_stage_summary", forbidden_stage)
+        monkeypatch.setattr(vp_mod, "run_stage_capture", forbidden_stage)
+        monkeypatch.setattr(vp_mod, "create_placeholder_notes", forbidden_stage)
+
+        def fake_learning(
+            video,
+            summary_md_path,
+            capture_md_path,
+            learning_md_path,
+            **kwargs,
+        ):
+            assert summary_md_path == summary
+            assert capture_md_path == capture
+            assert kwargs["run_time"] == resume_time
+            learning_md_path.parent.mkdir(parents=True, exist_ok=True)
+            learning_md_path.write_text(
+                f'---\nvideo_id: "{video.video_id}"\n---\n\nlearning body\n',
+                encoding="utf-8",
+            )
+            return ClaudeResponse(
+                text="learning body",
+                model="sonnet",
+                input_tokens=1,
+                output_tokens=2,
+                total_cost_usd=0.01,
+            )
+
+        monkeypatch.setattr(vp_mod, "run_stage_learning", fake_learning)
+
+        result = _process_video(
+            _vid(_VID_A),
+            resume_time,
+            dry_run=False,
+            capture_format="auto",
+            models={"stage_02": "sonnet", "stage_04": "sonnet"},
+            resume_reviewed=True,
+            playlist_title="testlist",
+            vault_root=config.get_vault_root(),
+        )
+
+        assert result.ok
+        assert result.learning_md_body and result.learning_md_body.strip() == "learning body"
+        assert result.learning_md_path == (
+            tmp_path / LEARNING_BASE / UNIT_DIRS["learning"] / phase1_folder / "a.md"
+        )
+        # Must not create a sibling Phase-3 folder from wall-clock run_time.
+        assert not (
+            tmp_path / LEARNING_BASE / UNIT_DIRS["summary"] / "2026-04-18-1200 testlist"
+        ).exists()
