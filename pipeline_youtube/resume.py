@@ -88,9 +88,7 @@ def _find_summary_md(
 
     ``vault_root`` is injected by the caller (``runtime.vault_root``).
     """
-    return _find_unit_md(
-        video_id, playlist_title, run_date, "summary", vault_root=vault_root
-    )
+    return _find_unit_md(video_id, playlist_title, run_date, "summary", vault_root=vault_root)
 
 
 def _find_existing_04_md(
@@ -118,9 +116,7 @@ def _load_existing_04_body(
 
     ``vault_root`` is injected by the caller (``runtime.vault_root``).
     """
-    md = _find_existing_04_md(
-        video_id, playlist_title, run_date, vault_root=vault_root
-    )
+    md = _find_existing_04_md(video_id, playlist_title, run_date, vault_root=vault_root)
     if md is None:
         return None
     try:

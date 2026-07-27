@@ -178,9 +178,7 @@ class TestResumeReviewedProcessing:
             == learning
         )
 
-    def test_runs_only_stage_04_against_existing_reviewed_notes(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_runs_only_stage_04_against_existing_reviewed_notes(self, tmp_path: Path, monkeypatch):
         import pipeline_youtube.video_processing as vp_mod
 
         config.set_vault_root(tmp_path)

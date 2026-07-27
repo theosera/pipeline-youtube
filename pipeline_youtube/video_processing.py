@@ -50,9 +50,7 @@ def _process_reviewed_video(
     stages 01-03: those would allocate collision suffixes (``-2``) beside the
     Phase 1 notes and Stage 04 would consume a fresh unreviewed summary.
     """
-    summary_md = _find_summary_md(
-        video.video_id, playlist_title, run_time, vault_root=vault_root
-    )
+    summary_md = _find_summary_md(video.video_id, playlist_title, run_time, vault_root=vault_root)
     if summary_md is None:
         return VideoRunResult(video=video, error="reviewed_summary_not_found")
 
@@ -67,9 +65,7 @@ def _process_reviewed_video(
     if capture_md is None:
         return VideoRunResult(video=video, error="reviewed_capture_not_found")
 
-    learning_md = _learning_path_for_reviewed_summary(
-        summary_md, video, vault_root=vault_root
-    )
+    learning_md = _learning_path_for_reviewed_summary(summary_md, video, vault_root=vault_root)
 
     click.echo(f"  [04] learning (model={models['stage_04']})...", nl=False)
     learning_resp = run_stage_learning(

@@ -203,7 +203,11 @@ def _select_synthesis_inputs(
             (r.learning_md_path.parent.name for r in succeeded if r.learning_md_path),
             None,
         )
-    return [r.video for r in succeeded], [r.learning_md_body or "" for r in succeeded], folder_override
+    return (
+        [r.video for r in succeeded],
+        [r.learning_md_body or "" for r in succeeded],
+        folder_override,
+    )
 
 
 def _process_all_videos(
