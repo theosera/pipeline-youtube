@@ -462,9 +462,137 @@ def run_stage_capture(
                 tmp_video_path.unlink(missing_ok=True)
 
 
+def capture_step_clips(
+    video: VideoMeta,
+    ranges: list[SummaryRange],
+    *,
+    assets_subfolder: str,
+    window_seconds: float = DEFAULT_WINDOW_SECONDS,
+    fps: int = DEFAULT_FPS,
+    scale_height: int = DEFAULT_SCALE_HEIGHT,
+    resolution: str = DEFAULT_RESOLUTION,
+    capture_format: CaptureFormat = "auto",
+    dry_run: bool = False,
+    backend: CaptureBackend | None = None,
+    vault_root: Path,
+) -> CaptureResult:
+    """Extract one animated window clip per pre-built range (hands-on mode).
+
+    The seam ``run_stage_capture`` cannot provide: it reads and regex-parses
+    the Stage 02 md (``[MM:SS ~ MM:SS]``, capped at 99:59), while hands-on
+    steps on a long talk need ranges past 100 minutes. Callers construct
+    ``SummaryRange`` objects directly (integer seconds, no clock-string
+    parsing) and this function reuses the existing machinery: format
+    resolution, the download-use-delete discipline, the per-range extractor
+    dispatch, and per-range failure isolation.
+
+    Differences from ``run_stage_capture`` (both deliberate):
+
+    - Image index follows the RANGE position (``pyt_<id>_h00…``), not a
+      success counter, so outcome N always maps to step N even when an
+      earlier extraction failed. The ``h`` marks hands-on files so a
+      normal-mode run of the same video can never collide on basename.
+    - No md is appended here — embedding into the step notes is the
+      hands-on writer's job (the md contract of 03_Capture does not exist
+      in this mode).
+
+    Degradation contract: a download failure returns ``CaptureResult`` with
+    ``error`` set (never raises); a single range failing records its error
+    in that outcome and the rest continue.
+    """
+    if not ranges:
+        return CaptureResult(ranges=[], error="no_ranges")
+
+    if dry_run:
+        return CaptureResult(ranges=ranges, capture_format=capture_format)
+
+    active_backend: CaptureBackend = backend if backend is not None else HostCaptureBackend()
+
+    try:
+        choice = _resolve_capture_format(capture_format, active_backend)
+    except RuntimeError as e:
+        return CaptureResult(ranges=ranges, error=f"format_unavailable: {e}")
+    ext = choice.ext
+
+    assets_rel = ensure_safe_path(f"{ASSETS_REL_PATH}/{assets_subfolder}", vault_root=vault_root)
+    assets_dir = vault_root / assets_rel
+    assets_dir.mkdir(parents=True, exist_ok=True)
+
+    tmp_video_path = _tmp_video_path(video)
+    try:
+        _download_video(
+            video.watch_url, tmp_video_path, resolution=resolution, backend=active_backend
+        )
+    except Exception as e:
+        return CaptureResult(
+            ranges=ranges,
+            capture_format=ext,
+            error=f"download_failed: {type(e).__name__}: {e}",
+        )
+
+    extractor = _dispatch_extractor(choice.strategy)
+    outcomes: list[CaptureOutcome] = []
+    try:
+        for idx, rng in enumerate(ranges):
+            image_path = assets_dir / _handson_image_name(video.video_id, idx, ext)
+            start = max(0.0, rng.center_sec - window_seconds / 2.0)
+            try:
+                extractor(
+                    tmp_video_path,
+                    image_path,
+                    start_sec=start,
+                    duration=window_seconds,
+                    fps=fps,
+                    scale_height=scale_height,
+                    backend=active_backend,
+                )
+            except subprocess.CalledProcessError as e:
+                stderr = (e.stderr or b"").decode("utf-8", errors="replace")[-200:]
+                outcomes.append(
+                    CaptureOutcome(
+                        range=rng,
+                        image_path=None,
+                        error=f"ffmpeg_exit_{e.returncode}: {stderr}",
+                    )
+                )
+                continue
+            except Exception as e:
+                outcomes.append(
+                    CaptureOutcome(
+                        range=rng,
+                        image_path=None,
+                        error=f"{type(e).__name__}: {e}",
+                    )
+                )
+                continue
+            outcomes.append(CaptureOutcome(range=rng, image_path=image_path))
+
+        return CaptureResult(
+            ranges=ranges,
+            outcomes=outcomes,
+            video_downloaded=True,
+            capture_format=ext,
+        )
+    finally:
+        # Delete-after-use: hands-on mode always downloads its own working
+        # copy, so it is always cleaned up here.
+        with contextlib.suppress(OSError):
+            tmp_video_path.unlink(missing_ok=True)
+
+
 # =====================================================
 # Internals
 # =====================================================
+
+
+def _handson_image_name(video_id: str, idx: int, ext: str = "webp") -> str:
+    """Hands-on clip filename: ``pyt_{video_id}_h{idx:02d}.{ext}``.
+
+    Range-positional index (see ``capture_step_clips``); the ``h`` infix
+    keeps hands-on files disjoint from ``_capture_image_name`` output for
+    the same video.
+    """
+    return f"pyt_{video_id}_h{idx:02d}.{ext}"
 
 
 def _capture_image_name(video_id: str, idx: int, ext: str = "webp") -> str:
