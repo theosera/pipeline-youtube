@@ -49,8 +49,12 @@ from pipeline_youtube.services.obsidian import (  # noqa: E402
 # to this subtree — the remediation never touches the rest of the vault.
 _LEARNING_BASE = "Permanent Note/08_YouTube学習"
 # Match [[target]], [[target|alias]], [[target#anchor]] and the ![[...]] embed
-# form. Group 1 is the raw target (up to | # or ]]).
-_WIKILINK_RE = re.compile(r"!?\[\[([^\]|#\n]+)")
+# form. A single `]` may appear inside the target because
+# ``sanitize_title_for_filename`` keeps brackets (common in YouTube titles like
+# ``[LLM] Agent Teams``). Consume `]` only when it is not the start of the
+# ``]]`` terminator — same rule as ``services.confusables._WIKILINK_RE``.
+# Groups: (1) ``[[`` / ``![[`` prefix, (2) inner body, (3) closing ``]]``.
+_WIKILINK_RE = re.compile(r"(!?\[\[)((?:[^\]\n]|\](?!\]))+)(\]\])")
 
 
 @dataclass(frozen=True)
@@ -113,6 +117,16 @@ def scan(vault_root: Path) -> tuple[list[RenamePlan], list[HomoglyphFlag]]:
     return plans, homoglyphs
 
 
+def _wikilink_stem(inner: str) -> str:
+    """Return the note stem from a wikilink/embed inner body.
+
+    Strips a trailing ``|alias`` and a ``#fragment``, mirroring how Obsidian
+    resolves the target path while leaving those suffixes in place for rewrite.
+    """
+    target = inner.partition("|")[0]
+    return target.split("#", 1)[0].strip()
+
+
 def find_wikilink_refs(vault_root: Path, stems: set[str]) -> dict[Path, list[str]]:
     """Return {md_path: [referencing lines]} for links whose target is in stems."""
     refs: dict[Path, list[str]] = {}
@@ -125,7 +139,7 @@ def find_wikilink_refs(vault_root: Path, stems: set[str]) -> dict[Path, list[str
             continue
         hits: list[str] = []
         for m in _WIKILINK_RE.finditer(text):
-            if m.group(1).strip() in stems:
+            if _wikilink_stem(m.group(2)) in stems:
                 hits.append(m.group(0))
         if hits:
             refs[md] = hits
@@ -135,21 +149,24 @@ def find_wikilink_refs(vault_root: Path, stems: set[str]) -> dict[Path, list[str
 def rewrite_wikilink_targets(text: str, renamed: dict[str, str]) -> str:
     """Rewrite ``[[old]]`` / ``![[old]]`` link targets to their renamed stems.
 
-    Replaces only the target *component* of each link — never the ``[[`` / ``![[``
+    Replaces only the stem *component* of each link — never the ``[[`` / ``![[``
     prefix — so a target string that also occurs in the prefix (e.g. a note named
-    ``!``) cannot corrupt the link syntax. ``|alias`` and ``#anchor`` suffixes lie
-    outside the captured group and are left untouched. Unrenamed targets pass
-    through unchanged.
+    ``!``) cannot corrupt the link syntax. ``|alias`` and ``#anchor`` suffixes are
+    preserved. Targets may contain a single ``]`` (bracketed YouTube titles).
+    Unrenamed targets pass through unchanged.
     """
 
     def _sub(m: re.Match[str]) -> str:
-        target = m.group(1).strip()
-        new = renamed.get(target)
+        prefix, inner, closer = m.group(1), m.group(2), m.group(3)
+        target_part, pipe, alias = inner.partition("|")
+        stem, hash_sep, fragment = target_part.partition("#")
+        stem_key = stem.strip()
+        new = renamed.get(stem_key)
         if not new:
             return m.group(0)
-        # group(0) == prefix ("[[" / "![[") + group(1); rewrite only group(1).
-        prefix = m.group(0)[: -len(m.group(1))]
-        return prefix + m.group(1).replace(target, new)
+        # Preserve any surrounding whitespace in the stem slot.
+        new_stem = stem.replace(stem_key, new, 1) if stem_key in stem else new
+        return f"{prefix}{new_stem}{hash_sep}{fragment}{pipe}{alias}{closer}"
 
     return _WIKILINK_RE.sub(_sub, text)
 

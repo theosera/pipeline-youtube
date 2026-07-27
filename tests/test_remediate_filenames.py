@@ -70,6 +70,21 @@ class TestWikilinkRefs:
         assert moc in refs
         assert len(refs[moc]) == 2
 
+    def test_finds_targets_containing_a_single_closing_bracket(self, tmp_path: Path):
+        # YouTube titles often keep `[tag]` after sanitize_title_for_filename.
+        # The old capture stopped at the first `]`, so these refs were invisible
+        # to dry-run reporting and --apply rewrites.
+        stem = f"2026-01-01-1200 [LLM] Agent{ZW}Teams"
+        moc = tmp_path / "Permanent Note" / "MOC.md"
+        moc.parent.mkdir(parents=True, exist_ok=True)
+        moc.write_text(
+            f"[[{stem}|alias]] and ![[{stem}#^00-30]]\n",
+            encoding="utf-8",
+        )
+        refs = find_wikilink_refs(tmp_path, {stem})
+        assert moc in refs
+        assert refs[moc] == [f"[[{stem}|alias]]", f"![[{stem}#^00-30]]"]
+
     def test_no_refs_when_stem_absent(self, tmp_path: Path):
         (tmp_path / "note.md").write_text("[[unrelated]]\n", encoding="utf-8")
         assert find_wikilink_refs(tmp_path, {"missing stem"}) == {}
@@ -81,6 +96,14 @@ class TestRewriteWikilinkTargets:
         text = "[[old stem|alias]] and ![[old stem#^12-30]]"
         out = rewrite_wikilink_targets(text, renamed)
         assert out == "[[new stem|alias]] and ![[new stem#^12-30]]"
+
+    def test_rewrites_targets_containing_a_single_closing_bracket(self):
+        old = "2026-01-01-1200 [LLM] Agent\u200bTeams"
+        new = "2026-01-01-1200 [LLM] AgentTeams"
+        text = f"[[{old}|alias]] and ![[{old}#^00-30]]"
+        assert rewrite_wikilink_targets(text, {old: new}) == (
+            f"[[{new}|alias]] and ![[{new}#^00-30]]"
+        )
 
     def test_target_equal_to_prefix_char_does_not_corrupt(self):
         # regression: a target that also occurs in the "![[" prefix must rewrite
@@ -107,3 +130,21 @@ class TestApply:
         assert not old_b.exists()
         assert new_a.read_text(encoding="utf-8") == "[[B]]\n"
         assert new_b.read_text(encoding="utf-8") == "[[A]]\n"
+
+    def test_rewrites_bracketed_title_refs_on_apply(self, tmp_path: Path):
+        old_stem = f"2026-01-01-1200 [LLM] Agent{ZW}Teams"
+        new_stem = "2026-01-01-1200 [LLM] AgentTeams"
+        target = _note(tmp_path, old_stem, old_stem)
+        ref = _note(tmp_path, "index", "index")
+        ref.write_text(
+            f"see [[{old_stem}|alias]] and ![[{old_stem}#^00-30]]\n",
+            encoding="utf-8",
+        )
+
+        assert main(["--vault", str(tmp_path), "--apply"]) == 0
+
+        assert not target.exists()
+        assert (target.parent / f"{new_stem}.md").exists()
+        assert ref.read_text(encoding="utf-8") == (
+            f"see [[{new_stem}|alias]] and ![[{new_stem}#^00-30]]\n"
+        )
