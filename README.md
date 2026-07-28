@@ -155,6 +155,13 @@ uv run python -m pipeline_youtube.main "https://www.youtube.com/playlist?list=PL
 # 単一動画のみ (05 Synthesis は自動スキップ)
 uv run python -m pipeline_youtube.main "https://www.youtube.com/watch?v=VIDEO_ID"
 
+# ハンズオンモード: 単一長編動画 (スライド講演) → ステップ分割ハンズオン教材。
+# 転写を LECTURE / Q&A / Tips に区間分類し、Q&A/Tips の知見をステップへ織り込み +
+# 巻末まとめへ集約して Permanent Note/09_YouTube学習_Session_only 配下に出力。
+# 専用 config (品質重視) を既定で読む: cp config.handson.example.json config.handson.json
+# 詳細: docs/handson-mode.md
+uv run python -m pipeline_youtube.main "https://www.youtube.com/watch?v=VIDEO_ID" --handson
+
 # macOS で長時間実行する場合は caffeinate で sleep 防止
 caffeinate -i uv run python -m pipeline_youtube.main "https://www.youtube.com/playlist?list=PLxxx"
 ```

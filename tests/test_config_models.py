@@ -18,7 +18,9 @@ def _write_config(path: Path, payload: dict) -> Path:
 
 class TestLoadConfig:
     def test_missing_file(self, tmp_path: Path):
-        with pytest.raises(click.UsageError, match="config.json not found"):
+        # The hint derives the example name from the actual filename so the
+        # same loader serves config.json and config.handson.json.
+        with pytest.raises(click.UsageError, match="does-not-exist.json not found"):
             _load_config(tmp_path / "does-not-exist.json", fallback_model="sonnet")
 
     def test_placeholder_vault_rejected(self, tmp_path: Path):
@@ -44,6 +46,10 @@ class TestLoadConfig:
             "beta": "sonnet",
             "leader": "sonnet",
             "reviewer": "sonnet",
+            "handson_segment": "sonnet",
+            "handson_plan": "sonnet",
+            "handson_step": "sonnet",
+            "handson_moc": "sonnet",
         }
 
     def test_transcript_correction_defaults_false(self, tmp_path: Path):
