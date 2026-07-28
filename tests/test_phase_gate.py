@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import click
 import pytest
 
 from pipeline_youtube import config
+from pipeline_youtube import pipeline_runner as pr_mod
 from pipeline_youtube import video_processing as vp_mod
 from pipeline_youtube.pipeline import LEARNING_BASE, UNIT_DIRS
 from pipeline_youtube.playlist import VideoMeta
@@ -22,6 +24,7 @@ from pipeline_youtube.resume import (
     _find_unit_md,
     _unit_folder_candidates,
 )
+from pipeline_youtube.run_result import VideoRunResult
 
 
 def _vid(video_id: str) -> VideoMeta:
@@ -524,3 +527,99 @@ class TestResumeReviewedProcessing:
             _VID_A, "testlist", resume_time, vault_root=config.get_vault_root()
         )
         assert found == yesterday / "a.md"
+
+
+class TestMixedPhase1FolderWarning:
+    """Phase 3 can approve videos across separate Phase 1 runs.
+
+    `_select_synthesis_inputs` takes `folder_override` from the first result, so
+    Stage 05 writes into that one folder while combining every body. The run must
+    say so rather than let the choice pass unnoticed.
+    """
+
+    @staticmethod
+    def _result(video_id: str, folder: str | None) -> VideoRunResult:
+        return VideoRunResult(
+            video=_vid(video_id),
+            learning_md_path=(Path(folder) / f"{video_id}.md") if folder else None,
+            learning_md_body="body",
+        )
+
+    def test_single_folder_is_silent(self, capsys):
+        pr_mod._warn_on_mixed_phase1_folders(
+            [
+                self._result(_VID_A, "2026-04-18-0800 testlist"),
+                self._result(_VID_B, "2026-04-18-0800 testlist"),
+            ],
+            "2026-04-18-0800 testlist",
+        )
+        assert capsys.readouterr().out == ""
+
+    def test_mixed_folders_name_every_run_and_the_target(self, capsys):
+        pr_mod._warn_on_mixed_phase1_folders(
+            [
+                self._result(_VID_A, "2026-04-18-0800 testlist"),
+                self._result(_VID_B, "2026-04-17-2100 testlist"),
+            ],
+            "2026-04-18-0800 testlist",
+        )
+        out = capsys.readouterr().out
+        assert "span 2 Phase 1 folders" in out
+        # Both folders must appear: the operator needs to know what got mixed in,
+        # not only where the output lands.
+        assert "2026-04-18-0800 testlist" in out
+        assert "2026-04-17-2100 testlist" in out
+        # No remediation is claimed: --run-timestamp does not confine the
+        # lookup to one folder, so promising it would mislead.
+        assert "--run-timestamp" not in out
+        assert "only the synthesis is consolidated" in out
+
+    def test_results_without_a_learning_path_are_ignored(self, capsys):
+        # Checkpoint-skipped / failed videos carry no path and must not look
+        # like a second folder.
+        pr_mod._warn_on_mixed_phase1_folders(
+            [
+                self._result(_VID_A, "2026-04-18-0800 testlist"),
+                self._result(_VID_B, None),
+            ],
+            "2026-04-18-0800 testlist",
+        )
+        assert capsys.readouterr().out == ""
+
+    def test_select_synthesis_inputs_actually_calls_the_warning(self, monkeypatch):
+        # The checks above exercise the helper directly, so they would still pass
+        # if the call site were dropped. Pin the wiring: a resume-reviewed run
+        # whose results span two folders must reach the warning.
+        succeeded = [
+            self._result(_VID_A, "2026-04-18-0800 testlist"),
+            self._result(_VID_B, "2026-04-17-2100 testlist"),
+        ]
+        monkeypatch.setattr(pr_mod, "_process_all_videos", lambda *a, **k: succeeded)
+
+        seen: list[tuple[list[VideoRunResult], str | None]] = []
+        monkeypatch.setattr(
+            pr_mod,
+            "_warn_on_mixed_phase1_folders",
+            lambda results, override: seen.append((results, override)),
+        )
+
+        plan = SimpleNamespace(run_video_stages=True, filter_reviewed_only=True)
+        out = pr_mod._select_synthesis_inputs(
+            None, None, None, [], datetime(2026, 4, 18, 12, 0), None, None, [], plan
+        )
+
+        assert out is not None
+        assert len(seen) == 1
+        assert seen[0][1] == "2026-04-18-0800 testlist"
+
+    def test_warning_is_skipped_when_not_resuming_reviewed(self, monkeypatch):
+        monkeypatch.setattr(pr_mod, "_process_all_videos", lambda *a, **k: [])
+        seen: list[object] = []
+        monkeypatch.setattr(pr_mod, "_warn_on_mixed_phase1_folders", lambda *a: seen.append(a))
+
+        plan = SimpleNamespace(run_video_stages=True, filter_reviewed_only=False)
+        pr_mod._select_synthesis_inputs(
+            None, None, None, [], datetime(2026, 4, 18, 12, 0), None, None, [], plan
+        )
+
+        assert seen == []
