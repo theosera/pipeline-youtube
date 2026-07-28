@@ -31,6 +31,20 @@ def _parse_run_timestamp(run_timestamp: str | None) -> datetime:
         raise click.UsageError(f"invalid --run-timestamp: {run_timestamp!r}") from exc
 
 
+def _unit_base_dir(unit_key: str, *, vault_root: Path) -> Path | None:
+    """Resolve the vault dir holding a unit's playlist folders, or None if absent.
+
+    ``vault_root`` is injected by the caller (``runtime.vault_root``); the
+    relative path still goes through ``ensure_safe_path`` so a malformed
+    ``UNIT_DIRS`` entry can never escape the vault.
+    """
+    if unit_key not in UNIT_DIRS:
+        raise ValueError(f"unknown unit key: {unit_key!r}")
+    rel = f"{LEARNING_BASE}/{UNIT_DIRS[unit_key]}"
+    base = vault_root / ensure_safe_path(rel, vault_root=vault_root)
+    return base if base.exists() else None
+
+
 def _find_unit_md(
     video_id: str,
     playlist_title: str,
@@ -51,13 +65,8 @@ def _find_unit_md(
     Stage 03), so 02/03/04 stay aligned even when several same-day folders exist.
     A pinned lookup that misses returns None rather than falling back — see below.
     """
-    if unit_key not in UNIT_DIRS:
-        raise ValueError(f"unknown unit key: {unit_key!r}")
-
-    rel = f"{LEARNING_BASE}/{UNIT_DIRS[unit_key]}"
-    safe_rel = ensure_safe_path(rel, vault_root=vault_root)
-    base = vault_root / safe_rel
-    if not base.exists():
+    base = _unit_base_dir(unit_key, vault_root=vault_root)
+    if base is None:
         return None
 
     if preferred_folder_name:
@@ -109,10 +118,8 @@ def _find_reviewed_summary_md(
     """
     from .obsidian import read_frontmatter_field
 
-    rel = f"{LEARNING_BASE}/{UNIT_DIRS['summary']}"
-    safe_rel = ensure_safe_path(rel, vault_root=vault_root)
-    base = vault_root / safe_rel
-    if not base.exists():
+    base = _unit_base_dir("summary", vault_root=vault_root)
+    if base is None:
         return None
 
     for candidate_folder in _unit_folder_candidates(base, playlist_title, run_date):
@@ -197,26 +204,27 @@ def _filter_to_reviewed(
 
     ``vault_root`` is injected by the caller (``runtime.vault_root``).
     """
+    from .obsidian import read_frontmatter_field
+
     kept: list[tuple[int, VideoMeta]] = []
     for i, video in to_process:
         summary_md = _find_reviewed_summary_md(
             video.video_id, playlist_title, run_time, vault_root=vault_root
         )
-        if summary_md is None:
-            # Distinguish "no summary at all" from "summary exists but not reviewed"
-            # so the skip line stays actionable during Phase 3.
-            any_summary = _find_summary_md(
-                video.video_id, playlist_title, run_time, vault_root=vault_root
-            )
-            if any_summary is None:
-                click.echo(f"  [skip] {video.video_id}: no 02_Summary.md found")
-            else:
-                from .obsidian import read_frontmatter_field
-
-                value = read_frontmatter_field(any_summary, "reviewed")
-                click.echo(f"  [skip] {video.video_id}: reviewed={value!r}")
+        if summary_md is not None:
+            kept.append((i, video))
             continue
-        kept.append((i, video))
+        # Nothing reviewed matched. Re-scan without the reviewed filter so the
+        # skip line names the real cause: "no summary written at all" and
+        # "summary written but never approved" need different operator action.
+        any_summary = _find_summary_md(
+            video.video_id, playlist_title, run_time, vault_root=vault_root
+        )
+        if any_summary is None:
+            click.echo(f"  [skip] {video.video_id}: no 02_Summary.md found")
+        else:
+            value = read_frontmatter_field(any_summary, "reviewed")
+            click.echo(f"  [skip] {video.video_id}: reviewed={value!r}")
     return kept
 
 
