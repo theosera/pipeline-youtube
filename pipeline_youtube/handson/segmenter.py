@@ -237,20 +237,23 @@ def normalize_segments(
                 prev.end = cur.start  # close the gap
             monotonic.append(cur)
             continue
-        # cur.start < prev.end. After the sort, cur.start >= prev.start.
-        if cur.end <= prev.end:
-            # Fully nested inside prev.
+        # cur.start < prev.end. The sort ordered the *input*, not the rebuilt
+        # tail: an earlier split can leave `prev` starting at or after
+        # cur.start, so `strictly nested` has to be tested against prev.start
+        # rather than assumed. Splitting on a span that opens at or before
+        # prev.start would append cur *behind* prev and break the sorted,
+        # non-overlapping postcondition this loop exists to restore.
+        if prev.start < cur.start and cur.end <= prev.end:
+            # Strictly nested: split the container (same rule as the first pass).
             if cur.label is SegmentLabel.LECTURE:
                 continue
             tail_end, tail_label, tail_summary = prev.end, prev.label, prev.summary
-            prev.end = cur.start
-            if prev.end <= prev.start:
-                monotonic.pop()
+            prev.end = cur.start  # > prev.start, so the head always survives
             monotonic.append(cur)
             if tail_end > cur.end:
                 monotonic.append(_MutSeg(cur.end, tail_end, tail_label, tail_summary))
             continue
-        # Partial overlap: earlier claim wins; trim the later span.
+        # Any other overlap: the earlier claim wins; trim the later span.
         cur.start = prev.end
         if cur.end <= cur.start:
             continue

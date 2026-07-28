@@ -185,6 +185,29 @@ class TestNormalizeSegments:
         assert bounds[0][0] == 0
         assert bounds[-1][1] == 1000
 
+    def test_overlapping_insights_after_a_trim_stay_ordered(self):
+        # Regression: the split branch assumed the sorted input guaranteed
+        # cur.start >= prev.start, but `prev` can be the tail of an earlier
+        # trim. Two insight spans sharing a start, behind an already-trimmed
+        # container, made the rebuild append a span *before* the current tail —
+        # producing [(0,200,lecture), (100,300,tips), ...], which overlaps.
+        out = normalize_segments(
+            [
+                _seg(0, 600),
+                _seg(0, 200),
+                _seg(100, 300, SegmentLabel.QA, "質疑"),
+                _seg(100, 300, SegmentLabel.TIPS, "同じ範囲の小ネタ"),
+            ],
+            duration=600,
+            chunk_starts=[],
+        )
+        bounds = [(s.start_sec, s.end_sec) for s in out]
+        assert bounds == sorted(bounds)
+        assert all(a < b for a, b in bounds)
+        assert all(a[1] == b[0] for a, b in zip(bounds, bounds[1:], strict=False))
+        assert bounds[0][0] == 0
+        assert bounds[-1][1] == 600
+
     def test_long_video_boundaries_past_9959_survive(self):
         # 2h30m video with a QA session starting at 2h — beyond the legacy
         # 99:59 MM:SS regex ceiling. Integer seconds must pass unharmed.
