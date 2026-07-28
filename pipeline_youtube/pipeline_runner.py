@@ -168,6 +168,10 @@ def _select_synthesis_inputs(
     checkpoint/resume-filtered set. ``results`` is populated in place for the
     cost breakdown. Returns None to signal an early stop (nothing to synthesize).
     """
+    # Declared up front because both branches below bind it: --synthesis-only
+    # unpacks the `str` third element of _collect_existing_learning_bodies,
+    # while the resume-reviewed path leaves it None when no 04 md is known.
+    folder_override: str | None = None
     if not plan.run_video_stages:
         click.echo("\n=== --synthesis-only: loading existing 04 md files ===")
         matched_videos, matched_bodies, folder_override = _collect_existing_learning_bodies(
@@ -195,7 +199,6 @@ def _select_synthesis_inputs(
     )
     if succeeded is None:
         return None
-    folder_override = None
     if plan.filter_reviewed_only:
         # Keep Stage 05 in the Phase 1 playlist folder even when Phase 3's
         # wall-clock run_time would format a different HHmm suffix.

@@ -242,3 +242,22 @@ class TestResumeReviewedProcessing:
         assert not (
             tmp_path / LEARNING_BASE / UNIT_DIRS["summary"] / "2026-04-18-1200 testlist"
         ).exists()
+
+    def test_missing_playlist_title_reports_the_real_cause(self, tmp_path: Path):
+        # Falling back to "" would search a folder name that cannot exist, so
+        # every video would fail with the generic "summary not found".
+        config.set_vault_root(tmp_path)
+
+        result = _process_video(
+            _vid(_VID_A),
+            datetime(2026, 4, 18, 12, 0),
+            dry_run=False,
+            capture_format="auto",
+            models={"stage_02": "sonnet", "stage_04": "sonnet"},
+            resume_reviewed=True,
+            playlist_title=None,
+            vault_root=config.get_vault_root(),
+        )
+
+        assert not result.ok
+        assert result.error == "resume_reviewed_missing_playlist_title"

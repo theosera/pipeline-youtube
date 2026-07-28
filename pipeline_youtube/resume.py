@@ -206,11 +206,6 @@ def _unit_folder_candidates(base: Path, playlist_title: str, run_date: datetime)
         return
 
 
-def _summary_folder_candidates(base: Path, playlist_title: str, run_date: datetime):
-    """Backward-compatible wrapper for tests and older callers."""
-    yield from _unit_folder_candidates(base, playlist_title, run_date)
-
-
 def _collect_existing_learning_bodies(
     videos: list[VideoMeta],
     playlist_title: str,

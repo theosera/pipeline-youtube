@@ -120,10 +120,15 @@ def _process_video(
 ) -> VideoRunResult:
     try:
         if resume_reviewed:
+            if not playlist_title:
+                # Falling back to "" would search under a folder name that can
+                # never exist, so every video would fail with the generic
+                # "summary not found". Name the real cause instead.
+                return VideoRunResult(video=video, error="resume_reviewed_missing_playlist_title")
             return _process_reviewed_video(
                 video,
                 run_time,
-                playlist_title=playlist_title or video.playlist_title or video.title or "",
+                playlist_title=playlist_title,
                 dry_run=dry_run,
                 models=models,
                 code_bearing=code_bearing,
