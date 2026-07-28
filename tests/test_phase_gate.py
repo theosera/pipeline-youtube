@@ -16,6 +16,7 @@ from pipeline_youtube.resume import (
     _collect_existing_learning_bodies,
     _filter_to_reviewed,
     _find_existing_04_md,
+    _find_reviewed_summary_md,
     _find_summary_md,
     _find_unit_md,
     _unit_folder_candidates,
@@ -142,6 +143,32 @@ class TestFilterToReviewed:
         )
         assert len(kept) == 1
 
+    def test_older_reviewed_summary_wins_over_newer_unreviewed(self, tmp_path: Path):
+        # Same-day Phase 1 rerun leaves a newer folder with reviewed=false.
+        # Phase 3 must still find the older summary the operator marked true.
+        config.set_vault_root(tmp_path)
+        older = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"] / "2026-04-18-0800 testlist"
+        newer = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"] / "2026-04-18-1000 testlist"
+        _write_summary(older / "a.md", _VID_A, "true")
+        _write_summary(newer / "a.md", _VID_A, "false")
+        resume_time = datetime(2026, 4, 18, 12, 0)
+
+        found = _find_reviewed_summary_md(
+            _VID_A, "testlist", resume_time, vault_root=config.get_vault_root()
+        )
+        kept = _filter_to_reviewed(
+            [(1, _vid(_VID_A))], "testlist", resume_time, vault_root=config.get_vault_root()
+        )
+
+        assert found == older / "a.md"
+        assert [v.video_id for _, v in kept] == [_VID_A]
+        # Newest-any lookup still sees the unreviewed rerun first — that is why
+        # Phase 3 must not use it as the reviewed gate.
+        assert (
+            _find_summary_md(_VID_A, "testlist", resume_time, vault_root=config.get_vault_root())
+            == newer / "a.md"
+        )
+
 
 class TestCollectExistingLearningBodies:
     def test_pre_concealment_folder_with_invisible_title(self, tmp_path: Path):
@@ -242,6 +269,54 @@ class TestResumeReviewedProcessing:
         assert not (
             tmp_path / LEARNING_BASE / UNIT_DIRS["summary"] / "2026-04-18-1200 testlist"
         ).exists()
+
+    def test_uses_older_reviewed_summary_when_newer_unreviewed_exists(
+        self, tmp_path: Path, monkeypatch
+    ):
+        config.set_vault_root(tmp_path)
+        resume_time = datetime(2026, 4, 18, 12, 0)
+        older_folder = "2026-04-18-0800 testlist"
+        newer_folder = "2026-04-18-1000 testlist"
+        summary_base = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"]
+        capture_base = tmp_path / LEARNING_BASE / UNIT_DIRS["capture"]
+        _write_summary(summary_base / older_folder / "a.md", _VID_A, "true")
+        _write_summary(summary_base / newer_folder / "a.md", _VID_A, "false")
+        _write_capture(capture_base / older_folder / "a.md", _VID_A)
+        _write_capture(capture_base / newer_folder / "a.md", _VID_A)
+
+        def fake_learning(video, summary_md_path, capture_md_path, learning_md_path, **kwargs):
+            assert summary_md_path == summary_base / older_folder / "a.md"
+            assert capture_md_path == capture_base / older_folder / "a.md"
+            learning_md_path.parent.mkdir(parents=True, exist_ok=True)
+            learning_md_path.write_text(
+                f'---\nvideo_id: "{video.video_id}"\n---\n\nlearning body\n',
+                encoding="utf-8",
+            )
+            return ClaudeResponse(
+                text="learning body",
+                model="sonnet",
+                input_tokens=1,
+                output_tokens=2,
+                total_cost_usd=0.01,
+            )
+
+        monkeypatch.setattr(vp_mod, "run_stage_learning", fake_learning)
+
+        result = vp_mod._process_video(
+            _vid(_VID_A),
+            resume_time,
+            dry_run=False,
+            capture_format="auto",
+            models={"stage_02": "sonnet", "stage_04": "sonnet"},
+            resume_reviewed=True,
+            playlist_title="testlist",
+            vault_root=config.get_vault_root(),
+        )
+
+        assert result.ok
+        assert result.learning_md_path == (
+            tmp_path / LEARNING_BASE / UNIT_DIRS["learning"] / older_folder / "a.md"
+        )
 
     def test_missing_playlist_title_reports_the_real_cause(self, tmp_path: Path):
         # Falling back to "" would search a folder name that cannot exist, so
