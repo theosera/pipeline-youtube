@@ -15,8 +15,9 @@ Options:
                                   [1<=x<=5]
   --skip-synthesis                Skip stage 05 after 01-04 finish.
   --synthesis-only                Skip stages 01-04 and re-run only stage 05
-                                  against existing 04 md files for today's
-                                  date.
+                                  against existing 04 md files. Prefers this
+                                  run's date, then falls back to earlier days
+                                  (newest first).
   --force-video TEXT              Force reprocess specific video IDs even if
                                   checkpoint shows complete. Repeatable.
   --capture-format [auto|webp|gif]
@@ -44,7 +45,7 @@ Options:
 
 - **`--dry-run`**: Vault への書き込みを一切行わず、stdout に生成内容を出力。`config.json` の `vault_root` 存在チェックは依然必要 (実際の書き込みはしない)。
 - **`--skip-synthesis`**: 動画単位の 01〜04 のみ実行。プレイリスト単位の Stage 05 はバイパス。
-- **`--synthesis-only`**: 今日の日付のプレイリストフォルダ配下にある既存 `04_Learning_Material/*.md` を読み込み、Stage 05 のみ再実行。α/β/leader の章立てを作り直したいときに使う。当日の 04 フォルダが無いと `click.UsageError` で exit。
+- **`--synthesis-only`**: 既存の `04_Learning_Material/*.md` を読み込み、Stage 05 のみ再実行。α/β/leader の章立てを作り直したいときに使う。フォルダ探索は `--resume-reviewed` と同じ順序 (**当日 (新しい順) → それ以前の日 (新しい順)**) なので、**前日以前に作った素材でも `--run-timestamp` を渡し直す必要はない**。当日のフォルダがあれば常にそちらが優先される (制作時の日付が最優先)。当日以外を採用したときは `(resuming from '<folder>', a run on YYYY-MM-DD)` を表示する。該当するフォルダが 1 つも無ければ `click.UsageError` で exit。
 - **`--stop-after-capture`**: Phase 1 実行。Stage 01〜03 を動画単位で完了させて停止する。続けてユーザーが Obsidian 上で 02_Summary.md を校閲し `reviewed: true` に書き換える運用向け。
 - **`--resume-reviewed`**: Phase 3 実行。Stage 01〜03 をスキップし、02_Summary.md の frontmatter `reviewed: true` が付いた動画だけを対象に Stage 04〜05 を走らせる。`--synthesis-only` とは異なり Stage 04 を含めて再実行する。探索は Phase 1 のプレイリストフォルダを「当日 (新しい順) → それ以前の日 (新しい順)」でたどるため、**校閲が翌日になっても `--run-timestamp` を渡し直す必要はない**。別日のフォルダを採用したときは `[resume] <video_id>: reviewed on YYYY-MM-DD` を表示する。判定はあくまで `reviewed: true` が先で、日付は同順位のときの並び順である — つまり**当日のフォルダがあっても、そこが未承認なら前日の承認済みが選ばれる** (同日に Phase 1 を流し直した直後がこれに当たる)。未来日付のフォルダは対象外。当日より前のフォルダは、日付を除いたタイトルが完全一致するものだけを見る (当日は従来どおり部分一致)。
 - **`--handson`**: 単一長編動画 (スライド提示の講演) からハンズオン教材を生成する専用モード。通常の 01〜05 を置き換え、転写 → LECTURE/QA/TIPS 区間分類 → ステップ計画 (Q&A/Tips 知見の無損失割当) → ステップ毎の窓クリップ → ステップノート + MOC + 巻末 Q&A/Tips まとめを `Permanent Note/09_YouTube学習_Session_only` 配下 (08 と同一ユニット構造) へ書く。既定 config は `config.handson.json` (`--config` で上書き可)。単一動画 URL 必須 (playlist は UsageError)。`--sub-agents`/`--video-range`/`--synthesis-only`/`--resume-reviewed`/`--stop-after-capture`/`--skip-synthesis`/`--local-media` とは排他。詳細は `docs/handson-mode.md`。

@@ -172,7 +172,7 @@ caffeinate -i uv run python -m pipeline_youtube.main "https://www.youtube.com/pl
 |---|---|
 | `--dry-run` | Vault 書き込み無しで stdout に md を出力 |
 | `--skip-synthesis` | 01〜04 の後、Stage 05 (Agent Teams) をスキップ |
-| `--synthesis-only` | 01〜04 をスキップし、今日の日付のプレイリストフォルダ内にある既存 04 md から Stage 05 のみ再実行 |
+| `--synthesis-only` | 01〜04 をスキップし、既存 04 md から Stage 05 のみ再実行。実行日のフォルダを優先し、無ければ過去日を新しい順にたどる |
 | `--capture-format {auto,webp,gif}` | キャプチャ出力形式。`auto` は ffmpeg の libwebp / gif2webp 検出結果に応じて WebP を優先、なければ GIF |
 | `--model` | stage 02/04/05 の Claude モデル (sonnet / haiku / opus / フル ID) |
 | `--min-playlist-size N` | Stage 05 を起動する最低動画数 (デフォルト 3)。N 未満なら 05 は `[skip]` |
@@ -341,7 +341,7 @@ uv run pytest tests/ -q
 | stage 01 が `auto:ip_blocked` で多発 (字幕が大量に落ちる) | **YouTube 側の IP スロットリング (外部要因)**。`--sub-agents` を下げる (1〜2) / 並列を抑える / 実行間隔を空ける。`uv run --extra whisper` を有効にしておけば、字幕がブロックされても音声から Whisper で文字起こしして回避できる |
 | stage 05 が `[skip] only N videos succeeded` | プレイリストの stage 04 成功数が `--min-playlist-size` (デフォルト 3) 未満。成功数を増やすか `--min-playlist-size 2` で緩和 |
 | Templater が 04 の md を空ファイルと誤認してリネーム | stage 04 は placeholder を作らず直接書き込むよう設計済み。該当フォルダの Templater テンプレート指定を解除するのが確実 |
-| `--synthesis-only` で `04 folder not found` | 指定日付のフォルダに該当プレイリストの 04 md が存在しないときに出る。まず 01〜04 を通す |
+| `--synthesis-only` で `04 folder not found` | 実行日にも過去日にも該当プレイリストの 04 フォルダが無いときに出る。まず 01〜04 を通す |
 | `Stream idle timeout` / `ConnectionRefused` で動画が FAIL | ネットワーク一時障害。リトライ機構 (3 回、計 210s) で吸収するが、laptop sleep 中の長時間断はリトライでもカバーできない。`caffeinate -i` で sleep 防止して再実行 |
 | Stage 05 が timeout | `--synthesis-timeout 3600` で延長するか、auto (300+60×動画数) が適切か確認。50 本超は auto で 3300s |
 | iCloud `Operation not permitted` | macOS のプライバシー設定 → フルディスクアクセスにターミナルアプリを追加 → ターミナル再起動 |

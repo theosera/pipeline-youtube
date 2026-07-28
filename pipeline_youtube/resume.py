@@ -336,8 +336,14 @@ def _collect_existing_learning_bodies(
     *,
     vault_root: Path,
 ) -> tuple[list[VideoMeta], list[str], str]:
-    """Scan the existing 04_Learning_Material folder for the given playlist date
-    and return `(videos, bodies, folder_name)` aligned by input video_id order.
+    """Scan the existing 04_Learning_Material folder for this playlist and
+    return `(videos, bodies, folder_name)` aligned by input video_id order.
+
+    Folder resolution goes through the shared ``_unit_folder_candidates``, so
+    ``--synthesis-only`` follows the same order Phase 3 uses: the canonical
+    folder for ``run_time``, then same-day runs (newest first), then earlier
+    days (newest first). Re-synthesizing material produced yesterday no longer
+    needs ``--run-timestamp``; the run date still wins whenever it has a folder.
 
     Also returns the resolved folder name so stage 05 can reuse the exact
     legacy name instead of creating a new one next to it.
@@ -349,43 +355,24 @@ def _collect_existing_learning_bodies(
     base_dir = vault_root / safe_rel_base
 
     preferred = format_playlist_folder_name(run_time, playlist_title)
-    learning_dir = base_dir / preferred
-    folder_name = preferred
-
-    if not learning_dir.exists() and base_dir.exists():
-        # Fallback: match any sibling folder that begins with today's YYYY-MM-DD
-        # and contains the sanitized playlist title as a substring. Handles
-        # both the new YYYY-MM-DD HHmm <title> format and the legacy
-        # YYYY-MM-DD <title> format from runs before the HHmm fix.
-        from .obsidian import _strip_playlist_category_prefix, sanitize_title_for_filename
-
-        date_prefix = run_time.strftime("%Y-%m-%d")
-        display_title = _strip_playlist_category_prefix(playlist_title)
-        title_needle = sanitize_title_for_filename(display_title)
-        candidates = []
-        if title_needle:
-            candidates = [
-                p
-                for p in base_dir.iterdir()
-                if (
-                    p.is_dir()
-                    and p.name.startswith(date_prefix)
-                    # Keep synthesis-only compatible with folders written
-                    # before invisible characters were stripped from names.
-                    and title_needle in sanitize_title_for_filename(p.name)
-                )
-            ]
-        if candidates:
-            candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-            learning_dir = candidates[0]
-            folder_name = learning_dir.name
-            click.echo(f"(fallback: using legacy folder {folder_name!r})")
-
-    if not learning_dir.exists():
+    learning_dir = next(
+        (c for c in _unit_folder_candidates(base_dir, playlist_title, run_time) if c.exists()),
+        None,
+    )
+    if learning_dir is None:
         raise click.UsageError(
-            f"04 folder not found: {learning_dir}. "
-            "--synthesis-only requires stage 04 files from a prior run on the same date."
+            f"04 folder not found under {base_dir}. "
+            "--synthesis-only requires stage 04 files from a prior run of this playlist."
         )
+
+    folder_name = learning_dir.name
+    if folder_name != preferred:
+        # Which prior run is being re-synthesized is the one thing an operator
+        # cannot infer from the command line, so name it either way.
+        if folder_name[:10] != run_time.strftime("%Y-%m-%d"):
+            click.echo(f"(resuming from {folder_name!r}, a run on {folder_name[:10]})")
+        else:
+            click.echo(f"(fallback: using folder {folder_name!r})")
 
     by_video_id: dict[str, str] = {}
     for md in sorted(learning_dir.glob("*.md")):
