@@ -414,6 +414,40 @@ class TestResumeReviewedProcessing:
             "2026-04-17-2100 testlist",
         ]
 
+    def test_historical_folders_need_an_exact_title(self, tmp_path: Path):
+        # Substring matching is safe within one day (the run just made those
+        # folders) but across all history it would admit a *different* playlist
+        # whose title merely contains this one — and if that run covered the
+        # same video, Phase 3 would consume its artifacts.
+        base = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"]
+        for name in (
+            "2026-04-17-0900 testlist Advanced",
+            "2026-04-17-2100 testlist",
+            "2026-04-18-0800 testlist Advanced",
+        ):
+            (base / name).mkdir(parents=True, exist_ok=True)
+
+        candidates = list(_unit_folder_candidates(base, "testlist", datetime(2026, 4, 18, 12, 0)))
+
+        assert [c.name for c in candidates] == [
+            "2026-04-18-1200 testlist",
+            # Same day keeps the substring rule, so the Advanced folder stays.
+            "2026-04-18-0800 testlist Advanced",
+            # Earlier days require an exact title, so only the plain one is kept.
+            "2026-04-17-2100 testlist",
+        ]
+
+    def test_legacy_folder_without_hhmm_still_matches_exactly(self, tmp_path: Path):
+        base = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"]
+        (base / "2026-04-17 testlist").mkdir(parents=True, exist_ok=True)
+
+        candidates = list(_unit_folder_candidates(base, "testlist", datetime(2026, 4, 18, 12, 0)))
+
+        assert [c.name for c in candidates] == [
+            "2026-04-18-1200 testlist",
+            "2026-04-17 testlist",
+        ]
+
     def test_reviewed_summary_from_a_previous_day_is_found(self, tmp_path: Path):
         config.set_vault_root(tmp_path)
         base = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"]

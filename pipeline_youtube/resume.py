@@ -22,8 +22,8 @@ from .playlist import VideoMeta
 from .run_result import _strip_frontmatter
 
 # Playlist folders are named "YYYY-MM-DD-HHmm <title>" (legacy runs omit HHmm).
-# Only the date part is matched; the rest is checked by the title needle.
-_DATED_FOLDER_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# The match covers the date (and time when present); the rest is the title.
+_DATED_FOLDER_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:-\d{4})?")
 
 
 def _parse_run_timestamp(run_timestamp: str | None) -> datetime:
@@ -257,9 +257,10 @@ def _unit_folder_candidates(base: Path, playlist_title: str, run_date: datetime)
     workflow is "Phase 1 → a human reads 02_Summary.md → Phase 3", and that
     review routinely happens the next morning; a same-day-only search then
     reports "no 02_Summary.md found" for work that is sitting right there.
-    Same-day still wins when both exist, and only folders *older* than
-    ``run_date`` are considered, so a stray future-dated folder (clock skew,
-    a hand-typed ``--run-timestamp``) can never outrank today's run.
+    Same-day is offered first, and only folders *older* than ``run_date`` are
+    considered, so a stray future-dated folder (clock skew, a hand-typed
+    ``--run-timestamp``) can never outrank today's run. Historical folders must
+    also match the title exactly — see the comment on that tier below.
     """
     from .obsidian import _strip_playlist_category_prefix, sanitize_title_for_filename
 
@@ -295,9 +296,37 @@ def _unit_folder_candidates(base: Path, playlist_title: str, run_date: datetime)
     # the one the operator most likely just reviewed.
     matches.sort(key=lambda child: child.name, reverse=True)
     yield from (child for child in matches if child.name.startswith(date_prefix))
-    # Earlier days last, so today's run always wins when both exist. The date
-    # is a fixed-width YYYY-MM-DD prefix, so a string compare orders it.
-    yield from (child for child in matches if child.name[:10] < date_prefix)
+    # Earlier days last, so a same-day reviewed summary always wins. The date is
+    # a fixed-width YYYY-MM-DD prefix, so a string compare orders it.
+    #
+    # Historical folders are held to an *exact* title match, unlike the same-day
+    # tier's substring rule. Substring matching is safe within one day because a
+    # run only just created those folders; across all of history it would admit
+    # a different playlist whose title merely contains this one — resuming
+    # "Python" would accept "2026-04-17-0900 Python Advanced", and if that run
+    # covered the same video its reviewed summary (and, via the pinned lookup,
+    # its captures) would be consumed instead.
+    yield from (
+        child
+        for child in matches
+        if child.name[:10] < date_prefix and _folder_title(child.name) == title_needle
+    )
+
+
+def _folder_title(folder_name: str) -> str:
+    """Return a playlist folder's sanitized title, stripped of its date prefix.
+
+    Folder names are ``YYYY-MM-DD-HHmm <title>``; runs from before the HHmm fix
+    use ``YYYY-MM-DD <title>``. Sanitizing keeps this comparable with a needle
+    built from a live playlist title even when the folder on disk predates the
+    concealment defenses.
+    """
+    match = _DATED_FOLDER_RE.match(folder_name)
+    if match is None:
+        return ""
+    from .obsidian import sanitize_title_for_filename
+
+    return sanitize_title_for_filename(folder_name[match.end() :].strip())
 
 
 def _collect_existing_learning_bodies(
