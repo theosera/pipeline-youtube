@@ -109,7 +109,9 @@ class ExecutionPlan:
     stop_after_capture: bool = False  # halt after Phase-1 capture/summary
     filter_reviewed_only: bool = False  # --resume-reviewed: keep only reviewed videos
     # 前処理の許可
-    allow_checkpoint: bool = True  # skip already-complete videos (not --dry-run)
+    allow_checkpoint: bool = (
+        True  # skip already-complete videos (not --dry-run / --resume-reviewed)
+    )
     allow_proper_noun_sheet: bool = False  # cfg.transcript_correction and not --dry-run
     # 段処理へ渡すデータ
     dry_run: bool = False
