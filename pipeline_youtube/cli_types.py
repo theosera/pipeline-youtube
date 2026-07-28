@@ -45,6 +45,7 @@ class CliRequest:
     capture_backend: str | None
     synthesis_timeout: int | None
     synthesis_profile: str | None
+    handson: bool
     local_media: Path | None
 
 
@@ -82,6 +83,7 @@ class RunMode(StrEnum):
     RESUME_REVIEWED = "resume-reviewed"
     SUB_AGENT_PARENT = "sub-agent-parent"
     SUB_AGENT_WORKER = "sub-agent-worker"
+    HANDSON = "handson"
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +103,7 @@ class ExecutionPlan:
     is_sub_agent_parent: bool = False  # mode is SUB_AGENT_PARENT
     is_sub_agent_worker: bool = False  # mode is SUB_AGENT_WORKER
     # どの段を走らせ、どこで止めるか
+    run_handson: bool = False  # --handson: single-video hands-on flow (replaces 01-05)
     run_video_stages: bool = True  # stages 01-04 (not --synthesis-only)
     run_synthesis: bool = True  # stage 05 (not --skip-synthesis)
     stop_after_capture: bool = False  # halt after Phase-1 capture/summary
