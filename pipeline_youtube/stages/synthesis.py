@@ -563,6 +563,7 @@ def run_stage_synthesis(
             allowed_assets=allowed_assets,
         )
         chapter_paths.append(path)
+
     meta_dir = playlist_dir / META_SUBDIR
     meta_dir.mkdir(parents=True, exist_ok=True)
     meta_path = meta_dir / DUPLICATE_SCORE_FILENAME

@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 
 # Whitespace controls the caller still needs (tab / newline / CR). VT (U+000B)
@@ -344,13 +344,6 @@ def map_wikilink_targets(
         cursor = match.end()
     parts.append(text[cursor:])
     return "".join(parts)
-
-
-def rewrite_wikilink_targets(text: str, mapping: Mapping[str, str]) -> str:
-    """Rewrite wikilink/embed target bases present as keys in ``mapping``."""
-    if not text or not mapping:
-        return text
-    return map_wikilink_targets(text, mapping.get)
 
 
 def fold_markdown_mixed_script_confusables(
