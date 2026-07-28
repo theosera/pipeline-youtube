@@ -213,11 +213,47 @@ def _select_synthesis_inputs(
             (r.learning_md_path.parent.name for r in succeeded if r.learning_md_path),
             None,
         )
+        _warn_on_mixed_phase1_folders(succeeded, folder_override)
     return (
         [r.video for r in succeeded],
         [r.learning_md_body or "" for r in succeeded],
         folder_override,
     )
+
+
+def _warn_on_mixed_phase1_folders(
+    succeeded: list[VideoRunResult], folder_override: str | None
+) -> None:
+    """Report when Phase 3 results span more than one Phase 1 playlist folder.
+
+    ``folder_override`` is taken from the *first* result, so when videos were
+    approved in different runs Stage 05 combines all their bodies but writes the
+    synthesis — and names it — under that one folder. Nothing here prevents it:
+    picking a folder automatically would silently drop the other run's context,
+    and refusing outright would block a resume that is often exactly what the
+    operator intended. Naming the folders lets them decide.
+
+    No remediation is suggested because none currently exists.
+    ``--run-timestamp`` only sets ``run_time``; ``_unit_folder_candidates`` still
+    falls through to same-day siblings and then earlier days, so pinning it does
+    not confine the lookup to one folder. ``--folder-name`` is the option that
+    would, and it is still scaffolding. Say what happened instead of offering a
+    fix that does not work.
+
+    Reachable since reviewed-summary lookup began preferring the folder holding
+    an approved summary (same-day reruns), and more so now that the search spans
+    earlier days.
+    """
+    folders = sorted({r.learning_md_path.parent.name for r in succeeded if r.learning_md_path})
+    if len(folders) < 2:
+        return
+    click.echo(
+        f"[warn] reviewed videos span {len(folders)} Phase 1 folders; "
+        f"stage 05 will write into {folder_override!r}"
+    )
+    for name in folders:
+        click.echo(f"         {name}")
+    click.echo("       stage 04 stays beside each summary; only the synthesis is consolidated")
 
 
 def _process_all_videos(
