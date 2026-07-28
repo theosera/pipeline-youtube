@@ -17,7 +17,12 @@ from __future__ import annotations
 
 import re
 
-_EMBED_RE = re.compile(r"!\[\[([^\]]+?)\]\]")
+# Allow a literal ``]`` inside the target that is not the ``]]`` terminator.
+# Stage 03/04 embeds are path-qualified as ``![[{playlist_folder}/file.webp]]``,
+# and playlist folders keep brackets (e.g. ``[LLM] Agent Teams``). A first-``]``
+# stop both misses those targets in the allow-list and fails to strip
+# disallowed ones. Same rule as ``services.confusables`` / Stage 04 mapping.
+_EMBED_RE = re.compile(r"!\[\[((?:[^\]\n]|\](?!\]))+)\]\]")
 _HTML_TAG_RE = re.compile(r"<(script|iframe|object|embed|style)[^>]*>", re.IGNORECASE)
 _TEMPLATER_RE = re.compile(r"<%[^%]*%>")
 
