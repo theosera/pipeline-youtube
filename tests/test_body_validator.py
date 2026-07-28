@@ -23,6 +23,12 @@ class TestExtractAllowedEmbeds:
     def test_strips_whitespace(self):
         assert extract_allowed_embeds(["![[  spaced.webp  ]]"]) == frozenset({"spaced.webp"})
 
+    def test_path_qualified_embed_with_bracketed_playlist_folder(self):
+        """Allow-list must see Stage 03/04 embeds under bracketed folders."""
+        target = "2026-06-14-1100 [LLM] Agent Teams/pyt_x_00.webp"
+        body = f"intro\n![[{target}]]\noutro"
+        assert extract_allowed_embeds([body]) == frozenset({target})
+
 
 class TestValidateChapterBody:
     def test_allowed_embed_preserved(self):
@@ -70,3 +76,15 @@ class TestValidateChapterBody:
         assert "<script>" not in out
         assert "<%" not in out
         assert "plain text" in out
+
+    def test_bracketed_playlist_embed_allowed_when_listed(self):
+        target = "2026-06-14-1100 [LLM] Agent Teams/pyt_x_00.webp"
+        out = validate_chapter_body(f"![[{target}]]", {target})
+        assert f"![[{target}]]" in out
+
+    def test_bracketed_playlist_embed_dropped_when_not_listed(self):
+        """Disallowed bracketed embeds must not fail-open past the filter."""
+        target = "2026-06-14-1100 [LLM] Agent Teams/evil.webp"
+        out = validate_chapter_body(f"![[{target}]]", frozenset())
+        assert f"![[{target}]]" not in out
+        assert "dropped embed" in out
