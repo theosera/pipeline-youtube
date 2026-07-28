@@ -231,8 +231,14 @@ def _warn_on_mixed_phase1_folders(
     synthesis — and names it — under that one folder. Nothing here prevents it:
     picking a folder automatically would silently drop the other run's context,
     and refusing outright would block a resume that is often exactly what the
-    operator intended. Naming the folders lets them decide, and re-running with
-    ``--run-timestamp`` pinned to one Phase 1 run is the escape hatch.
+    operator intended. Naming the folders lets them decide.
+
+    No remediation is suggested because none currently exists.
+    ``--run-timestamp`` only sets ``run_time``; ``_unit_folder_candidates`` still
+    falls through to same-day siblings and then earlier days, so pinning it does
+    not confine the lookup to one folder. ``--folder-name`` is the option that
+    would, and it is still scaffolding. Say what happened instead of offering a
+    fix that does not work.
 
     Reachable since reviewed-summary lookup began preferring the folder holding
     an approved summary (same-day reruns), and more so now that the search spans
@@ -247,7 +253,7 @@ def _warn_on_mixed_phase1_folders(
     )
     for name in folders:
         click.echo(f"         {name}")
-    click.echo("       pin one run with --run-timestamp if that is not what you want")
+    click.echo("       stage 04 stays beside each summary; only the synthesis is consolidated")
 
 
 def _process_all_videos(

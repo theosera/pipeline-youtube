@@ -9,9 +9,9 @@ from types import SimpleNamespace
 import pytest
 
 from pipeline_youtube import config
+from pipeline_youtube import pipeline_runner as pr_mod
 from pipeline_youtube import video_processing as vp_mod
 from pipeline_youtube.pipeline import LEARNING_BASE, UNIT_DIRS
-from pipeline_youtube.pipeline_runner import _warn_on_mixed_phase1_folders
 from pipeline_youtube.playlist import VideoMeta
 from pipeline_youtube.providers.claude_cli import ClaudeResponse
 from pipeline_youtube.resume import (
@@ -500,7 +500,7 @@ class TestMixedPhase1FolderWarning:
         )
 
     def test_single_folder_is_silent(self, capsys):
-        _warn_on_mixed_phase1_folders(
+        pr_mod._warn_on_mixed_phase1_folders(
             [
                 self._result(_VID_A, "2026-04-18-0800 testlist"),
                 self._result(_VID_B, "2026-04-18-0800 testlist"),
@@ -510,7 +510,7 @@ class TestMixedPhase1FolderWarning:
         assert capsys.readouterr().out == ""
 
     def test_mixed_folders_name_every_run_and_the_target(self, capsys):
-        _warn_on_mixed_phase1_folders(
+        pr_mod._warn_on_mixed_phase1_folders(
             [
                 self._result(_VID_A, "2026-04-18-0800 testlist"),
                 self._result(_VID_B, "2026-04-17-2100 testlist"),
@@ -523,12 +523,15 @@ class TestMixedPhase1FolderWarning:
         # not only where the output lands.
         assert "2026-04-18-0800 testlist" in out
         assert "2026-04-17-2100 testlist" in out
-        assert "--run-timestamp" in out
+        # No remediation is claimed: --run-timestamp does not confine the
+        # lookup to one folder, so promising it would mislead.
+        assert "--run-timestamp" not in out
+        assert "only the synthesis is consolidated" in out
 
     def test_results_without_a_learning_path_are_ignored(self, capsys):
         # Checkpoint-skipped / failed videos carry no path and must not look
         # like a second folder.
-        _warn_on_mixed_phase1_folders(
+        pr_mod._warn_on_mixed_phase1_folders(
             [
                 self._result(_VID_A, "2026-04-18-0800 testlist"),
                 self._result(_VID_B, None),
@@ -541,8 +544,6 @@ class TestMixedPhase1FolderWarning:
         # The checks above exercise the helper directly, so they would still pass
         # if the call site were dropped. Pin the wiring: a resume-reviewed run
         # whose results span two folders must reach the warning.
-        import pipeline_youtube.pipeline_runner as pr_mod
-
         succeeded = [
             self._result(_VID_A, "2026-04-18-0800 testlist"),
             self._result(_VID_B, "2026-04-17-2100 testlist"),
@@ -566,8 +567,6 @@ class TestMixedPhase1FolderWarning:
         assert seen[0][1] == "2026-04-18-0800 testlist"
 
     def test_warning_is_skipped_when_not_resuming_reviewed(self, monkeypatch):
-        import pipeline_youtube.pipeline_runner as pr_mod
-
         monkeypatch.setattr(pr_mod, "_process_all_videos", lambda *a, **k: [])
         seen: list[object] = []
         monkeypatch.setattr(pr_mod, "_warn_on_mixed_phase1_folders", lambda *a: seen.append(a))
