@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from pipeline_youtube import config
+from pipeline_youtube import video_processing as vp_mod
 from pipeline_youtube.pipeline import LEARNING_BASE, UNIT_DIRS
 from pipeline_youtube.playlist import VideoMeta
 from pipeline_youtube.providers.claude_cli import ClaudeResponse
@@ -17,7 +18,6 @@ from pipeline_youtube.resume import (
     _find_existing_04_md,
     _find_summary_md,
 )
-from pipeline_youtube.video_processing import _process_video
 
 
 def _vid(video_id: str) -> VideoMeta:
@@ -179,8 +179,6 @@ class TestResumeReviewedProcessing:
         )
 
     def test_runs_only_stage_04_against_existing_reviewed_notes(self, tmp_path: Path, monkeypatch):
-        import pipeline_youtube.video_processing as vp_mod
-
         config.set_vault_root(tmp_path)
         resume_time = datetime(2026, 4, 18, 12, 0)
         phase1_folder = "2026-04-18-0800 testlist"
@@ -222,7 +220,7 @@ class TestResumeReviewedProcessing:
 
         monkeypatch.setattr(vp_mod, "run_stage_learning", fake_learning)
 
-        result = _process_video(
+        result = vp_mod._process_video(
             _vid(_VID_A),
             resume_time,
             dry_run=False,
@@ -248,7 +246,7 @@ class TestResumeReviewedProcessing:
         # every video would fail with the generic "summary not found".
         config.set_vault_root(tmp_path)
 
-        result = _process_video(
+        result = vp_mod._process_video(
             _vid(_VID_A),
             datetime(2026, 4, 18, 12, 0),
             dry_run=False,
