@@ -17,6 +17,8 @@ from pipeline_youtube.resume import (
     _filter_to_reviewed,
     _find_existing_04_md,
     _find_summary_md,
+    _find_unit_md,
+    _unit_folder_candidates,
 )
 
 
@@ -259,3 +261,41 @@ class TestResumeReviewedProcessing:
 
         assert not result.ok
         assert result.error == "resume_reviewed_missing_playlist_title"
+
+    def test_pinned_capture_lookup_does_not_fall_back_to_another_run(self, tmp_path: Path):
+        # Two Phase 1 runs on one day. The reviewed summary lives in the 0800
+        # run, whose capture note is missing. Returning the 1000 run's capture
+        # would pair the reviewed summary with another run's images.
+        config.set_vault_root(tmp_path)
+        reviewed_folder = "2026-04-18-0800 testlist"
+        other_folder = "2026-04-18-1000 testlist"
+        capture_base = tmp_path / LEARNING_BASE / UNIT_DIRS["capture"]
+        _write_capture(capture_base / other_folder / "a.md", _VID_A)
+        (capture_base / reviewed_folder).mkdir(parents=True, exist_ok=True)
+
+        found = _find_unit_md(
+            _VID_A,
+            "testlist",
+            datetime(2026, 4, 18, 12, 0),
+            "capture",
+            vault_root=config.get_vault_root(),
+            preferred_folder_name=reviewed_folder,
+        )
+
+        assert found is None
+
+    def test_same_day_folder_candidates_are_newest_first(self, tmp_path: Path):
+        # iterdir() order is filesystem-dependent; the fallback must not depend
+        # on it when two Phase 1 runs exist for the same playlist.
+        base = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"]
+        for name in ("2026-04-18-0800 testlist", "2026-04-18-1000 testlist"):
+            (base / name).mkdir(parents=True, exist_ok=True)
+
+        candidates = list(_unit_folder_candidates(base, "testlist", datetime(2026, 4, 18, 12, 0)))
+
+        # First entry is the canonical HHmm folder for run_date (may not exist).
+        assert candidates[0].name == "2026-04-18-1200 testlist"
+        assert [c.name for c in candidates[1:]] == [
+            "2026-04-18-1000 testlist",
+            "2026-04-18-0800 testlist",
+        ]

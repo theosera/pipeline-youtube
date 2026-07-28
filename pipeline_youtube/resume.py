@@ -49,6 +49,7 @@ def _find_unit_md(
     ``preferred_folder_name`` pins the search to the playlist folder already
     resolved for a sibling unit (e.g. reuse the Stage 02 folder when locating
     Stage 03), so 02/03/04 stay aligned even when several same-day folders exist.
+    A pinned lookup that misses returns None rather than falling back — see below.
     """
     if unit_key not in UNIT_DIRS:
         raise ValueError(f"unknown unit key: {unit_key!r}")
@@ -59,17 +60,22 @@ def _find_unit_md(
     if not base.exists():
         return None
 
-    seen: set[Path] = set()
     if preferred_folder_name:
+        # Fail closed. The caller pinned this folder so 02/03/04 all come from
+        # one Phase 1 run; falling through to another same-day run would pair
+        # the reviewed summary with unrelated captures, whose embeds are
+        # path-qualified to *that* run's playlist folder. Returning None lets
+        # the caller report reviewed_capture_not_found instead of mixing runs.
         preferred = base / preferred_folder_name
-        seen.add(preferred)
-        if preferred.exists():
-            for md in preferred.glob("*.md"):
-                if read_trusted_video_id(md) == video_id:
-                    return md
+        if not preferred.exists():
+            return None
+        for md in preferred.glob("*.md"):
+            if read_trusted_video_id(md) == video_id:
+                return md
+        return None
 
     for candidate_folder in _unit_folder_candidates(base, playlist_title, run_date):
-        if candidate_folder in seen or not candidate_folder.exists():
+        if not candidate_folder.exists():
             continue
         for md in candidate_folder.glob("*.md"):
             if read_trusted_video_id(md) == video_id:
@@ -192,7 +198,9 @@ def _unit_folder_candidates(base: Path, playlist_title: str, run_date: datetime)
     if not title_needle:
         return
     try:
-        for child in base.iterdir():
+        matches = [
+            child
+            for child in base.iterdir()
             if (
                 child.is_dir()
                 and child.name.startswith(date_prefix)
@@ -200,10 +208,15 @@ def _unit_folder_candidates(base: Path, playlist_title: str, run_date: datetime)
                 # normalize both sides so reviewed summaries remain resumable.
                 and title_needle in sanitize_title_for_filename(child.name)
                 and child.name != canonical_name
-            ):
-                yield child
+            )
+        ]
     except OSError:
         return
+    # iterdir() order is filesystem-dependent, so with two Phase 1 runs on one
+    # day the caller could silently get either. Folder names start with
+    # YYYY-MM-DD-HHmm, so a descending name sort puts the newest run first —
+    # the one the operator most likely just reviewed.
+    yield from sorted(matches, key=lambda child: child.name, reverse=True)
 
 
 def _collect_existing_learning_bodies(
