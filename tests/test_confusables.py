@@ -238,3 +238,22 @@ class TestFoldMarkdownMixedScriptConfusables:
             )
             == "[[01_Core|Vibe]]"
         )
+
+
+class TestMapWikilinkTargets:
+    def test_rewrites_base_preserves_fragment_and_alias(self):
+        from pipeline_youtube.services.confusables import map_wikilink_targets
+
+        raw = "[[01_CI/CD Foundations#intro|see]] and [[keep]]"
+        out = map_wikilink_targets(
+            raw,
+            {"01_CI/CD Foundations": "01_CI CD Foundations"}.get,
+        )
+        assert out == "[[01_CI CD Foundations#intro|see]] and [[keep]]"
+
+    def test_handles_single_closing_bracket_in_target(self):
+        from pipeline_youtube.services.confusables import map_wikilink_targets
+
+        raw = "[[01_Foo] Bar]]"
+        out = map_wikilink_targets(raw, {"01_Foo] Bar": "01_Foo Bar"}.get)
+        assert out == "[[01_Foo Bar]]"

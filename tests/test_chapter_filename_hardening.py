@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pipeline_youtube.synthesis.chapter import chapter_filename
+from pipeline_youtube.synthesis.chapter import chapter_filename, chapter_note_stem
 
 
 class TestChapterFilenameHardening:
@@ -50,3 +50,7 @@ class TestChapterFilenameHardening:
     def test_md_suffix_always_present(self):
         for label in ["", "x", "日本語" * 100, "a\u202eb\u200c"]:
             assert chapter_filename(1, label).endswith(".md")
+
+    def test_chapter_note_stem_matches_filename_without_ext(self):
+        assert chapter_note_stem(1, "CI/CD") == "01_CI CD"
+        assert chapter_note_stem(1, "CI/CD") + ".md" == chapter_filename(1, "CI/CD")
