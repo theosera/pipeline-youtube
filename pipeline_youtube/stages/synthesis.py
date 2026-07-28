@@ -259,21 +259,23 @@ def _align_chapter_wikilink_targets(text: str, chapters: list[SynthesisChapterBo
     ``chapter_filename`` (OS-unsafe char replacement, UTF-8 truncation). Without
     this alignment, labels such as ``CI/CD`` produce ``01_CI CD….md`` while the
     MOC still links to ``[[01_CI/CD…]]``.
+
+    Rewrites only targets that exactly match a target this run generates —
+    ``f"{index:02d}_{label}"`` for a known chapter. Matching on the numeric
+    prefix alone would capture a source-note link that merely starts the same
+    way (``[[01_external-note]]``) and redirect it into a chapter, and it would
+    also miss three-digit indexes, where ``chapter_filename`` emits ``100_…``.
     """
-    stems_by_index = {
-        chapter.chapter_index: chapter_note_stem(chapter.chapter_index, chapter.label)
+    generated_to_stem = {
+        f"{chapter.chapter_index:02d}_{chapter.label}": chapter_note_stem(
+            chapter.chapter_index, chapter.label
+        )
         for chapter in chapters
     }
-
-    def _map_base(base: str) -> str | None:
-        if len(base) < 3 or base[2] != "_" or not base[:2].isdigit():
-            return None
-        stem = stems_by_index.get(int(base[:2]))
-        if stem is None or stem == base:
-            return None
-        return stem
-
-    return map_wikilink_targets(text, _map_base)
+    rewrites = {raw: stem for raw, stem in generated_to_stem.items() if raw != stem}
+    if not rewrites:
+        return text
+    return map_wikilink_targets(text, rewrites.get)
 
 
 def run_stage_synthesis(

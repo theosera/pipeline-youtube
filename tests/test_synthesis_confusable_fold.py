@@ -193,3 +193,45 @@ def test_write_chapter_leaves_japanese_intact(tmp_path: Path) -> None:
     target = write_chapter(chapter, tmp_path, run_time=RUN_TIME, playlist_title="pl")
     written = target.read_text(encoding="utf-8")
     assert "Anthropicが公開したハーネス設計" in written
+
+
+def test_align_leaves_unrelated_targets_that_share_a_numeric_prefix() -> None:
+    # A source-note link may legitimately start with the same digits as a
+    # chapter. Matching on the numeric prefix alone would redirect it into
+    # chapter 1 while keeping the fragment.
+    from pipeline_youtube.stages.synthesis import _align_chapter_wikilink_targets
+
+    chapter = SynthesisChapterBody(
+        chapter_index=1,
+        label="CI/CD Foundations",
+        category="core",
+        source_video_ids=["vid1"],
+        body_markdown="body",
+    )
+    body = "- [[01_external-note#section]]\n- [[01_CI/CD Foundations]]\n"
+
+    out = _align_chapter_wikilink_targets(body, [chapter])
+
+    assert "[[01_external-note#section]]" in out
+    assert "[[01_CI CD Foundations]]" in out
+
+
+def test_align_handles_three_digit_chapter_indexes(tmp_path: Path) -> None:
+    # chapter_filename formats the prefix with :02d, so index 100 yields
+    # `100_…`. A fixed-position check on base[2] would reject it and leave the
+    # link pointing at a note that is never written.
+    from pipeline_youtube.stages.synthesis import _align_chapter_wikilink_targets
+
+    chapter = SynthesisChapterBody(
+        chapter_index=100,
+        label="CI/CD Foundations",
+        category="core",
+        source_video_ids=["vid1"],
+        body_markdown="body",
+    )
+    path = write_chapter(chapter, tmp_path, run_time=RUN_TIME, playlist_title="pl")
+    assert path.name == "100_CI CD Foundations.md"
+
+    out = _align_chapter_wikilink_targets("- [[100_CI/CD Foundations]]\n", [chapter])
+
+    assert f"[[{path.stem}]]" in out
