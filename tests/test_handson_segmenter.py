@@ -159,7 +159,10 @@ class TestNormalizeSegments:
     def test_doubly_nested_span_keeps_the_partition_contiguous(self):
         # Regression: TIPS nested inside a QA that is itself nested inside a
         # LECTURE used to trim the *earlier* container and land out of order,
-        # leaving an overlapping, non-monotonic partition.
+        # leaving an overlapping, non-monotonic partition. Contiguity alone
+        # is not enough — the inner Tips must also survive (otherwise the
+        # monotonic rebuild silently erased the insight this mode exists to
+        # surface).
         out = normalize_segments(
             [
                 _seg(0, 1000),
@@ -169,6 +172,13 @@ class TestNormalizeSegments:
             duration=1000,
             chunk_starts=[],
         )
+        assert [(s.start_sec, s.end_sec, s.label) for s in out] == [
+            (0, 100, SegmentLabel.LECTURE),
+            (100, 150, SegmentLabel.QA),
+            (150, 180, SegmentLabel.TIPS),
+            (180, 200, SegmentLabel.QA),
+            (200, 1000, SegmentLabel.LECTURE),
+        ]
         bounds = [(s.start_sec, s.end_sec) for s in out]
         assert bounds == sorted(bounds)
         assert all(a[1] == b[0] for a, b in zip(bounds, bounds[1:], strict=False))
