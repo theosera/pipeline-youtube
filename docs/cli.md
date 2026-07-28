@@ -15,8 +15,9 @@ Options:
                                   [1<=x<=5]
   --skip-synthesis                Skip stage 05 after 01-04 finish.
   --synthesis-only                Skip stages 01-04 and re-run only stage 05
-                                  against existing 04 md files for today's
-                                  date.
+                                  against existing 04 md files. Prefers this
+                                  run's date, then falls back to earlier days
+                                  (newest first).
   --force-video TEXT              Force reprocess specific video IDs even if
                                   checkpoint shows complete. Repeatable.
   --capture-format [auto|webp|gif]

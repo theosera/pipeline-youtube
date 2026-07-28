@@ -85,7 +85,10 @@ from .stages.synthesis import MIN_PLAYLIST_SIZE
 @click.option(
     "--synthesis-only",
     is_flag=True,
-    help="Skip stages 01-04 and re-run only stage 05 against existing 04 md files for today's date.",
+    help=(
+        "Skip stages 01-04 and re-run only stage 05 against existing 04 md files. "
+        "Prefers this run's date, then falls back to earlier days (newest first)."
+    ),
 )
 @click.option(
     "--force-video",
