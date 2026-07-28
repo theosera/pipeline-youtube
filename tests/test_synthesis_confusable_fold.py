@@ -120,6 +120,40 @@ def test_write_moc_only_folds_generated_chapter_link_targets(tmp_path: Path) -> 
     assert f"[[{source_target}]]" in written
 
 
+def test_align_chapter_wikilink_targets_matches_written_filename(tmp_path: Path) -> None:
+    # Leader prompt uses [[01_<章名>]] with the raw label, but write_chapter
+    # replaces OS-unsafe chars (e.g. '/' → space). Without alignment the MOC
+    # link never resolves.
+    from pipeline_youtube.stages.synthesis import _align_chapter_wikilink_targets
+
+    label = "CI/CD Foundations"
+    chapter = SynthesisChapterBody(
+        chapter_index=1,
+        label=label,
+        category="core",
+        source_video_ids=["vid1"],
+        body_markdown="body",
+    )
+    path = write_chapter(chapter, tmp_path, run_time=RUN_TIME, playlist_title="pl")
+    assert path.name == "01_CI CD Foundations.md"
+
+    moc_body = f"## 章構成\n- [[{1:02d}_{label}]] — core\n"
+    aligned = _align_chapter_wikilink_targets(moc_body, [chapter])
+    assert f"[[{path.stem}]]" in aligned
+    assert f"[[{1:02d}_{label}]]" not in aligned
+
+    moc = SynthesisMoc(title="Map", body_markdown=aligned)
+    write_moc(
+        moc,
+        tmp_path / "00_MOC.md",
+        run_time=RUN_TIME,
+        playlist_title="pl",
+        generated_chapter_link_targets={path.stem},
+    )
+    written = (tmp_path / "00_MOC.md").read_text(encoding="utf-8")
+    assert f"[[{path.stem}]]" in written
+
+
 def test_write_chapter_folds_before_html_strip(tmp_path: Path) -> None:
     # Security regression: a Cyrillic-obfuscated `<sсript>` must be folded to
     # `<script>` and then stripped by validate_chapter_body, NOT written as an
@@ -159,3 +193,85 @@ def test_write_chapter_leaves_japanese_intact(tmp_path: Path) -> None:
     target = write_chapter(chapter, tmp_path, run_time=RUN_TIME, playlist_title="pl")
     written = target.read_text(encoding="utf-8")
     assert "Anthropicが公開したハーネス設計" in written
+
+
+def test_align_leaves_unrelated_targets_that_share_a_numeric_prefix() -> None:
+    # A source-note link may legitimately start with the same digits as a
+    # chapter. Matching on the numeric prefix alone would redirect it into
+    # chapter 1 while keeping the fragment.
+    from pipeline_youtube.stages.synthesis import _align_chapter_wikilink_targets
+
+    chapter = SynthesisChapterBody(
+        chapter_index=1,
+        label="CI/CD Foundations",
+        category="core",
+        source_video_ids=["vid1"],
+        body_markdown="body",
+    )
+    body = "- [[01_external-note#section]]\n- [[01_CI/CD Foundations]]\n"
+
+    out = _align_chapter_wikilink_targets(body, [chapter])
+
+    assert "[[01_external-note#section]]" in out
+    assert "[[01_CI CD Foundations]]" in out
+
+
+def test_align_handles_three_digit_chapter_indexes(tmp_path: Path) -> None:
+    # chapter_filename formats the prefix with :02d, so index 100 yields
+    # `100_…`. A fixed-position check on base[2] would reject it and leave the
+    # link pointing at a note that is never written.
+    from pipeline_youtube.stages.synthesis import _align_chapter_wikilink_targets
+
+    chapter = SynthesisChapterBody(
+        chapter_index=100,
+        label="CI/CD Foundations",
+        category="core",
+        source_video_ids=["vid1"],
+        body_markdown="body",
+    )
+    path = write_chapter(chapter, tmp_path, run_time=RUN_TIME, playlist_title="pl")
+    assert path.name == "100_CI CD Foundations.md"
+
+    out = _align_chapter_wikilink_targets("- [[100_CI/CD Foundations]]\n", [chapter])
+
+    assert f"[[{path.stem}]]" in out
+
+
+def test_align_handles_a_pipe_inside_the_generated_label(tmp_path: Path) -> None:
+    # sanitize_title_for_filename turns `|` into a space, so a chapter labelled
+    # `CI|CD` is written as `01_CI CD.md`. Alias-first parsing would hand the
+    # mapper `01_CI` and leave `[[01_CI|CD]]` in place — which Obsidian reads as
+    # target `01_CI` with alias `CD`, pointing at nothing.
+    from pipeline_youtube.stages.synthesis import _align_chapter_wikilink_targets
+
+    chapter = SynthesisChapterBody(
+        chapter_index=1,
+        label="CI|CD",
+        category="core",
+        source_video_ids=["vid1"],
+        body_markdown="body",
+    )
+    path = write_chapter(chapter, tmp_path, run_time=RUN_TIME, playlist_title="pl")
+    assert path.name == "01_CI CD.md"
+
+    out = _align_chapter_wikilink_targets("- [[01_CI|CD]]\n", [chapter])
+
+    assert f"[[{path.stem}]]" in out
+    assert "[[01_CI|CD]]" not in out
+
+
+def test_align_preserves_a_real_alias_on_an_unrelated_link() -> None:
+    # The whole-inner probe must not swallow ordinary `target|alias` links.
+    from pipeline_youtube.stages.synthesis import _align_chapter_wikilink_targets
+
+    chapter = SynthesisChapterBody(
+        chapter_index=1,
+        label="CI/CD Foundations",
+        category="core",
+        source_video_ids=["vid1"],
+        body_markdown="body",
+    )
+
+    out = _align_chapter_wikilink_targets("- [[2026-01-01 source note|表示名]]\n", [chapter])
+
+    assert "[[2026-01-01 source note|表示名]]" in out

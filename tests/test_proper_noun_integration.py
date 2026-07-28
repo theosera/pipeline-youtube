@@ -277,7 +277,7 @@ class TestApplyProperNouns:
         assert rewritten.chapters[0].source_video_ids == ["v1"]
         assert rewritten.chapters[0].category == "core"
 
-    def test_does_not_rewrite_wikilink_targets(self) -> None:
+    def test_does_not_rewrite_video_note_wikilink_targets(self) -> None:
         glossary = Glossary(
             entries=(GlossaryEntry(canonical="Vibe Coding", aliases=["ビブコーディング"]),)
         )
@@ -301,3 +301,37 @@ class TestApplyProperNouns:
         assert "[[2026-01-01 ビブコーディング入門#^00-00]]" in rewritten.chapters[0].body_markdown
         assert "本文はVibe Coding。" in rewritten.moc.body_markdown
         assert "でVibe Codingを扱う" in rewritten.chapters[0].body_markdown
+
+    def test_rewrites_generated_chapter_wikilink_targets_with_labels(self) -> None:
+        # Chapter labels are rewritten by PN, but normalize_text preserves
+        # wikilink targets. Generated [[NN_<label>]] links must follow the
+        # new label or MOC 章構成 points at a note that will never be written.
+        glossary = Glossary(
+            entries=(GlossaryEntry(canonical="Vibe Coding", aliases=["ビブコーディング"]),)
+        )
+        output = LeaderOutput(
+            moc=SynthesisMoc(
+                title="Map",
+                body_markdown=(
+                    "## 章構成\n"
+                    "- [[01_ビブコーディングの基礎]] — core\n"
+                    "- 出典: [[2026-01-01 ビブコーディング入門#^00-00]]\n"
+                ),
+            ),
+            chapters=[
+                SynthesisChapterBody(
+                    chapter_index=1,
+                    label="ビブコーディングの基礎",
+                    category="core",
+                    source_video_ids=["v1"],
+                    body_markdown="see [[01_ビブコーディングの基礎]]",
+                )
+            ],
+        )
+        rewritten = _apply_proper_nouns(output, glossary)
+        assert rewritten.chapters[0].label == "Vibe Codingの基礎"
+        assert "[[01_Vibe Codingの基礎]]" in rewritten.moc.body_markdown
+        assert "[[01_ビブコーディングの基礎]]" not in rewritten.moc.body_markdown
+        assert "[[01_Vibe Codingの基礎]]" in rewritten.chapters[0].body_markdown
+        # External video-note targets remain detect-only / preserved.
+        assert "[[2026-01-01 ビブコーディング入門#^00-00]]" in rewritten.moc.body_markdown

@@ -1,0 +1,11 @@
+{
+  "vault_root": "/path/to/your/Obsidian Vault parent (contains 'Permanent Note/')",
+  "models": {
+    "stage_01_correct": "opus",
+    "handson_segment": "sonnet",
+    "handson_plan": "sonnet",
+    "handson_step": "opus",
+    "handson_moc": "opus"
+  },
+  "transcript_correction": true
+}
