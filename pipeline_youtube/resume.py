@@ -97,6 +97,36 @@ def _find_summary_md(
     return _find_unit_md(video_id, playlist_title, run_date, "summary", vault_root=vault_root)
 
 
+def _find_reviewed_summary_md(
+    video_id: str, playlist_title: str, run_date: datetime, *, vault_root: Path
+) -> Path | None:
+    """Locate a 02_Summary.md for ``video_id`` with frontmatter ``reviewed: true``.
+
+    Same-day Phase 1 reruns create a newer folder whose summaries still have
+    ``reviewed: false``. Looking up "newest note for video_id, then check
+    reviewed" would skip the older folder the operator actually marked.
+    Scan newest-first and return the first matching *reviewed* summary.
+    """
+    from .obsidian import read_frontmatter_field
+
+    rel = f"{LEARNING_BASE}/{UNIT_DIRS['summary']}"
+    safe_rel = ensure_safe_path(rel, vault_root=vault_root)
+    base = vault_root / safe_rel
+    if not base.exists():
+        return None
+
+    for candidate_folder in _unit_folder_candidates(base, playlist_title, run_date):
+        if not candidate_folder.exists():
+            continue
+        for md in candidate_folder.glob("*.md"):
+            if read_trusted_video_id(md) != video_id:
+                continue
+            value = read_frontmatter_field(md, "reviewed")
+            if value and value.lower() == "true":
+                return md
+    return None
+
+
 def _find_existing_04_md(
     video_id: str, playlist_title: str, run_date: datetime, *, vault_root: Path
 ) -> Path | None:
@@ -159,25 +189,34 @@ def _filter_to_reviewed(
     *,
     vault_root: Path,
 ) -> list[tuple[int, VideoMeta]]:
-    """Keep only videos whose 02_Summary.md frontmatter has `reviewed: true`.
+    """Keep only videos that have a 02_Summary.md with `reviewed: true`.
+
+    Searches every same-day playlist folder (newest first), not only the
+    newest note for the video_id — a later unreviewed Phase 1 rerun must
+    not hide an older summary the operator already approved.
 
     ``vault_root`` is injected by the caller (``runtime.vault_root``).
     """
-    from .obsidian import read_frontmatter_field
-
     kept: list[tuple[int, VideoMeta]] = []
     for i, video in to_process:
-        summary_md = _find_summary_md(
+        summary_md = _find_reviewed_summary_md(
             video.video_id, playlist_title, run_time, vault_root=vault_root
         )
         if summary_md is None:
-            click.echo(f"  [skip] {video.video_id}: no 02_Summary.md found")
+            # Distinguish "no summary at all" from "summary exists but not reviewed"
+            # so the skip line stays actionable during Phase 3.
+            any_summary = _find_summary_md(
+                video.video_id, playlist_title, run_time, vault_root=vault_root
+            )
+            if any_summary is None:
+                click.echo(f"  [skip] {video.video_id}: no 02_Summary.md found")
+            else:
+                from .obsidian import read_frontmatter_field
+
+                value = read_frontmatter_field(any_summary, "reviewed")
+                click.echo(f"  [skip] {video.video_id}: reviewed={value!r}")
             continue
-        value = read_frontmatter_field(summary_md, "reviewed")
-        if value and value.lower() == "true":
-            kept.append((i, video))
-        else:
-            click.echo(f"  [skip] {video.video_id}: reviewed={value!r}")
+        kept.append((i, video))
     return kept
 
 
