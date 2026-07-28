@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+import click
 import pytest
 
 from pipeline_youtube import config
@@ -192,6 +193,51 @@ class TestCollectExistingLearningBodies:
         assert [video.video_id for video in videos] == [_VID_1]
         assert bodies == ["body\n"]
         assert folder_name == folder.name
+
+    def test_falls_back_to_an_earlier_day(self, tmp_path: Path, capsys):
+        # --synthesis-only is usually run to re-do stage 05 over material that
+        # already exists; that material is routinely from a previous day.
+        config.set_vault_root(tmp_path)
+        yesterday = tmp_path / LEARNING_BASE / UNIT_DIRS["learning"] / "2026-04-17-2100 testlist"
+        _write_learning(yesterday / "note.md", _VID_1)
+
+        videos, bodies, folder_name = _collect_existing_learning_bodies(
+            [_vid(_VID_1)],
+            "testlist",
+            datetime(2026, 4, 18, 9, 0),
+            vault_root=config.get_vault_root(),
+        )
+
+        assert [video.video_id for video in videos] == [_VID_1]
+        assert bodies == ["learning body\n"]
+        assert folder_name == "2026-04-17-2100 testlist"
+        # Which prior run got picked cannot be inferred from the command line.
+        assert "2026-04-17-2100 testlist" in capsys.readouterr().out
+
+    def test_the_run_date_wins_over_an_earlier_day(self, tmp_path: Path):
+        config.set_vault_root(tmp_path)
+        base = tmp_path / LEARNING_BASE / UNIT_DIRS["learning"]
+        _write_learning(base / "2026-04-17-2100 testlist" / "note.md", _VID_1)
+        _write_learning(base / "2026-04-18-0900 testlist" / "note.md", _VID_1)
+
+        _, _, folder_name = _collect_existing_learning_bodies(
+            [_vid(_VID_1)],
+            "testlist",
+            datetime(2026, 4, 18, 9, 0),
+            vault_root=config.get_vault_root(),
+        )
+
+        assert folder_name == "2026-04-18-0900 testlist"
+
+    def test_missing_material_names_the_base_dir(self, tmp_path: Path):
+        config.set_vault_root(tmp_path)
+        with pytest.raises(click.UsageError, match="04 folder not found"):
+            _collect_existing_learning_bodies(
+                [_vid(_VID_1)],
+                "testlist",
+                datetime(2026, 4, 18, 9, 0),
+                vault_root=config.get_vault_root(),
+            )
 
 
 class TestResumeReviewedProcessing:
