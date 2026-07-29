@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -59,6 +60,74 @@ from ..domain.errors import ClaudeBinaryError as ClaudeBinaryError
 # invocations.
 _CLAUDE_BIN: str | None = None
 _CLAUDE_VERSION: str | None = None
+
+# The global CLAUDE.md tells every response to end with a JST completion time,
+# produced by *running* `date`. Stage calls pass `--tools ""` (see below), so
+# the model has no shell — it writes the timestamp from imagination instead.
+# That fabricated line then lands in the vault note verbatim. The pipeline's
+# own instruction file was polluting the pipeline's own output.
+#
+# Matched narrowly: a bare JST timestamp, or the CLAUDE.md command recognised
+# by its own `%Y-%m-%d ... JST` format string. A line that merely *starts* with
+# `date` is deliberately NOT matched — a shell walkthrough in a code-bearing
+# playlist can legitimately end on one, and eating it would corrupt content.
+_JST_SCAFFOLD_RE = re.compile(
+    r"^[`'\"*\s]*(?:"
+    r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\s*JST"
+    r"|(?:TZ=\S+\s+)?date\s[^\n]*%Y-%m-%d[^\n]*JST[^\n]*"
+    r")[`'\"*\s]*$"
+)
+# A model that fenced the timestamp leaves the fence behind once it is gone.
+_FENCE_RE = re.compile(r"^\s*(?:```|~~~)\s*\w*\s*$")
+
+
+def _strip_cli_scaffolding(text: str) -> str:
+    """Drop the fabricated JST completion line from the end of a response.
+
+    Only trailing lines are considered, so a timestamp that is genuinely part
+    of the content — a transcript line, a log excerpt mid-body — is untouched.
+    Returns ``text`` unchanged when nothing matched, rather than normalising
+    whitespace on every response for no reason.
+    """
+    lines = text.splitlines()
+    cut = _scaffolding_start(lines)
+    if cut is None:
+        return text
+    return "\n".join(lines[:cut]).rstrip()
+
+
+def _scaffolding_start(lines: list[str]) -> int | None:
+    """Index where the trailing scaffolding begins, or None if there is none."""
+    i = len(lines) - 1
+    while i >= 0 and not lines[i].strip():
+        i -= 1
+    if i < 0:
+        return None
+
+    if _FENCE_RE.match(lines[i]):
+        # The model fenced the timestamp. Walk back to the opening fence and
+        # take the whole block only when it holds nothing but scaffolding —
+        # a block with real output above the timestamp has to stay.
+        saw_scaffold = False
+        j = i - 1
+        while j >= 0 and not _FENCE_RE.match(lines[j]):
+            if lines[j].strip():
+                if not _JST_SCAFFOLD_RE.match(lines[j]):
+                    return None
+                saw_scaffold = True
+            j -= 1
+        return j if j >= 0 and saw_scaffold else None
+
+    start = None
+    while i >= 0:
+        if not lines[i].strip():
+            i -= 1
+            continue
+        if not _JST_SCAFFOLD_RE.match(lines[i]):
+            break
+        start = i
+        i -= 1
+    return start
 
 
 def _resolve_claude_binary() -> str:
@@ -359,7 +428,7 @@ def _invoke_claude_once(
     usage = data.get("usage") or {}
 
     return ClaudeResponse(
-        text=str(data.get("result", "")),
+        text=_strip_cli_scaffolding(str(data.get("result", ""))),
         model=model,
         input_tokens=usage.get("input_tokens"),
         output_tokens=usage.get("output_tokens"),
