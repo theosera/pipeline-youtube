@@ -232,9 +232,7 @@ class TestCollectExistingLearningBodies:
 
         assert folder_name == "2026-04-18-0900 testlist"
 
-    def test_same_day_superset_title_does_not_hide_earlier_day(
-        self, tmp_path: Path, capsys
-    ):
+    def test_same_day_superset_title_does_not_hide_earlier_day(self, tmp_path: Path, capsys):
         # #142 routed --synthesis-only through _unit_folder_candidates. Same-day
         # substring matching there is intentional for Phase 3, but synthesis-only
         # has no reviewed gate — so today's "testlist Advanced" would win over
@@ -243,9 +241,7 @@ class TestCollectExistingLearningBodies:
         config.set_vault_root(tmp_path)
         base = tmp_path / LEARNING_BASE / UNIT_DIRS["learning"]
         _write_learning(base / "2026-04-17-2100 testlist" / "note.md", _VID_1)
-        _write_learning(
-            base / "2026-04-18-0800 testlist Advanced" / "other.md", "otherxxxxxA"
-        )
+        _write_learning(base / "2026-04-18-0800 testlist Advanced" / "other.md", "otherxxxxxA")
 
         videos, bodies, folder_name = _collect_existing_learning_bodies(
             [_vid(_VID_1)],
@@ -259,9 +255,7 @@ class TestCollectExistingLearningBodies:
         assert bodies == ["learning body\n"]
         assert "2026-04-17-2100 testlist" in capsys.readouterr().out
 
-    def test_same_day_superset_title_does_not_steal_overlapping_video_ids(
-        self, tmp_path: Path
-    ):
+    def test_same_day_superset_title_does_not_steal_overlapping_video_ids(self, tmp_path: Path):
         # Stronger form of the shadowing bug: the longer-titled same-day folder
         # holds a learning note for the *same* video_id. Without an exact-title
         # gate, Stage 05 would ingest Advanced's body under a "testlist" run.
@@ -287,9 +281,7 @@ class TestCollectExistingLearningBodies:
         assert [video.video_id for video in videos] == [_VID_1]
         assert bodies == ["learning body\n"]
 
-    def test_empty_exact_same_day_folder_falls_through_to_earlier_day(
-        self, tmp_path: Path, capsys
-    ):
+    def test_empty_exact_same_day_folder_falls_through_to_earlier_day(self, tmp_path: Path, capsys):
         # Today's exact folder exists but holds none of the requested video_ids
         # (partial / unrelated run). Prefer yesterday's complete material.
         config.set_vault_root(tmp_path)
