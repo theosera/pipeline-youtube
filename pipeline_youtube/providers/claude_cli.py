@@ -95,37 +95,66 @@ def _strip_cli_scaffolding(text: str) -> str:
     make a Markdown hard break.
     """
     lines = text.splitlines(keepends=True)
-    cut = _scaffolding_start(lines)
-    if cut is None:
+    kept = _without_trailing_scaffolding(lines)
+    if kept is None:
         return text
-    while cut > 0 and not lines[cut - 1].strip():
-        cut -= 1
-    return "".join(lines[:cut]).rstrip("\r\n")
+    return "".join(kept).rstrip("\r\n")
 
 
-def _scaffolding_start(lines: list[str]) -> int | None:
-    """Index where the trailing scaffolding begins, or None if there is none."""
+def _without_trailing_scaffolding(lines: list[str]) -> list[str] | None:
+    """Return ``lines`` minus the trailing scaffolding, or None if there is none."""
+    last = _last_content_index(lines)
+    if last is None:
+        return None
+    if _FENCE_RE.match(lines[last]):
+        return _without_scaffolding_in_fence(lines, last)
+    start = _scaffolding_start(lines, last)
+    if start is None:
+        return None
+    return lines[: _skip_blanks_back(lines, start)]
+
+
+def _without_scaffolding_in_fence(lines: list[str], close: int) -> list[str] | None:
+    """Handle a response whose last block is a code fence.
+
+    The model sometimes fences the timestamp *together with* real output. Taking
+    the whole block would eat that output, and bailing out would let the
+    fabricated line reach the vault — so drop only the trailing scaffold lines
+    and leave the fence and whatever it still holds intact. A block that held
+    nothing but scaffolding is itself scaffolding, fence included.
+    """
+    opening = close - 1
+    while opening >= 0 and not _FENCE_RE.match(lines[opening]):
+        opening -= 1
+    if opening < 0:
+        return None
+
+    start = _scaffolding_start(lines, close - 1)
+    if start is None:
+        return None
+
+    inner = lines[opening + 1 : _skip_blanks_back(lines, start)]
+    if not any(line.strip() for line in inner):
+        return lines[: _skip_blanks_back(lines, opening)]
+    return lines[: opening + 1] + inner + [lines[close]]
+
+
+def _last_content_index(lines: list[str]) -> int | None:
+    """Index of the last non-blank line, or None when there is none."""
     i = len(lines) - 1
     while i >= 0 and not lines[i].strip():
         i -= 1
-    if i < 0:
-        return None
+    return i if i >= 0 else None
 
-    if _FENCE_RE.match(lines[i]):
-        # The model fenced the timestamp. Walk back to the opening fence and
-        # take the whole block only when it holds nothing but scaffolding —
-        # a block with real output above the timestamp has to stay.
-        saw_scaffold = False
-        j = i - 1
-        while j >= 0 and not _FENCE_RE.match(lines[j]):
-            if lines[j].strip():
-                if not _JST_SCAFFOLD_RE.match(lines[j]):
-                    return None
-                saw_scaffold = True
-            j -= 1
-        return j if j >= 0 and saw_scaffold else None
 
+def _scaffolding_start(lines: list[str], end: int) -> int | None:
+    """Index of the first of the scaffold lines ending at ``end``, else None.
+
+    Blank lines between scaffold lines are absorbed; the first non-blank line
+    that is not scaffolding stops the walk.
+    """
     start = None
+    i = end
     while i >= 0:
         if not lines[i].strip():
             i -= 1
@@ -135,6 +164,13 @@ def _scaffolding_start(lines: list[str]) -> int | None:
         start = i
         i -= 1
     return start
+
+
+def _skip_blanks_back(lines: list[str], cut: int) -> int:
+    """Move ``cut`` back over the blank lines that precede it."""
+    while cut > 0 and not lines[cut - 1].strip():
+        cut -= 1
+    return cut
 
 
 def _resolve_claude_binary() -> str:

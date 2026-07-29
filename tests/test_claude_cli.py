@@ -336,9 +336,14 @@ class TestStripCliScaffolding:
     def test_removes_the_fence_it_was_wrapped_in(self):
         assert _strip_cli_scaffolding("本文\n\n```\n2026-07-29 04:42:01 JST\n```") == "本文"
 
-    def test_keeps_a_fence_that_still_holds_content(self):
+    def test_strips_the_timestamp_but_keeps_a_content_bearing_fence(self):
+        # Bailing out here would let the fabricated line reach the vault, and
+        # taking the whole block would eat the real output above it.
         text = "本文\n\n```\n実コード\n2026-07-29 04:42:01 JST\n```"
-        # Only the timestamp goes; the block above it is real output.
+        assert _strip_cli_scaffolding(text) == "本文\n\n```\n実コード\n```"
+
+    def test_leaves_a_fence_whose_last_line_is_real_output(self):
+        text = "本文\n\n```\n実コード\nさらに実コード\n```"
         assert _strip_cli_scaffolding(text) == text
 
     def test_does_not_eat_a_shell_walkthrough_ending_on_date(self):
