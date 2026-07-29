@@ -88,12 +88,19 @@ def _strip_cli_scaffolding(text: str) -> str:
     of the content — a transcript line, a log excerpt mid-body — is untouched.
     Returns ``text`` unchanged when nothing matched, rather than normalising
     whitespace on every response for no reason.
+
+    Line endings are kept as the model wrote them (``keepends``), and only the
+    final terminator is trimmed: rebuilding with ``"\\n".join`` would rewrite a
+    CRLF body, and a blanket ``rstrip()`` would eat the two trailing spaces that
+    make a Markdown hard break.
     """
-    lines = text.splitlines()
+    lines = text.splitlines(keepends=True)
     cut = _scaffolding_start(lines)
     if cut is None:
         return text
-    return "\n".join(lines[:cut]).rstrip()
+    while cut > 0 and not lines[cut - 1].strip():
+        cut -= 1
+    return "".join(lines[:cut]).rstrip("\r\n")
 
 
 def _scaffolding_start(lines: list[str]) -> int | None:

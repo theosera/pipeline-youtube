@@ -355,6 +355,12 @@ class TestStripCliScaffolding:
         text = "本文\n\n末尾\n"
         assert _strip_cli_scaffolding(text) == text
 
+    def test_keeps_crlf_and_trailing_spaces_in_what_it_returns(self):
+        # Rebuilding with `"\n".join` would rewrite the CRLF body, and a blanket
+        # `rstrip()` would eat the two spaces that make a Markdown hard break.
+        text = "一行目  \r\n二行目  \r\n\r\n2026-07-29 04:42:01 JST\r\n"
+        assert _strip_cli_scaffolding(text) == "一行目  \r\n二行目  "
+
     def test_invoke_claude_strips_it_from_the_response(self):
         # Pins the wiring: the checks above would all pass with the call site
         # removed from invoke_claude.
