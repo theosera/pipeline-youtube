@@ -12,6 +12,7 @@ from pipeline_youtube.providers import claude_cli as claude_cli_mod
 from pipeline_youtube.providers.claude_cli import (
     ClaudeCliError,
     ClaudeResponse,
+    _strip_cli_scaffolding,
     invoke_claude,
 )
 
@@ -309,3 +310,68 @@ class TestErrorHandling:
             resp = invoke_claude("hi")
 
         assert resp.text == ""
+
+
+class TestStripCliScaffolding:
+    """The global CLAUDE.md asks every response to end with a JST time.
+
+    Stage calls pass `--tools ""`, so the model has no shell to run `date` with
+    and invents the timestamp. Without this strip it rides into the vault note.
+    """
+
+    @pytest.mark.parametrize(
+        "tail",
+        [
+            "2026-07-29 04:42:01 JST",
+            "`2026-07-29 04:42:01 JST`",
+            "**2026-07-29 04:42:01 JST**",
+            "2026-07-29T04:42:01 JST",
+            "TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S JST'",
+            "date -u -d '+9 hours' '+%Y-%m-%d %H:%M:%S JST'",
+        ],
+    )
+    def test_removes_the_fabricated_tail(self, tail: str):
+        assert _strip_cli_scaffolding(f"本文\n\n{tail}") == "本文"
+
+    def test_removes_the_fence_it_was_wrapped_in(self):
+        assert _strip_cli_scaffolding("本文\n\n```\n2026-07-29 04:42:01 JST\n```") == "本文"
+
+    def test_strips_the_timestamp_but_keeps_a_content_bearing_fence(self):
+        # Bailing out here would let the fabricated line reach the vault, and
+        # taking the whole block would eat the real output above it.
+        text = "本文\n\n```\n実コード\n2026-07-29 04:42:01 JST\n```"
+        assert _strip_cli_scaffolding(text) == "本文\n\n```\n実コード\n```"
+
+    def test_leaves_a_fence_whose_last_line_is_real_output(self):
+        text = "本文\n\n```\n実コード\nさらに実コード\n```"
+        assert _strip_cli_scaffolding(text) == text
+
+    def test_does_not_eat_a_shell_walkthrough_ending_on_date(self):
+        # The reason the pattern is not `^\s*date\b`: code-bearing playlists
+        # legitimately end a block on the bare `date` command.
+        text = "手順:\n```bash\ncd /tmp\ndate\n```"
+        assert _strip_cli_scaffolding(text) == text
+
+    def test_leaves_a_timestamp_that_is_part_of_the_body(self):
+        text = "ログ:\n2026-07-29 04:42:01 JST に開始\n続き"
+        assert _strip_cli_scaffolding(text) == text
+
+    def test_untouched_when_nothing_matches(self):
+        text = "本文\n\n末尾\n"
+        assert _strip_cli_scaffolding(text) == text
+
+    def test_keeps_crlf_and_trailing_spaces_in_what_it_returns(self):
+        # Rebuilding with `"\n".join` would rewrite the CRLF body, and a blanket
+        # `rstrip()` would eat the two spaces that make a Markdown hard break.
+        text = "一行目  \r\n二行目  \r\n\r\n2026-07-29 04:42:01 JST\r\n"
+        assert _strip_cli_scaffolding(text) == "一行目  \r\n二行目  "
+
+    def test_invoke_claude_strips_it_from_the_response(self):
+        # Pins the wiring: the checks above would all pass with the call site
+        # removed from invoke_claude.
+        payload = dict(SAMPLE_RESPONSE, result="要約本文\n\n2026-07-29 04:42:01 JST")
+        with patch("subprocess.run") as run:
+            run.return_value = _completed(stdout=json.dumps(payload))
+            resp = invoke_claude("hi", model="haiku")
+
+        assert resp.text == "要約本文"

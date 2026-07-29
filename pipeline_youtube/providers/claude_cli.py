@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -59,6 +60,117 @@ from ..domain.errors import ClaudeBinaryError as ClaudeBinaryError
 # invocations.
 _CLAUDE_BIN: str | None = None
 _CLAUDE_VERSION: str | None = None
+
+# The global CLAUDE.md tells every response to end with a JST completion time,
+# produced by *running* `date`. Stage calls pass `--tools ""` (see below), so
+# the model has no shell — it writes the timestamp from imagination instead.
+# That fabricated line then lands in the vault note verbatim. The pipeline's
+# own instruction file was polluting the pipeline's own output.
+#
+# Matched narrowly: a bare JST timestamp, or the CLAUDE.md command recognised
+# by its own `%Y-%m-%d ... JST` format string. A line that merely *starts* with
+# `date` is deliberately NOT matched — a shell walkthrough in a code-bearing
+# playlist can legitimately end on one, and eating it would corrupt content.
+_JST_SCAFFOLD_RE = re.compile(
+    r"^[`'\"*\s]*(?:"
+    r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\s*JST"
+    r"|(?:TZ=\S+\s+)?date\s[^\n]*%Y-%m-%d[^\n]*JST[^\n]*"
+    r")[`'\"*\s]*$"
+)
+# A model that fenced the timestamp leaves the fence behind once it is gone.
+_FENCE_RE = re.compile(r"^\s*(?:```|~~~)\s*\w*\s*$")
+
+
+def _strip_cli_scaffolding(text: str) -> str:
+    """Drop the fabricated JST completion line from the end of a response.
+
+    Only trailing lines are considered, so a timestamp that is genuinely part
+    of the content — a transcript line, a log excerpt mid-body — is untouched.
+    Returns ``text`` unchanged when nothing matched, rather than normalising
+    whitespace on every response for no reason.
+
+    Line endings are kept as the model wrote them (``keepends``), and only the
+    final terminator is trimmed: rebuilding with ``"\\n".join`` would rewrite a
+    CRLF body, and a blanket ``rstrip()`` would eat the two trailing spaces that
+    make a Markdown hard break.
+    """
+    lines = text.splitlines(keepends=True)
+    kept = _without_trailing_scaffolding(lines)
+    if kept is None:
+        return text
+    return "".join(kept).rstrip("\r\n")
+
+
+def _without_trailing_scaffolding(lines: list[str]) -> list[str] | None:
+    """Return ``lines`` minus the trailing scaffolding, or None if there is none."""
+    last = _last_content_index(lines)
+    if last is None:
+        return None
+    if _FENCE_RE.match(lines[last]):
+        return _without_scaffolding_in_fence(lines, last)
+    start = _scaffolding_start(lines, last)
+    if start is None:
+        return None
+    return lines[: _skip_blanks_back(lines, start)]
+
+
+def _without_scaffolding_in_fence(lines: list[str], close: int) -> list[str] | None:
+    """Handle a response whose last block is a code fence.
+
+    The model sometimes fences the timestamp *together with* real output. Taking
+    the whole block would eat that output, and bailing out would let the
+    fabricated line reach the vault — so drop only the trailing scaffold lines
+    and leave the fence and whatever it still holds intact. A block that held
+    nothing but scaffolding is itself scaffolding, fence included.
+    """
+    opening = close - 1
+    while opening >= 0 and not _FENCE_RE.match(lines[opening]):
+        opening -= 1
+    if opening < 0:
+        return None
+
+    start = _scaffolding_start(lines, close - 1)
+    if start is None:
+        return None
+
+    inner = lines[opening + 1 : _skip_blanks_back(lines, start)]
+    if not any(line.strip() for line in inner):
+        return lines[: _skip_blanks_back(lines, opening)]
+    return lines[: opening + 1] + inner + [lines[close]]
+
+
+def _last_content_index(lines: list[str]) -> int | None:
+    """Index of the last non-blank line, or None when there is none."""
+    i = len(lines) - 1
+    while i >= 0 and not lines[i].strip():
+        i -= 1
+    return i if i >= 0 else None
+
+
+def _scaffolding_start(lines: list[str], end: int) -> int | None:
+    """Index of the first of the scaffold lines ending at ``end``, else None.
+
+    Blank lines between scaffold lines are absorbed; the first non-blank line
+    that is not scaffolding stops the walk.
+    """
+    start = None
+    i = end
+    while i >= 0:
+        if not lines[i].strip():
+            i -= 1
+            continue
+        if not _JST_SCAFFOLD_RE.match(lines[i]):
+            break
+        start = i
+        i -= 1
+    return start
+
+
+def _skip_blanks_back(lines: list[str], cut: int) -> int:
+    """Move ``cut`` back over the blank lines that precede it."""
+    while cut > 0 and not lines[cut - 1].strip():
+        cut -= 1
+    return cut
 
 
 def _resolve_claude_binary() -> str:
@@ -359,7 +471,7 @@ def _invoke_claude_once(
     usage = data.get("usage") or {}
 
     return ClaudeResponse(
-        text=str(data.get("result", "")),
+        text=_strip_cli_scaffolding(str(data.get("result", ""))),
         model=model,
         input_tokens=usage.get("input_tokens"),
         output_tokens=usage.get("output_tokens"),
