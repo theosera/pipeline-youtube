@@ -357,9 +357,7 @@ class TestStripCliScaffolding:
         # is also a legitimate last line of a timezone walkthrough; deleting it
         # (or the whole fence when it is the only line) corrupted Stage 02/04
         # notes for code-bearing playlists. Language-tagged fences are off-limits.
-        walkthrough = (
-            "手順:\n\n```bash\ncd /tmp\nTZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S JST'\n```"
-        )
+        walkthrough = "手順:\n\n```bash\ncd /tmp\nTZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S JST'\n```"
         assert _strip_cli_scaffolding(walkthrough) == walkthrough
         one_liner = "手順:\n\n```bash\nTZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S JST'\n```"
         assert _strip_cli_scaffolding(one_liner) == one_liner
