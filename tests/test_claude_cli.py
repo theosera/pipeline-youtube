@@ -352,6 +352,24 @@ class TestStripCliScaffolding:
         text = "手順:\n```bash\ncd /tmp\ndate\n```"
         assert _strip_cli_scaffolding(text) == text
 
+    def test_does_not_eat_the_claude_md_date_command_in_a_bash_fence(self):
+        # #143 matched the CLAUDE.md date command as scaffolding. That command
+        # is also a legitimate last line of a timezone walkthrough; deleting it
+        # (or the whole fence when it is the only line) corrupted Stage 02/04
+        # notes for code-bearing playlists. Language-tagged fences are off-limits.
+        walkthrough = (
+            "手順:\n\n```bash\ncd /tmp\nTZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S JST'\n```"
+        )
+        assert _strip_cli_scaffolding(walkthrough) == walkthrough
+        one_liner = "手順:\n\n```bash\nTZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S JST'\n```"
+        assert _strip_cli_scaffolding(one_liner) == one_liner
+
+    def test_does_not_eat_a_date_command_inside_an_unlabeled_fence(self):
+        # Inside fences only bare JST timestamps count as scaffolding — the
+        # date-command form stays, even without a language tag.
+        text = "手順:\n\n```\ncd /tmp\nTZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S JST'\n```"
+        assert _strip_cli_scaffolding(text) == text
+
     def test_leaves_a_timestamp_that_is_part_of_the_body(self):
         text = "ログ:\n2026-07-29 04:42:01 JST に開始\n続き"
         assert _strip_cli_scaffolding(text) == text
