@@ -73,9 +73,7 @@ _CLAUDE_VERSION: str | None = None
 # walkthrough in a code-bearing playlist can legitimately end on one, and eating
 # it would corrupt content. Language-tagged fences (```bash etc.) are never
 # stripped at all: the CLAUDE.md date command is itself a valid tutorial line.
-_BARE_JST_RE = re.compile(
-    r"^[`'\"*\s]*\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\s*JST[`'\"*\s]*$"
-)
+_BARE_JST_RE = re.compile(r"^[`'\"*\s]*\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\s*JST[`'\"*\s]*$")
 _JST_SCAFFOLD_RE = re.compile(
     r"^[`'\"*\s]*(?:"
     r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\s*JST"
@@ -130,7 +128,7 @@ def _without_scaffolding_in_fence(lines: list[str], close: int) -> list[str] | N
     and leave the fence and whatever it still holds intact. A block that held
     nothing but scaffolding is itself scaffolding, fence included.
 
-    Language-tagged fences (``\`\`\`bash``, ``\`\`\`shell``, …) are never
+    Language-tagged fences (``bash`` / ``shell`` / …) are never
     touched: code-bearing playlists routinely end a walkthrough on the exact
     ``date … %Y-%m-%d … JST`` command CLAUDE.md names, and deleting that line
     (or the whole fence when it is the only line) would corrupt the note.
