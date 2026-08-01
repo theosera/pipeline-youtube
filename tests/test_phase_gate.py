@@ -408,6 +408,100 @@ class TestResumeReviewedProcessing:
 
         assert found is None
 
+    def test_pinned_capture_lookup_prefers_same_stem_sibling(self, tmp_path: Path):
+        # Same-minute Phase 1 rerun: both a.md (stale) and a-2.md (reviewed run)
+        # share video_id in one folder. Glob order is filesystem-dependent, so
+        # an unpinned scan can return the stale capture. Stem pin must win.
+        config.set_vault_root(tmp_path)
+        folder = "2026-04-18-0800 testlist"
+        capture_base = tmp_path / LEARNING_BASE / UNIT_DIRS["capture"]
+        stale = capture_base / folder / "a.md"
+        sibling = capture_base / folder / "a-2.md"
+        _write_capture(stale, _VID_A)
+        _write_capture(sibling, _VID_A)
+
+        found = _find_unit_md(
+            _VID_A,
+            "testlist",
+            datetime(2026, 4, 18, 12, 0),
+            "capture",
+            vault_root=config.get_vault_root(),
+            preferred_folder_name=folder,
+            preferred_stem="a-2",
+        )
+
+        assert found == sibling
+
+    def test_pinned_capture_lookup_does_not_use_differently_suffixed_sibling(
+        self, tmp_path: Path
+    ):
+        # Reviewed summary is a-2.md but only the stale a.md capture remains.
+        # Falling back would silently feed Stage 04 the wrong images.
+        config.set_vault_root(tmp_path)
+        folder = "2026-04-18-0800 testlist"
+        capture_base = tmp_path / LEARNING_BASE / UNIT_DIRS["capture"]
+        _write_capture(capture_base / folder / "a.md", _VID_A)
+
+        found = _find_unit_md(
+            _VID_A,
+            "testlist",
+            datetime(2026, 4, 18, 12, 0),
+            "capture",
+            vault_root=config.get_vault_root(),
+            preferred_folder_name=folder,
+            preferred_stem="a-2",
+        )
+
+        assert found is None
+
+    def test_resume_reviewed_pairs_capture_with_reviewed_summary_stem(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # End-to-end: reviewed a-2.md must consume capture a-2.md, not a.md.
+        config.set_vault_root(tmp_path)
+        resume_time = datetime(2026, 4, 18, 12, 0)
+        folder = "2026-04-18-0800 testlist"
+        summary_base = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"]
+        capture_base = tmp_path / LEARNING_BASE / UNIT_DIRS["capture"]
+        _write_summary(summary_base / folder / "a.md", _VID_A, "false")
+        _write_summary(summary_base / folder / "a-2.md", _VID_A, "true")
+        _write_capture(capture_base / folder / "a.md", _VID_A)
+        _write_capture(capture_base / folder / "a-2.md", _VID_A)
+
+        def fake_learning(video, summary_md_path, capture_md_path, learning_md_path, **kwargs):
+            assert summary_md_path == summary_base / folder / "a-2.md"
+            assert capture_md_path == capture_base / folder / "a-2.md"
+            learning_md_path.parent.mkdir(parents=True, exist_ok=True)
+            learning_md_path.write_text(
+                f'---\nvideo_id: "{video.video_id}"\n---\n\nlearning body\n',
+                encoding="utf-8",
+            )
+            return ClaudeResponse(
+                text="learning body",
+                model="sonnet",
+                input_tokens=1,
+                output_tokens=2,
+                total_cost_usd=0.01,
+            )
+
+        monkeypatch.setattr(vp_mod, "run_stage_learning", fake_learning)
+
+        result = vp_mod._process_video(
+            _vid(_VID_A),
+            resume_time,
+            dry_run=False,
+            capture_format="auto",
+            models={"stage_02": "sonnet", "stage_04": "sonnet"},
+            resume_reviewed=True,
+            playlist_title="testlist",
+            vault_root=config.get_vault_root(),
+        )
+
+        assert result.ok
+        assert result.learning_md_path == (
+            tmp_path / LEARNING_BASE / UNIT_DIRS["learning"] / folder / "a-2.md"
+        )
+
     def test_same_day_folder_candidates_are_newest_first(self, tmp_path: Path):
         # iterdir() order is filesystem-dependent; the fallback must not depend
         # on it when two Phase 1 runs exist for the same playlist.
