@@ -432,9 +432,7 @@ class TestResumeReviewedProcessing:
 
         assert found == sibling
 
-    def test_pinned_capture_lookup_does_not_use_differently_suffixed_sibling(
-        self, tmp_path: Path
-    ):
+    def test_pinned_capture_lookup_does_not_use_differently_suffixed_sibling(self, tmp_path: Path):
         # Reviewed summary is a-2.md but only the stale a.md capture remains.
         # Falling back would silently feed Stage 04 the wrong images.
         config.set_vault_root(tmp_path)
