@@ -250,11 +250,17 @@ def run_stage_summary(
         # the value, is what has to hold. Same class as folding after the strip:
         # a transform sitting behind its own check.
         #
-        # Normalizing the whole body before ``_extract_one_liner`` is also what
-        # keeps the one-liner covered, so it needs no separate call.
-        if glossary is not None:
-            body = normalize_text(body, glossary)
+        # It runs *after* ``_extract_one_liner``, not before: the extractor keys
+        # off the literal ``ONE_LINER:`` marker and the glossary rewrites
+        # arbitrary substrings, so an alias of ``ONE_LINER`` would rename the
+        # marker out from under it — dropping the one-liner and leaving the
+        # renamed marker in the body. Parse structure first, substitute into
+        # the parts second.
         one_liner, body_without_marker = _extract_one_liner(body)
+        if glossary is not None:
+            body_without_marker = normalize_text(body_without_marker, glossary)
+            if one_liner is not None:
+                one_liner = normalize_text(one_liner, glossary)
         validated = _validate_summary_output(body_without_marker)
         # The body is already homoglyph-folded inside _validate_summary_output
         # (folded BEFORE the HTML/embed/Templater strip so a Cyrillic-obfuscated
@@ -282,24 +288,33 @@ def _validate_summary_output(body: str) -> str:
     would let a Cyrillic/Greek-obfuscated tag such as ``<sсript>`` survive the
     strip and only then fold into a live ``<script>``; folding up front means
     the strip operates on the canonical text. The fold is idempotent.
+
+    The section/range checks then run on the **stripped** body, not the raw
+    one. They exist to guarantee what Stage 03 will parse, and what Stage 03
+    parses is what gets written — so checking before the strip meant checking
+    text that no longer existed. Markers hidden inside a removable construct
+    (``<%\\n## 全体サマリ\\n### [00:00 ~ 00:30] x\\n%>``) satisfied the check and
+    were then deleted, and because nothing raised, the repair loop never ran
+    and a body with no required section reached disk.
     """
     body = fold_markdown_mixed_script_confusables(body)
     if len(body) > _MAX_OUTPUT_CHARS:
         raise SummaryOutputError(f"summary body exceeds {_MAX_OUTPUT_CHARS} chars: {len(body)}")
 
-    missing = [h for h in _REQUIRED_H2 if h not in body]
-    if missing:
-        raise SummaryOutputError(f"summary missing required sections: {missing}")
-
-    if not _RANGE_HEADING_RE.search(body):
-        raise SummaryOutputError(
-            "summary has no `### [MM:SS ~ MM:SS] ...` heading; Stage 03 would have no ranges"
-        )
-
     # Stage 02 output never legitimately embeds images; pass empty
     # `allowed_assets` so any `![[...]]` is replaced with a dropped-
     # embed comment. HTML tags and Templater syntax are always stripped.
     cleaned = validate_chapter_body(body, frozenset())
+
+    missing = [h for h in _REQUIRED_H2 if h not in cleaned]
+    if missing:
+        raise SummaryOutputError(f"summary missing required sections: {missing}")
+
+    if not _RANGE_HEADING_RE.search(cleaned):
+        raise SummaryOutputError(
+            "summary has no `### [MM:SS ~ MM:SS] ...` heading; Stage 03 would have no ranges"
+        )
+
     if cleaned != body:
         _log.info("summary body passed structural validation with content stripped")
     return cleaned
