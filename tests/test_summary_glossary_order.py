@@ -82,7 +82,12 @@ def _glossary(canonical: str) -> Glossary:
     return Glossary(entries=(GlossaryEntry(canonical=canonical, aliases=[_ALIAS]),))
 
 
-def _run(vault: Path, monkeypatch, glossary: Glossary | None) -> tuple[str, str]:
+def _run_with(
+    vault: Path,
+    monkeypatch,
+    glossary: Glossary | None,
+    model_output: str = _MODEL_OUTPUT,
+) -> tuple[str, str]:
     """Run Stage 02 and return the written note as ``(frontmatter, body)``.
 
     Split because the two halves have different guarantees: the body is what
@@ -100,10 +105,14 @@ def _run(vault: Path, monkeypatch, glossary: Glossary | None) -> tuple[str, str]
         language="ja",
         snippets=[TranscriptSnippet(f"{_ALIAS}の導入", 0.0, 30.0)],
     )
-    monkeypatch.setattr(summary_stage, "invoke_claude", lambda **kw: _fake_response(_MODEL_OUTPUT))
+    monkeypatch.setattr(summary_stage, "invoke_claude", lambda **kw: _fake_response(model_output))
     summary_stage.run_stage_summary(video, paths["summary"], transcript, glossary=glossary)
     frontmatter, _, body = paths["summary"].read_text(encoding="utf-8").partition("\n---\n")
     return frontmatter, body
+
+
+def _run(vault: Path, monkeypatch, glossary: Glossary | None) -> tuple[str, str]:
+    return _run_with(vault, monkeypatch, glossary)
 
 
 class TestSubstitutedCanonicalsAreValidated:
@@ -212,6 +221,11 @@ class TestOneLinerStillBypassesValidation:
     and ``_escape_yaml`` on the way into frontmatter. That is a missing check,
     not a mis-ordered one, so it is outside this change's perspective.
 
+    It matters more than a single note: ``glossary.json`` is persistent, so a
+    canonical that lands there reaches the frontmatter of *every* later
+    summary, not just the run that introduced it. Closing the body made the
+    one-liner the remaining entrance.
+
     Measured on the parent commit and on this one with the same hostile
     canonical:
 
@@ -243,26 +257,6 @@ class TestSubstitutionCannotSteerTheFormat:
     invariant, different failure surface.
     """
 
-    def _run_with(
-        self, vault: Path, monkeypatch, glossary: Glossary | None, model_output: str
-    ) -> tuple[str, str]:
-        video = _video()
-        paths = create_placeholder_notes(
-            video, datetime(2026, 4, 14, 21, 41), dry_run=False, vault_root=vault
-        )
-        transcript = build_result(
-            video_id="_h3decBW12Q",
-            source=TranscriptSource.OFFICIAL,
-            language="ja",
-            snippets=[TranscriptSnippet("導入", 0.0, 30.0)],
-        )
-        monkeypatch.setattr(
-            summary_stage, "invoke_claude", lambda **kw: _fake_response(model_output)
-        )
-        summary_stage.run_stage_summary(video, paths["summary"], transcript, glossary=glossary)
-        frontmatter, _, body = paths["summary"].read_text(encoding="utf-8").partition("\n---\n")
-        return frontmatter, body
-
     # Required markers hidden where the strip will delete them.
     _HIDDEN_MARKERS = "<%\n## 全体サマリ\n## 要点タイムライン\n### [00:00 ~ 00:30] x\n%>"
     _NO_MARKERS = f"ONE_LINER: t\n\n必須見出しの無い出力です。{_ALIAS}\n"
@@ -275,7 +269,7 @@ class TestSubstitutionCannotSteerTheFormat:
         no required section reached disk instead of failing loudly.
         """
         with pytest.raises(summary_stage.SummaryOutputError, match="missing required sections"):
-            self._run_with(vault, monkeypatch, _glossary(self._HIDDEN_MARKERS), self._NO_MARKERS)
+            _run_with(vault, monkeypatch, _glossary(self._HIDDEN_MARKERS), self._NO_MARKERS)
 
     def test_model_output_cannot_fake_them_either(self, vault, monkeypatch):
         """Same defect without any glossary — it predates this change.
@@ -284,7 +278,7 @@ class TestSubstitutionCannotSteerTheFormat:
         only re-guards the glossary would leave this one open.
         """
         with pytest.raises(summary_stage.SummaryOutputError, match="missing required sections"):
-            self._run_with(vault, monkeypatch, None, self._NO_MARKERS + self._HIDDEN_MARKERS)
+            _run_with(vault, monkeypatch, None, self._NO_MARKERS + self._HIDDEN_MARKERS)
 
     def test_an_alias_cannot_rename_the_one_liner_marker(self, vault, monkeypatch):
         """``ONE_LINER:`` is format, not prose — the glossary must not touch it.
@@ -293,7 +287,7 @@ class TestSubstitutionCannotSteerTheFormat:
         rename the marker, so extraction returned nothing and the renamed
         marker stayed in the body.
         """
-        frontmatter, body = self._run_with(
+        frontmatter, body = _run_with(
             vault,
             monkeypatch,
             Glossary(entries=(GlossaryEntry(canonical="One-liner", aliases=["ONE_LINER"]),)),
@@ -302,3 +296,19 @@ class TestSubstitutionCannotSteerTheFormat:
 
         assert f'one_liner: "{_ALIAS}入門"' in frontmatter
         assert "One-liner:" not in body
+
+    def test_unsanitizable_canonical_surfaces_as_a_summary_error(self, vault, monkeypatch):
+        """A canonical the sanitizer cannot settle must not leak its own type.
+
+        ``validate_chapter_body`` raises ``BodyValidationError`` when markup
+        outlives its pass cap. Substituting before validation put the glossary
+        on that path, so one canonical with deeply nested markup aborted
+        *every* summary using it — permanently, because the glossary is
+        persistent. Measured against the parent, where the glossary never
+        reached the sanitizer. This repo has no repair loop, so the contract is
+        "one failure type from this stage", not "degrade and continue".
+        """
+        nested = "<scr<scr<scr<scr<script>ipt>ipt>ipt>ipt>"
+
+        with pytest.raises(summary_stage.SummaryOutputError, match="could not be sanitized"):
+            _run_with(vault, monkeypatch, _glossary(nested))
