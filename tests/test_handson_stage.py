@@ -222,3 +222,36 @@ class TestRunStageHandson:
         result = _run(vault)
         assert result.error is not None
         assert "RuntimeError" in result.error
+
+    def test_same_minute_rerun_does_not_overwrite_prior_notes(self, vault: Path, monkeypatch):
+        """Same HHmm folder must not wipe a prior successful hands-on run.
+
+        Scripts notes alone used ``resolve_unique_path`` (got ``-2``), while
+        ``00_MOC.md`` / step notes / clips reused fixed names under the same
+        folder and silently overwrote — asymmetric data loss on a same-minute
+        retry.
+        """
+        _stub_pipeline(monkeypatch)
+        first = _run(vault)
+        assert first.error is None
+        assert first.moc_path is not None
+        marker = "FIRST-RUN-MOC-MARKER"
+        first.moc_path.write_text(
+            first.moc_path.read_text(encoding="utf-8") + f"\n{marker}\n",
+            encoding="utf-8",
+        )
+        first_folder = first.moc_path.parent
+        first_moc = first.moc_path.read_text(encoding="utf-8")
+
+        second = _run(vault)
+        assert second.error is None
+        assert second.moc_path is not None
+        assert second.moc_path.parent != first_folder
+        assert second.moc_path.parent.name.endswith("-2")
+        assert first.moc_path.read_text(encoding="utf-8") == first_moc
+        assert marker in first.moc_path.read_text(encoding="utf-8")
+        assert marker not in second.moc_path.read_text(encoding="utf-8")
+
+        # Assets subfolder and scripts folder must track the same uniquified name
+        # so embeds stay coherent with the notes that reference them.
+        assert second.moc_path.parent.name in (second.step_paths[0].read_text(encoding="utf-8"))
