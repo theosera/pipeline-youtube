@@ -47,7 +47,7 @@ from ..services.confusables import (
     fold_markdown_mixed_script_confusables,
     fold_mixed_script_confusables,
 )
-from ..synthesis.body_validator import validate_chapter_body
+from ..synthesis.body_validator import BodyValidationError, validate_chapter_body
 from ..transcript.base import TranscriptResult
 from ..transcript.chunking import Chunk, chunk_by_window
 
@@ -217,12 +217,13 @@ def run_stage_summary(
     Empty transcripts are handled gracefully (a placeholder body is
     written and a zero-usage synthetic ClaudeResponse returned).
 
-    When ``glossary`` is provided, the validated body and one-liner are
-    deterministically normalized (known proper-noun mis-transcriptions →
-    canonical spelling) before disk write. ``None`` (default) is a no-op,
-    so existing callers and behavior are unchanged. The model still does
-    context-only cleansing; this layer adds glossary-backed correction
-    without inventing anything not already in the glossary.
+    When ``glossary`` is provided, the model output is deterministically
+    normalized (known proper-noun mis-transcriptions → canonical spelling)
+    and then validated — in that order, so the spliced-in canonicals are
+    themselves sanitized. ``None`` (default) is a no-op, so existing callers
+    and behavior are unchanged. The model still does context-only cleansing;
+    this layer adds glossary-backed correction without inventing anything not
+    already in the glossary.
     """
     chunks = chunk_by_window(transcript_result.snippets, window_seconds, filler_words=filler_words)
 
@@ -240,12 +241,27 @@ def run_stage_summary(
 
     body = response.text.strip()
     if body and not dry_run:
+        # Substitute before validating, not after. The glossary splices
+        # canonical strings into the body, and nothing between the glossary and
+        # the vault inspects them, so substituting afterwards wrote whatever the
+        # glossary held straight to disk. Its two sources are a per-run sheet
+        # and the persistent ``glossary.json``, and a value that lands in the
+        # latter is spliced into *every* later summary — so the ordering, not
+        # the value, is what has to hold. Same class as folding after the strip:
+        # a transform sitting behind its own check.
+        #
+        # It runs *after* ``_extract_one_liner``, not before: the extractor keys
+        # off the literal ``ONE_LINER:`` marker and the glossary rewrites
+        # arbitrary substrings, so an alias of ``ONE_LINER`` would rename the
+        # marker out from under it — dropping the one-liner and leaving the
+        # renamed marker in the body. Parse structure first, substitute into
+        # the parts second.
         one_liner, body_without_marker = _extract_one_liner(body)
-        validated = _validate_summary_output(body_without_marker)
         if glossary is not None:
-            validated = normalize_text(validated, glossary)
+            body_without_marker = normalize_text(body_without_marker, glossary)
             if one_liner is not None:
                 one_liner = normalize_text(one_liner, glossary)
+        validated = _validate_summary_output(body_without_marker)
         # The body is already homoglyph-folded inside _validate_summary_output
         # (folded BEFORE the HTML/embed/Templater strip so a Cyrillic-obfuscated
         # tag cannot re-materialize as active markup after sanitization). The
@@ -272,24 +288,42 @@ def _validate_summary_output(body: str) -> str:
     would let a Cyrillic/Greek-obfuscated tag such as ``<sсript>`` survive the
     strip and only then fold into a live ``<script>``; folding up front means
     the strip operates on the canonical text. The fold is idempotent.
+
+    The section/range checks then run on the **stripped** body, not the raw
+    one. They exist to guarantee what Stage 03 will parse, and what Stage 03
+    parses is what gets written — so checking before the strip meant checking
+    text that no longer existed. Markers hidden inside a removable construct
+    (``<%\\n## 全体サマリ\\n### [00:00 ~ 00:30] x\\n%>``) satisfied the check and
+    were then deleted, and because nothing raised, the repair loop never ran
+    and a body with no required section reached disk.
     """
     body = fold_markdown_mixed_script_confusables(body)
     if len(body) > _MAX_OUTPUT_CHARS:
         raise SummaryOutputError(f"summary body exceeds {_MAX_OUTPUT_CHARS} chars: {len(body)}")
 
-    missing = [h for h in _REQUIRED_H2 if h not in body]
+    # Stage 02 output never legitimately embeds images; pass empty
+    # `allowed_assets` so any `![[...]]` is replaced with a dropped-
+    # embed comment. HTML tags and Templater syntax are always stripped.
+    #
+    # A body the sanitizer cannot settle raises ``BodyValidationError``, which
+    # is re-raised as this stage's own error so callers see one failure type.
+    # Left to escape, one glossary canonical with deeply nested markup would abort
+    # every summary that uses it — and the glossary is persistent, so that is
+    # not a per-run failure but a permanent one.
+    try:
+        cleaned = validate_chapter_body(body, frozenset())
+    except BodyValidationError as e:
+        raise SummaryOutputError(f"summary body could not be sanitized: {e}") from e
+
+    missing = [h for h in _REQUIRED_H2 if h not in cleaned]
     if missing:
         raise SummaryOutputError(f"summary missing required sections: {missing}")
 
-    if not _RANGE_HEADING_RE.search(body):
+    if not _RANGE_HEADING_RE.search(cleaned):
         raise SummaryOutputError(
             "summary has no `### [MM:SS ~ MM:SS] ...` heading; Stage 03 would have no ranges"
         )
 
-    # Stage 02 output never legitimately embeds images; pass empty
-    # `allowed_assets` so any `![[...]]` is replaced with a dropped-
-    # embed comment. HTML tags and Templater syntax are always stripped.
-    cleaned = validate_chapter_body(body, frozenset())
     if cleaned != body:
         _log.info("summary body passed structural validation with content stripped")
     return cleaned
