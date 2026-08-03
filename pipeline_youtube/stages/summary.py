@@ -217,12 +217,13 @@ def run_stage_summary(
     Empty transcripts are handled gracefully (a placeholder body is
     written and a zero-usage synthetic ClaudeResponse returned).
 
-    When ``glossary`` is provided, the validated body and one-liner are
-    deterministically normalized (known proper-noun mis-transcriptions →
-    canonical spelling) before disk write. ``None`` (default) is a no-op,
-    so existing callers and behavior are unchanged. The model still does
-    context-only cleansing; this layer adds glossary-backed correction
-    without inventing anything not already in the glossary.
+    When ``glossary`` is provided, the model output is deterministically
+    normalized (known proper-noun mis-transcriptions → canonical spelling)
+    and then validated — in that order, so the spliced-in canonicals are
+    themselves sanitized. ``None`` (default) is a no-op, so existing callers
+    and behavior are unchanged. The model still does context-only cleansing;
+    this layer adds glossary-backed correction without inventing anything not
+    already in the glossary.
     """
     chunks = chunk_by_window(transcript_result.snippets, window_seconds, filler_words=filler_words)
 
@@ -240,12 +241,21 @@ def run_stage_summary(
 
     body = response.text.strip()
     if body and not dry_run:
+        # Substitute before validating, not after. The glossary splices
+        # canonical strings into the body, and nothing between the glossary and
+        # the vault inspects them, so substituting afterwards wrote whatever the
+        # glossary held straight to disk. Its two sources are a per-run sheet
+        # and the persistent ``glossary.json``, and a value that lands in the
+        # latter is spliced into *every* later summary — so the ordering, not
+        # the value, is what has to hold. Same class as folding after the strip:
+        # a transform sitting behind its own check.
+        #
+        # Normalizing the whole body before ``_extract_one_liner`` is also what
+        # keeps the one-liner covered, so it needs no separate call.
+        if glossary is not None:
+            body = normalize_text(body, glossary)
         one_liner, body_without_marker = _extract_one_liner(body)
         validated = _validate_summary_output(body_without_marker)
-        if glossary is not None:
-            validated = normalize_text(validated, glossary)
-            if one_liner is not None:
-                one_liner = normalize_text(one_liner, glossary)
         # The body is already homoglyph-folded inside _validate_summary_output
         # (folded BEFORE the HTML/embed/Templater strip so a Cyrillic-obfuscated
         # tag cannot re-materialize as active markup after sanitization). The
