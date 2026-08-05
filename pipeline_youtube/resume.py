@@ -311,14 +311,19 @@ def _unit_folder_candidates(base: Path, playlist_title: str, run_date: datetime)
     ``video_id`` would let Phase 3 consume the wrong 02/03 notes and write
     Stage 04 into the Advanced folder.
     """
-    from .obsidian import _strip_playlist_category_prefix, sanitize_title_for_filename
+    from .obsidian import (
+        _strip_playlist_category_prefix,
+        limit_title_for_path_component,
+        sanitize_title_for_filename,
+    )
 
     canonical_name = format_playlist_folder_name(run_date, playlist_title)
     yield base / canonical_name
 
     date_prefix = run_date.strftime("%Y-%m-%d")
     display_title = _strip_playlist_category_prefix(playlist_title)
-    title_needle = sanitize_title_for_filename(display_title)
+    # Capped like playlist_folder_title's side, or a long title never matches.
+    title_needle = limit_title_for_path_component(sanitize_title_for_filename(display_title))
     if not title_needle:
         return
     try:

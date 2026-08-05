@@ -155,10 +155,11 @@ def _find_learning_folders(
 
     # Also handle `/`-separated playlist titles (take last segment). Guard on the
     # stripped title: an empty needle must not match every dated folder.
-    from ..obsidian import _strip_playlist_category_prefix
+    from ..obsidian import _strip_playlist_category_prefix, limit_title_for_path_component
 
     display_title = _strip_playlist_category_prefix(playlist_title)
-    title_needle = sanitize_title_for_filename(display_title)
+    # Capped like playlist_folder_title's side, or a long title never matches.
+    title_needle = limit_title_for_path_component(sanitize_title_for_filename(display_title))
 
     matches: list[Path] = []
     if title_needle:
