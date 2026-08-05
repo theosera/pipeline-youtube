@@ -135,10 +135,12 @@ def _find_learning_folder(
     # Also handle `/`-separated playlist titles (take last segment). Guard on the
     # stripped title that is actually used below: an empty needle would make the
     # `in child.name` substring test match every date-prefixed folder.
-    from ..obsidian import _strip_playlist_category_prefix
+    from ..obsidian import _strip_playlist_category_prefix, limit_title_for_path_component
 
     display_title = _strip_playlist_category_prefix(playlist_title)
-    title_needle = sanitize_title_for_filename(display_title)
+    # Align with format_playlist_folder_name's UTF-8 byte budget so capped
+    # folder names remain discoverable.
+    title_needle = limit_title_for_path_component(sanitize_title_for_filename(display_title))
     if not title_needle:
         return None
 
