@@ -262,14 +262,20 @@ def _unit_folder_candidates(base: Path, playlist_title: str, run_date: datetime)
     ``--run-timestamp``) can never outrank today's run. Historical folders must
     also match the title exactly — see the comment on that tier below.
     """
-    from .obsidian import _strip_playlist_category_prefix, sanitize_title_for_filename
+    from .obsidian import (
+        _strip_playlist_category_prefix,
+        limit_title_for_path_component,
+        sanitize_title_for_filename,
+    )
 
     canonical_name = format_playlist_folder_name(run_date, playlist_title)
     yield base / canonical_name
 
     date_prefix = run_date.strftime("%Y-%m-%d")
     display_title = _strip_playlist_category_prefix(playlist_title)
-    title_needle = sanitize_title_for_filename(display_title)
+    # Must match format_playlist_folder_name's title budget; otherwise a
+    # byte-truncated folder is invisible to the full-title needle.
+    title_needle = limit_title_for_path_component(sanitize_title_for_filename(display_title))
     if not title_needle:
         return
     try:
@@ -306,10 +312,15 @@ def _unit_folder_candidates(base: Path, playlist_title: str, run_date: datetime)
     # "Python" would accept "2026-04-17-0900 Python Advanced", and if that run
     # covered the same video its reviewed summary (and, via the pinned lookup,
     # its captures) would be consumed instead.
+    #
+    # Limit both sides: folders written before the path-component byte cap may
+    # still hold a longer title on disk, and comparing the unlimited form to a
+    # capped needle would miss them.
     yield from (
         child
         for child in matches
-        if child.name[:10] < date_prefix and _folder_title(child.name) == title_needle
+        if child.name[:10] < date_prefix
+        and limit_title_for_path_component(_folder_title(child.name)) == title_needle
     )
 
 
