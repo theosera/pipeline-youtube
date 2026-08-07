@@ -402,6 +402,12 @@ class TestRunStageCapture:
         assert rerun_paths["capture"] != paths["capture"]
         assert rerun_paths["capture"].parent == paths["capture"].parent
         assert rerun_paths["capture"].name.endswith("-2.md")
+        # Stage 03 reads ranges from the paired summary note.
+        rerun_summary = rerun_paths["summary"]
+        rerun_summary.write_text(
+            rerun_summary.read_text(encoding="utf-8") + "\n" + SAMPLE_SUMMARY,
+            encoding="utf-8",
+        )
 
         # Distinct marker bytes so an overwrite would be detectable.
         def fake_rerun_ffmpeg(*args, **kwargs):
