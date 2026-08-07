@@ -359,6 +359,88 @@ class TestRunStageCapture:
         assert f"![[{playlist_folder}/pyt__h3decBW12Q_00.webp]]" in body
         assert "<!-- capture failed:" in body
 
+    def test_same_folder_rerun_preserves_prior_captures(self, vault, monkeypatch):
+        """Same-minute / --force-video rerun must not clobber prior WebPs.
+
+        Notes get ``Title-2.md`` via ``resolve_unique_path``, but captures used
+        to overwrite ``pyt_{id}_NN.webp`` with ffmpeg ``-y``. The earlier
+        note's embeds would then silently show the rerun's frames.
+        """
+        video, paths = _setup_case(vault)
+
+        def fake_download(url, dest, resolution="480", *, backend=None):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"stub")
+
+        monkeypatch.setattr(capture_stage, "_download_video", fake_download)
+        monkeypatch.setattr(
+            capture_stage,
+            "_resolve_capture_format",
+            lambda _fmt, _backend: _FormatChoice(ext="webp", strategy="direct"),
+        )
+        monkeypatch.setattr(subprocess, "run", _fake_successful_ffmpeg)
+
+        first = run_stage_capture(
+            video,
+            summary_md_path=paths["summary"],
+            capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
+        )
+        assert first.success_count == 4
+        prior_paths = list(first.image_paths)
+        prior_bytes = {p: p.read_bytes() for p in prior_paths}
+        playlist_folder = paths["capture"].parent.name
+        prior_body = paths["capture"].read_text(encoding="utf-8")
+
+        # Second placeholder in the same playlist folder (same run_time).
+        rerun_paths = create_placeholder_notes(
+            video,
+            datetime(2026, 4, 14, 21, 41),
+            dry_run=False,
+            vault_root=config.get_vault_root(),
+        )
+        assert rerun_paths["capture"] != paths["capture"]
+        assert rerun_paths["capture"].parent == paths["capture"].parent
+        assert rerun_paths["capture"].name.endswith("-2.md")
+
+        # Distinct marker bytes so an overwrite would be detectable.
+        def fake_rerun_ffmpeg(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args")
+            output_path = Path(cmd[-1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"RERUN")
+            return MagicMock(returncode=0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(subprocess, "run", fake_rerun_ffmpeg)
+
+        second = run_stage_capture(
+            video,
+            summary_md_path=rerun_paths["summary"],
+            capture_md_path=rerun_paths["capture"],
+            vault_root=config.get_vault_root(),
+        )
+        assert second.success_count == 4
+
+        for p in prior_paths:
+            assert p.exists()
+            assert p.read_bytes() == prior_bytes[p], f"prior capture overwritten: {p.name}"
+
+        rerun_names = [p.name for p in second.image_paths]
+        assert rerun_names == [
+            "pyt__h3decBW12Q_00-2.webp",
+            "pyt__h3decBW12Q_01-2.webp",
+            "pyt__h3decBW12Q_02-2.webp",
+            "pyt__h3decBW12Q_03-2.webp",
+        ]
+        for p in second.image_paths:
+            assert p.read_bytes() == b"RERUN"
+            assert p.parent.name == playlist_folder
+
+        assert paths["capture"].read_text(encoding="utf-8") == prior_body
+        rerun_body = rerun_paths["capture"].read_text(encoding="utf-8")
+        assert f"![[{playlist_folder}/pyt__h3decBW12Q_00-2.webp]]" in rerun_body
+        assert f"![[{playlist_folder}/pyt__h3decBW12Q_00.webp]]" not in rerun_body
+
     def test_temp_video_deleted_after_run(self, vault, monkeypatch):
         video, paths = _setup_case(vault)
         recorded_paths: list[Path] = []

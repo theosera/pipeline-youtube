@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from ..obsidian import resolve_unique_path
 from ..path_safety import ensure_safe_path
 from ..playlist import VideoMeta
 from .capture_backend import CaptureBackend, HostCaptureBackend
@@ -408,7 +409,11 @@ def run_stage_capture(
     try:
         for rng in ranges:
             image_name = _capture_image_name(video.video_id, success_counter, ext)
-            image_path = assets_dir / image_name
+            # Same-minute / --force-video reruns keep the playlist folder but
+            # allocate Title-2.md via resolve_unique_path. Without the same
+            # uniqueness here, ffmpeg -y would clobber pyt_{id}_NN.* that the
+            # earlier notes still embed.
+            image_path = resolve_unique_path(assets_dir, Path(image_name).stem, f".{ext}")
 
             start = max(0.0, rng.center_sec - window_seconds / 2.0)
             try:
