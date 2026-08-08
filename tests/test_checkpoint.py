@@ -127,3 +127,23 @@ class TestGetCompletedVideoIds:
     def test_no_folder_returns_empty_set(self, vault):
         dt = datetime(2026, 4, 16, 9, 14)
         assert get_completed_video_ids("nonexistent", dt, vault_root=vault) == set()
+
+    def test_shorter_playlist_does_not_claim_longer_same_day_sibling(self, vault):
+        """Substring fallback must not skip 01–04 using another playlist's 04.
+
+        Same-day ``ML Python Advanced`` already holds video X. Running the
+        shorter playlist ``ML Python`` (which also contains X) must not treat
+        that sibling folder as its own checkpoint — otherwise Stage 05 ingests
+        the foreign body and the shorter playlist never writes its own notes.
+        """
+        dt = datetime(2026, 4, 16, 10, 0)
+        _create_04_md(vault, "2026-04-16-0900 ML Python Advanced", _VID_A, "共有動画")
+        assert is_video_complete(_VID_A, "ML Python", dt, vault_root=vault) is False
+        assert get_completed_video_ids("ML Python", dt, vault_root=vault) == set()
+
+    def test_same_playlist_earlier_same_day_still_checkpoints(self, vault):
+        """Exact title match still finds an earlier same-day run of *this* playlist."""
+        dt = datetime(2026, 4, 16, 10, 0)
+        _create_04_md(vault, "2026-04-16-0900 ML Python", _VID_A, "動画")
+        assert is_video_complete(_VID_A, "ML Python", dt, vault_root=vault) is True
+        assert get_completed_video_ids("ML Python", dt, vault_root=vault) == {_VID_A}
