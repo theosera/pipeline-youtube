@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -58,11 +59,11 @@ def _write_capture(path: Path, video_id: str) -> None:
     )
 
 
-def _write_learning(path: Path, video_id: str, body: str = "learning body") -> None:
+def _write_learning(path: Path, video_id: str, body: str = "learning body\n") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         f'---\ndate: 2026-04-18 08:00\ntitle: "x"\nplaylist: "testlist"\n'
-        f'video_id: "{video_id}"\n---\n\n{body}\n',
+        f'video_id: "{video_id}"\n---\n\n{body}',
         encoding="utf-8",
     )
 
@@ -312,6 +313,29 @@ class TestCollectExistingLearningBodies:
                 vault_root=config.get_vault_root(),
             )
 
+    def test_prefers_newer_collision_suffix_over_stale_unsuffixed(self, tmp_path: Path):
+        # --force-video + same --run-timestamp leaves Title.md and Title-2.md.
+        # ASCII sort puts Title-2.md first; a last-wins dict then kept Title.md.
+        config.set_vault_root(tmp_path)
+        folder = tmp_path / LEARNING_BASE / UNIT_DIRS["learning"] / "2026-04-18-0800 testlist"
+        stale = folder / "Talk.md"
+        fresh = folder / "Talk-2.md"
+        _write_learning(stale, _VID_1, body="stale body\n")
+        _write_learning(fresh, _VID_1, body="forced rewrite\n")
+        # Deterministic freshness: force-video rewrite is always newer on disk.
+        os.utime(stale, (1_700_000_000, 1_700_000_000))
+        os.utime(fresh, (1_700_000_100, 1_700_000_100))
+
+        videos, bodies, _ = _collect_existing_learning_bodies(
+            [_vid(_VID_1)],
+            "testlist",
+            datetime(2026, 4, 18, 8, 0),
+            vault_root=config.get_vault_root(),
+        )
+
+        assert [video.video_id for video in videos] == [_VID_1]
+        assert bodies == ["forced rewrite\n"]
+
 
 class TestResumeReviewedProcessing:
     def test_existing_04_lookup_keeps_checkpoint_skips_in_original_folder(self, tmp_path: Path):
@@ -341,8 +365,8 @@ class TestResumeReviewedProcessing:
         afternoon = tmp_path / LEARNING_BASE / UNIT_DIRS["learning"] / "2026-04-18-1400 testlist"
         morning_md = morning / "a.md"
         afternoon_md = afternoon / "a.md"
-        _write_learning(morning_md, _VID_A, "morning-stale")
-        _write_learning(afternoon_md, _VID_A, "afternoon-updated")
+        _write_learning(morning_md, _VID_A, "morning-stale\n")
+        _write_learning(afternoon_md, _VID_A, "afternoon-updated\n")
 
         base = tmp_path / LEARNING_BASE / UNIT_DIRS["learning"]
         real_iterdir = Path.iterdir
@@ -360,6 +384,22 @@ class TestResumeReviewedProcessing:
         assert _find_existing_04_md(_VID_A, "testlist", dt, vault_root=vault) == afternoon_md
         assert _load_existing_04_body(_VID_A, "testlist", dt, vault_root=vault) == (
             "afternoon-updated\n"
+        )
+
+    def test_existing_04_lookup_prefers_forced_collision_suffix(self, tmp_path: Path):
+        config.set_vault_root(tmp_path)
+        dt = datetime(2026, 4, 18, 12, 0)
+        folder = tmp_path / LEARNING_BASE / UNIT_DIRS["learning"] / "2026-04-18-0800 testlist"
+        stale = folder / "Talk.md"
+        fresh = folder / "Talk-2.md"
+        _write_learning(stale, _VID_A, body="stale\n")
+        _write_learning(fresh, _VID_A, body="forced\n")
+        os.utime(stale, (1_700_000_000, 1_700_000_000))
+        os.utime(fresh, (1_700_000_100, 1_700_000_100))
+
+        assert (
+            _find_existing_04_md(_VID_A, "testlist", dt, vault_root=config.get_vault_root())
+            == fresh
         )
 
     def test_runs_only_stage_04_against_existing_reviewed_notes(self, tmp_path: Path, monkeypatch):
