@@ -25,6 +25,45 @@ from .run_result import _strip_frontmatter
 # The match covers the date (and time when present); the rest is the title.
 _DATED_FOLDER_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:-\d{4})?")
 
+# ``resolve_unique_path`` appends ``-2``, ``-3``, … on same-folder collisions.
+_COLLISION_SUFFIX_RE = re.compile(r"-(\d+)$")
+
+
+def _collision_suffix_n(stem: str) -> int:
+    """Return the ``resolve_unique_path`` collision ordinal for a note stem.
+
+    Unsuffixed stems count as ``1``. A trailing ``-N`` with ``N >= 2`` is the
+    collision ordinal; bare titles that happen to end in ``-1`` stay at ``1``.
+    """
+    match = _COLLISION_SUFFIX_RE.search(stem)
+    if match is None:
+        return 1
+    n = int(match.group(1))
+    return n if n >= 2 else 1
+
+
+def _prefer_latest_unit_md(candidates: list[Path]) -> Path | None:
+    """Pick the freshest note among several files for the same ``video_id``.
+
+    Same-folder rewrites (``--force-video`` + matching ``--run-timestamp``)
+    leave both ``Title.md`` and ``Title-2.md``. A ``sorted(glob)`` last-wins
+    dict keeps the *stale* unsuffixed file because ``Title-2.md`` sorts before
+    ``Title.md`` (``'-' < '.'``). Prefer newer mtime, then higher collision
+    suffix, so later consumers (checkpoint skip / ``--synthesis-only``) feed
+    Stage 05 the forced rewrite.
+    """
+    if not candidates:
+        return None
+
+    def sort_key(path: Path) -> tuple[int, int, str]:
+        try:
+            mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = -1
+        return (mtime_ns, _collision_suffix_n(path.stem), path.name)
+
+    return max(candidates, key=sort_key)
+
 
 def _parse_run_timestamp(run_timestamp: str | None) -> datetime:
     """Resolve the shared run_time, surfacing a bad --run-timestamp as a clean CLI error."""
@@ -153,10 +192,8 @@ def _find_existing_04_md(
     folder = _find_learning_folder(playlist_title, run_date, vault_root=vault_root)
     if folder is None:
         return None
-    for md in folder.glob("*.md"):
-        if read_trusted_video_id(md) == video_id:
-            return md
-    return None
+    matches = [md for md in folder.glob("*.md") if read_trusted_video_id(md) == video_id]
+    return _prefer_latest_unit_md(matches)
 
 
 def _load_existing_04_body(
@@ -374,8 +411,8 @@ def _collect_existing_learning_bodies(
         else:
             click.echo(f"(fallback: using folder {folder_name!r})")
 
-    by_video_id: dict[str, str] = {}
-    for md in sorted(learning_dir.glob("*.md")):
+    by_video_id: dict[str, Path] = {}
+    for md in learning_dir.glob("*.md"):
         try:
             data = md.read_bytes()
         except OSError:
@@ -383,14 +420,24 @@ def _collect_existing_learning_bodies(
         vid = extract_trusted_video_id(data)
         if vid is None:
             continue
-        text = data.decode("utf-8", errors="replace")
-        by_video_id[vid] = _strip_frontmatter(text)
+        prev = by_video_id.get(vid)
+        if prev is None:
+            by_video_id[vid] = md
+            continue
+        preferred = _prefer_latest_unit_md([prev, md])
+        if preferred is not None:
+            by_video_id[vid] = preferred
 
     matched_videos: list[VideoMeta] = []
     matched_bodies: list[str] = []
     for v in videos:
-        body = by_video_id.get(v.video_id)
-        if body:
-            matched_videos.append(v)
-            matched_bodies.append(body)
+        md = by_video_id.get(v.video_id)
+        if md is None:
+            continue
+        try:
+            text = md.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        matched_videos.append(v)
+        matched_bodies.append(_strip_frontmatter(text))
     return matched_videos, matched_bodies, folder_name
