@@ -47,6 +47,48 @@ class TestPrefetchHandle:
             assert isinstance(err, RuntimeError)
             assert "boom" in str(err)
 
+    def test_wait_timeout_does_not_abandon_in_flight_download(self):
+        """Stage 03 must not start a second yt-dlp on the same tmp path.
+
+        Host downloads have no timeout. ``wait(timeout=600)`` can therefore
+        expire while yt-dlp is still writing ``{video_id}.mp4``. The old
+        code returned that TimeoutError as a failure, so ``_process_video``
+        left ``prefetched_path`` unset and Stage 03 called ``_download_video``
+        again — which unlinks ``dest`` first, racing the in-flight fetch.
+        """
+        calls = {"n": 0}
+
+        def slow_download(url: str, dest: Path, resolution: str = "480", **kw: Any) -> None:
+            calls["n"] += 1
+            time.sleep(0.3)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"complete-video")
+
+        with patch("pipeline_youtube.stages.capture._download_video", slow_download):
+            handle = prefetch_video_download(_video())
+            err = handle.wait(timeout=0.05)
+
+        # Same contract ``_process_video`` uses to decide whether Stage 03
+        # should download again.
+        prefetched_path = handle.path if err is None and handle.path.exists() else None
+        assert err is None
+        assert prefetched_path is not None
+        assert calls["n"] == 1
+        assert prefetched_path.read_bytes() == b"complete-video"
+        handle.path.unlink(missing_ok=True)
+
+    def test_download_raised_timeout_is_still_a_failure(self):
+        """A completed TimeoutError from yt-dlp must not hang in the wait-out."""
+
+        def boom(url: str, dest: Path, resolution: str = "480", **kw: Any) -> None:
+            raise TimeoutError("yt-dlp hung")
+
+        with patch("pipeline_youtube.stages.capture._download_video", boom):
+            handle = prefetch_video_download(_video())
+            err = handle.wait(timeout=5.0)
+        assert isinstance(err, TimeoutError)
+        assert "yt-dlp hung" in str(err)
+
 
 class TestParallelOverlap:
     @pytest.mark.asyncio
