@@ -8,7 +8,9 @@ translation.
 
 from __future__ import annotations
 
+import os
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -20,8 +22,80 @@ from pipeline_youtube.stages.capture_backend import (
     DockerBackendNotReady,
     DockerCaptureBackend,
     HostCaptureBackend,
+    _adopt_ytdlp_output,
     _host_ffmpeg_encoders,
 )
+
+# =====================================================
+# _adopt_ytdlp_output (extension fallback after yt-dlp)
+# =====================================================
+
+
+class TestAdoptYtdlpOutput:
+    def test_noop_when_dest_exists(self, tmp_path: Path):
+        dest = tmp_path / "abc123abc12.mp4"
+        dest.write_bytes(b"dest")
+        leftover = tmp_path / "abc123abc12.webm"
+        leftover.write_bytes(b"webm")
+        _adopt_ytdlp_output(dest)
+        assert dest.read_bytes() == b"dest"
+        assert leftover.exists()
+
+    def test_adopts_same_stem_container(self, tmp_path: Path):
+        dest = tmp_path / "abc123abc12.mp4"
+        webm = tmp_path / "abc123abc12.webm"
+        webm.write_bytes(b"real-download")
+        _adopt_ytdlp_output(dest)
+        assert dest.read_bytes() == b"real-download"
+        assert not webm.exists()
+
+    def test_ignores_dash_fragment_leftover(self, tmp_path: Path):
+        """Interrupted DASH mux leaves `{id}.f137.mp4`; glob `{id}.*` matches it.
+
+        Lexicographic sort picked the fragment (`.f` < `.w`) and ffmpeg then
+        captured from a partial file. The real mux is `{id}.webm`.
+        """
+        dest = tmp_path / "abc123abc12.mp4"
+        fragment = tmp_path / "abc123abc12.f137.mp4"
+        fragment.write_bytes(b"partial-dash")
+        webm = tmp_path / "abc123abc12.webm"
+        webm.write_bytes(b"real-download")
+        _adopt_ytdlp_output(dest)
+        assert dest.read_bytes() == b"real-download"
+        assert fragment.exists()
+        assert fragment.read_bytes() == b"partial-dash"
+
+    def test_ignores_part_temp(self, tmp_path: Path):
+        dest = tmp_path / "abc123abc12.mp4"
+        part = tmp_path / "abc123abc12.mp4.part"
+        part.write_bytes(b"incomplete")
+        mkv = tmp_path / "abc123abc12.mkv"
+        mkv.write_bytes(b"real-download")
+        _adopt_ytdlp_output(dest)
+        assert dest.read_bytes() == b"real-download"
+        assert part.exists()
+
+    def test_fragment_only_is_not_adopted(self, tmp_path: Path):
+        dest = tmp_path / "abc123abc12.mp4"
+        fragment = tmp_path / "abc123abc12.f137.mp4"
+        fragment.write_bytes(b"partial-dash")
+        with pytest.raises(FileNotFoundError, match="produced no file"):
+            _adopt_ytdlp_output(dest)
+        assert fragment.exists()
+        assert not dest.exists()
+
+    def test_newer_same_stem_container_wins(self, tmp_path: Path):
+        dest = tmp_path / "abc123abc12.mp4"
+        old = tmp_path / "abc123abc12.mkv"
+        old.write_bytes(b"old-leftover")
+        past = time.time() - 3600
+        os.utime(old, (past, past))
+        new = tmp_path / "abc123abc12.webm"
+        new.write_bytes(b"this-download")
+        _adopt_ytdlp_output(dest)
+        assert dest.read_bytes() == b"this-download"
+        assert old.exists()
+
 
 # =====================================================
 # HostCaptureBackend
