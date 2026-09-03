@@ -3,6 +3,25 @@ config.json
 logs/
 tmp/
 
+# 実行時に repo root へ出るユーザーデータ。glossary.json は利用者の訂正を
+# proper_noun_sheet.py が昇格させる永続ファイルで、ソースではない。
+/glossary.json
+/pytest.txt
+
+# 秘密を持つ環境ファイル。雛形だけは追跡する。この免除集合は
+# .claude/hooks/block-secret-egress.py の `_EXAMPLE_ENV_SUFFIXES` と
+# 揃えること (片方だけ変えない)。
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+!.env.dist
+
+# 作業ツリーに紛れ込んだホーム直下のファイル。リポの成果物ではない。
+/.zshrc
+/.config/
+
 # === テストフィクスチャの実データ禁止 ===
 # 公開するのは mock/synthetic のみ。実 transcript を置く場合は real_ prefix で ignore
 tests/fixtures/real_*
