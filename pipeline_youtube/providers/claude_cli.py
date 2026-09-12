@@ -67,10 +67,13 @@ _CLAUDE_VERSION: str | None = None
 # That fabricated line then lands in the vault note verbatim. The pipeline's
 # own instruction file was polluting the pipeline's own output.
 #
-# Matched narrowly: a bare JST timestamp, or the CLAUDE.md command recognised
-# by its own `%Y-%m-%d ... JST` format string. A line that merely *starts* with
-# `date` is deliberately NOT matched — a shell walkthrough in a code-bearing
-# playlist can legitimately end on one, and eating it would corrupt content.
+# Matched narrowly: a bare JST timestamp, or (outside language-tagged fences)
+# the CLAUDE.md command recognised by its own `%Y-%m-%d ... JST` format string.
+# A line that merely *starts* with `date` is deliberately NOT matched — a shell
+# walkthrough in a code-bearing playlist can legitimately end on one, and eating
+# it would corrupt content. Language-tagged fences (```bash etc.) are never
+# stripped at all: the CLAUDE.md date command is itself a valid tutorial line.
+_BARE_JST_RE = re.compile(r"^[`'\"*\s]*\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\s*JST[`'\"*\s]*$")
 _JST_SCAFFOLD_RE = re.compile(
     r"^[`'\"*\s]*(?:"
     r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\s*JST"
@@ -78,7 +81,9 @@ _JST_SCAFFOLD_RE = re.compile(
     r")[`'\"*\s]*$"
 )
 # A model that fenced the timestamp leaves the fence behind once it is gone.
+# Optional language tag (bash, shell, …) marks a real code walkthrough.
 _FENCE_RE = re.compile(r"^\s*(?:```|~~~)\s*\w*\s*$")
+_FENCE_LANGUAGE_RE = re.compile(r"^\s*(?:```|~~~)\s*(\w+)")
 
 
 def _strip_cli_scaffolding(text: str) -> str:
@@ -108,7 +113,7 @@ def _without_trailing_scaffolding(lines: list[str]) -> list[str] | None:
         return None
     if _FENCE_RE.match(lines[last]):
         return _without_scaffolding_in_fence(lines, last)
-    start = _scaffolding_start(lines, last)
+    start = _scaffolding_start(lines, last, _JST_SCAFFOLD_RE)
     if start is None:
         return None
     return lines[: _skip_blanks_back(lines, start)]
@@ -122,14 +127,23 @@ def _without_scaffolding_in_fence(lines: list[str], close: int) -> list[str] | N
     fabricated line reach the vault — so drop only the trailing scaffold lines
     and leave the fence and whatever it still holds intact. A block that held
     nothing but scaffolding is itself scaffolding, fence included.
+
+    Language-tagged fences (``bash`` / ``shell`` / …) are never
+    touched: code-bearing playlists routinely end a walkthrough on the exact
+    ``date … %Y-%m-%d … JST`` command CLAUDE.md names, and deleting that line
+    (or the whole fence when it is the only line) would corrupt the note.
+    Inside an unlabeled fence only bare JST timestamps count as scaffolding —
+    the date-command form is left alone for the same reason.
     """
     opening = close - 1
     while opening >= 0 and not _FENCE_RE.match(lines[opening]):
         opening -= 1
     if opening < 0:
         return None
+    if _FENCE_LANGUAGE_RE.match(lines[opening]):
+        return None
 
-    start = _scaffolding_start(lines, close - 1)
+    start = _scaffolding_start(lines, close - 1, _BARE_JST_RE)
     if start is None:
         return None
 
@@ -147,7 +161,7 @@ def _last_content_index(lines: list[str]) -> int | None:
     return i if i >= 0 else None
 
 
-def _scaffolding_start(lines: list[str], end: int) -> int | None:
+def _scaffolding_start(lines: list[str], end: int, pattern: re.Pattern[str]) -> int | None:
     """Index of the first of the scaffold lines ending at ``end``, else None.
 
     Blank lines between scaffold lines are absorbed; the first non-blank line
@@ -159,7 +173,7 @@ def _scaffolding_start(lines: list[str], end: int) -> int | None:
         if not lines[i].strip():
             i -= 1
             continue
-        if not _JST_SCAFFOLD_RE.match(lines[i]):
+        if not pattern.match(lines[i]):
             break
         start = i
         i -= 1
