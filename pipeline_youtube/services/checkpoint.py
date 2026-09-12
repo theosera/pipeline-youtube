@@ -103,9 +103,13 @@ def _find_learning_folder(
     """Locate the 04_Learning_Material playlist folder for a given date.
 
     Tries the canonical name first (`YYYY-MM-DD-HHmm <title>`), then
-    falls back to any folder starting with today's date prefix and
-    containing the sanitized playlist title. Returns None if nothing
-    matches.
+    falls back to same-day folders whose sanitized name contains the
+    playlist title. When several such folders exist, the newest name
+    wins (`YYYY-MM-DD-HHmm` sorts descending) — the same rule
+    ``resume._unit_folder_candidates`` uses. ``iterdir()`` order is
+    filesystem-dependent, so returning the first match would let a
+    morning run shadow an afternoon ``--force-video`` rewrite of the
+    same playlist. Returns None if nothing matches.
 
     Historical `04_Lerning_Material` (typo) folders are also searched
     so existing vaults continue to work without renaming. See
@@ -142,8 +146,13 @@ def _find_learning_folder(
     if not title_needle:
         return None
 
+    matches: list[Path] = []
     for b in bases:
-        for child in b.iterdir():
+        try:
+            children = list(b.iterdir())
+        except OSError:
+            continue
+        for child in children:
             # Folders created before the concealment defense may still contain
             # zero-width/bidi characters. Normalize the existing name with the
             # same rule as the fetched title so those completed runs remain
@@ -154,8 +163,13 @@ def _find_learning_folder(
                 and child.name.startswith(date_prefix)
                 and title_needle in normalized_child_name
             ):
-                return child
-    return None
+                matches.append(child)
+    if not matches:
+        return None
+    # Folder names start with YYYY-MM-DD-HHmm (legacy: YYYY-MM-DD), so a
+    # descending name sort puts the newest same-day run first.
+    matches.sort(key=lambda child: child.name, reverse=True)
+    return matches[0]
 
 
 def is_video_complete(
