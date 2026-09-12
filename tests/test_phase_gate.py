@@ -463,11 +463,11 @@ class TestResumeReviewedProcessing:
             "2026-04-17-2100 testlist",
         ]
 
-    def test_historical_folders_need_an_exact_title(self, tmp_path: Path):
-        # Substring matching is safe within one day (the run just made those
-        # folders) but across all history it would admit a *different* playlist
-        # whose title merely contains this one — and if that run covered the
-        # same video, Phase 3 would consume its artifacts.
+    def test_same_day_and_historical_folders_need_an_exact_title(self, tmp_path: Path):
+        # A longer playlist title that merely contains this one must never be
+        # admitted — same day or earlier. Overlapping video_ids would otherwise
+        # let --resume-reviewed consume the wrong 02/03 notes and write Stage 04
+        # into the Advanced folder.
         base = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"]
         for name in (
             "2026-04-17-0900 testlist Advanced",
@@ -480,11 +480,37 @@ class TestResumeReviewedProcessing:
 
         assert [c.name for c in candidates] == [
             "2026-04-18-1200 testlist",
-            # Same day keeps the substring rule, so the Advanced folder stays.
-            "2026-04-18-0800 testlist Advanced",
-            # Earlier days require an exact title, so only the plain one is kept.
+            # Exact title only — same-day Advanced is rejected.
             "2026-04-17-2100 testlist",
         ]
+
+    def test_same_day_superset_reviewed_summary_is_not_consumed(self, tmp_path: Path):
+        # reviewed:true is not a playlist-identity check. Today's Advanced run
+        # must not satisfy --resume-reviewed for the shorter title.
+        config.set_vault_root(tmp_path)
+        base = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"]
+        _write_summary(base / "2026-04-18-0800 testlist Advanced" / "a.md", _VID_A, "true")
+
+        found = _find_reviewed_summary_md(
+            _VID_A, "testlist", datetime(2026, 4, 18, 12, 0), vault_root=config.get_vault_root()
+        )
+
+        assert found is None
+
+    def test_same_day_superset_does_not_hide_yesterday_exact_reviewed(self, tmp_path: Path):
+        # Stronger form: same-day Advanced is considered before earlier days.
+        # Without an exact-title gate it would win over yesterday's real folder.
+        config.set_vault_root(tmp_path)
+        base = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"]
+        yesterday = base / "2026-04-17-2100 testlist"
+        _write_summary(yesterday / "a.md", _VID_A, "true")
+        _write_summary(base / "2026-04-18-0800 testlist Advanced" / "a.md", _VID_A, "true")
+
+        found = _find_reviewed_summary_md(
+            _VID_A, "testlist", datetime(2026, 4, 18, 12, 0), vault_root=config.get_vault_root()
+        )
+
+        assert found == yesterday / "a.md"
 
     def test_legacy_folder_without_hhmm_still_matches_exactly(self, tmp_path: Path):
         base = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"]
