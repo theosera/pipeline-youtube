@@ -52,6 +52,22 @@ _URL_LINE_RE = re.compile(r'^URL:\s*"([^"\n]+)"\s*$', re.MULTILINE)
 # Cap the frontmatter scan — long titles/playlists still fit comfortably.
 _FRONTMATTER_SCAN_BYTES = 2048
 
+# ``YYYY-MM-DD-HHmm <title>`` or pre-HHmm ``YYYY-MM-DD <title>``.
+_DATED_FOLDER_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:-\d{4})?")
+
+
+def _playlist_folder_title(folder_name: str) -> str:
+    """Return a playlist folder's sanitized title, stripped of its date prefix.
+
+    Same shape as ``resume._folder_title``: keeps legacy date-only folders
+    discoverable while refusing substring matches against a *different*
+    playlist whose title merely contains this one.
+    """
+    match = _DATED_FOLDER_PREFIX_RE.match(folder_name)
+    if match is None:
+        return ""
+    return sanitize_title_for_filename(folder_name[match.end() :].strip())
+
 
 def extract_trusted_video_id(md_bytes: bytes) -> str | None:
     """Extract a validated video_id from a pipeline-produced md file.
@@ -103,9 +119,14 @@ def _find_learning_folder(
     """Locate the 04_Learning_Material playlist folder for a given date.
 
     Tries the canonical name first (`YYYY-MM-DD-HHmm <title>`), then
-    falls back to any folder starting with today's date prefix and
-    containing the sanitized playlist title. Returns None if nothing
-    matches.
+    falls back to any same-day folder whose *title* equals the sanitized
+    playlist title (legacy date-only names included). Returns None if
+    nothing matches.
+
+    Exact title matching is required: a substring rule would let a shorter
+    playlist (``ML Python``) claim a longer same-day sibling
+    (``ML Python Advanced``) as its Stage 04 folder, skip 01–04 for any
+    overlapping ``video_id``, and feed the foreign body into Stage 05.
 
     Historical `04_Lerning_Material` (typo) folders are also searched
     so existing vaults continue to work without renaming. See
@@ -129,12 +150,12 @@ def _find_learning_folder(
     if canonical.exists():
         return canonical
 
-    # Fallback: date prefix + title substring (handles legacy folder names)
+    # Fallback: same-day folder with an exact title (handles legacy date-only
+    # names and pre-concealment invisible characters in the title segment).
     date_prefix = run_date.strftime("%Y-%m-%d")
 
     # Also handle `/`-separated playlist titles (take last segment). Guard on the
-    # stripped title that is actually used below: an empty needle would make the
-    # `in child.name` substring test match every date-prefixed folder.
+    # stripped title: an empty needle must not match every dated folder.
     from ..obsidian import _strip_playlist_category_prefix
 
     display_title = _strip_playlist_category_prefix(playlist_title)
@@ -144,16 +165,12 @@ def _find_learning_folder(
 
     for b in bases:
         for child in b.iterdir():
+            if not child.is_dir() or not child.name.startswith(date_prefix):
+                continue
             # Folders created before the concealment defense may still contain
-            # zero-width/bidi characters. Normalize the existing name with the
-            # same rule as the fetched title so those completed runs remain
-            # discoverable after upgrading.
-            normalized_child_name = sanitize_title_for_filename(child.name)
-            if (
-                child.is_dir()
-                and child.name.startswith(date_prefix)
-                and title_needle in normalized_child_name
-            ):
+            # zero-width/bidi characters. Compare sanitized titles so those
+            # completed runs remain discoverable after upgrading.
+            if _playlist_folder_title(child.name) == title_needle:
                 return child
     return None
 
