@@ -147,3 +147,56 @@ class TestSingleVideoGuard:
     def test_guard_does_not_apply_to_normal_mode(self, tmp_path: Path):
         plan = build_plan(_request(), _runtime(tmp_path), _resolved(5))
         assert plan.mode is RunMode.NORMAL
+
+
+class TestHandsonRunnerExitCode:
+    def test_fatal_error_exits_nonzero(self, tmp_path: Path, monkeypatch):
+        """``result.error`` must become exit 1 — report alone is not enough.
+
+        ``run_stage_handson`` never raises; before this wiring, cron/CI treated
+        a missing-transcript abort as success.
+        """
+        from datetime import datetime
+
+        from pipeline_youtube.cli_types import ExecutionPlan
+        from pipeline_youtube.handson_runner import run_handson
+        from pipeline_youtube.stages.handson import HandsonStageResult
+
+        plan = ExecutionPlan(
+            mode=RunMode.HANDSON,
+            run_time=datetime(2026, 7, 27, 12, 0),
+            video_range=None,
+            dry_run=False,
+            run_handson=True,
+        )
+        monkeypatch.setattr(
+            "pipeline_youtube.handson_runner.run_stage_handson",
+            lambda *a, **kw: HandsonStageResult(error="no_transcript_snippets"),
+        )
+        monkeypatch.setattr("pipeline_youtube.handson_runner.report_handson", lambda result: None)
+
+        with pytest.raises(SystemExit) as excinfo:
+            run_handson(_request(handson=True), _runtime(tmp_path), _resolved(1), plan)
+        assert excinfo.value.code == 1
+
+    def test_success_does_not_exit(self, tmp_path: Path, monkeypatch):
+        from datetime import datetime
+
+        from pipeline_youtube.cli_types import ExecutionPlan
+        from pipeline_youtube.handson_runner import run_handson
+        from pipeline_youtube.stages.handson import HandsonStageResult
+
+        plan = ExecutionPlan(
+            mode=RunMode.HANDSON,
+            run_time=datetime(2026, 7, 27, 12, 0),
+            video_range=None,
+            dry_run=False,
+            run_handson=True,
+        )
+        monkeypatch.setattr(
+            "pipeline_youtube.handson_runner.run_stage_handson",
+            lambda *a, **kw: HandsonStageResult(),
+        )
+        monkeypatch.setattr("pipeline_youtube.handson_runner.report_handson", lambda result: None)
+
+        run_handson(_request(handson=True), _runtime(tmp_path), _resolved(1), plan)

@@ -58,7 +58,7 @@ from ..path_safety import ensure_safe_path
 from ..playlist import VideoMeta
 from ..providers.claude_cli import ClaudeResponse
 from ..sanitize import sanitize_untrusted_text
-from .capture import CaptureResult, SummaryRange, capture_step_clips
+from .capture import ASSETS_REL_PATH, CaptureResult, SummaryRange, capture_step_clips
 from .scripts import run_stage_scripts
 
 # Output root for hands-on mode (user-specified sibling of the 08 tree,
@@ -166,6 +166,33 @@ def run_stage_handson(
         return HandsonStageResult(error=f"{type(e).__name__}: {e}")
 
 
+def _allocate_run_folder(vault_root: Path, base_name: str) -> str:
+    """Return ``base_name``, or ``base_name-2`` / ``-3`` / … on collision.
+
+    Hands-on writes fixed filenames into the run folder (``00_MOC.md``,
+    ``NN_<label>.md``, ``pyt_<id>_hNN.webp``). A same-minute re-run that
+    reused the folder name therefore overwrote the prior MOC / steps /
+    clips while the transcript note alone got a ``-2`` suffix via
+    ``resolve_unique_path`` — asymmetric data loss. Checking all three
+    parents (01 / 05 / ``_assets``) keeps the whole run on one unique
+    folder name.
+    """
+    name = base_name
+    suffix = 2
+    while True:
+        scripts = vault_root / ensure_safe_path(
+            f"{SESSION_SCRIPTS_BASE}/{name}", vault_root=vault_root
+        )
+        synthesis = vault_root / ensure_safe_path(
+            f"{SESSION_SYNTHESIS_BASE}/{name}", vault_root=vault_root
+        )
+        assets = vault_root / ensure_safe_path(f"{ASSETS_REL_PATH}/{name}", vault_root=vault_root)
+        if not scripts.exists() and not synthesis.exists() and not assets.exists():
+            return name
+        name = f"{base_name}-{suffix}"
+        suffix += 1
+
+
 def _run(
     video: VideoMeta,
     *,
@@ -182,7 +209,12 @@ def _run(
     dry_run: bool,
     vault_root: Path,
 ) -> HandsonStageResult:
-    folder_name = format_playlist_folder_name(run_time, folder_title)
+    base_folder_name = format_playlist_folder_name(run_time, folder_title)
+    # dry_run never writes, so collision resolution is unnecessary noise —
+    # keep the canonical name for the (unused) path preview.
+    folder_name = (
+        base_folder_name if dry_run else _allocate_run_folder(vault_root, base_folder_name)
+    )
     note_base = format_video_note_base(run_time, video.title)
 
     # --- 01: transcript note under 09/01_Scripts_Processing_Unit ---------
@@ -192,6 +224,8 @@ def _run(
         scripts_path = scripts_dir / f"{note_base}.md"
     else:
         scripts_dir.mkdir(parents=True, exist_ok=True)
+        # Folder is already unique; keep resolve_unique_path as a belt-and-
+        # braces guard against an odd same-stem leftover inside a fresh dir.
         scripts_path = resolve_unique_path(scripts_dir, note_base, ".md")
         scripts_path.write_text(
             build_frontmatter(

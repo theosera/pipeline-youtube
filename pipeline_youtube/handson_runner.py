@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import click
 
 from .cli_types import CliRequest, ExecutionPlan, ResolvedInput, Runtime
@@ -18,7 +20,12 @@ from .stages.handson import run_stage_handson
 def run_handson(
     request: CliRequest, runtime: Runtime, resolved: ResolvedInput, plan: ExecutionPlan
 ) -> None:
-    """Run the hands-on flow for the (validated) single video and report."""
+    """Run the hands-on flow for the (validated) single video and report.
+
+    ``run_stage_handson`` never raises — fatal outcomes land in
+    ``result.error``. Translating that to a nonzero exit is this layer's
+    job; otherwise cron / CI treat a missing-transcript abort as success.
+    """
     video = resolved.videos[0]
     click.echo("\n=== Hands-on mode (single long-form video) ===")
     click.echo(f"run_time: {plan.run_time.isoformat(timespec='seconds')}")
@@ -42,3 +49,5 @@ def run_handson(
         vault_root=runtime.vault_root,
     )
     report_handson(result)
+    if result.error:
+        sys.exit(1)
