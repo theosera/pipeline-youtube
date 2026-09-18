@@ -40,8 +40,10 @@ still run and the md records the failure as an HTML comment.
 from __future__ import annotations
 
 import contextlib
+import os
 import re
 import subprocess
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -69,21 +71,26 @@ _TMP_SWEEP_EXTENSIONS = (".mp4", ".webm", ".m4a", ".mkv")
 
 
 def _tmp_video_path(video: VideoMeta) -> Path:
-    """Canonical temp path for a video's downloaded mp4.
+    """Temp path for this worker's download of ``video``.
 
     Directory permissions are tightened to 0o700 (owner-only) at
     creation and on every call so the video binary never becomes
     world-readable on shared hosts.
-    """
-    import os
 
+    The filename includes pid + thread ident. Two overlapping pipeline
+    processes — or ``--concurrency`` / ``--sub-agents`` workers — that
+    share a ``video_id`` must not unlink-and-clobber the same
+    ``tmp/{id}.mp4`` (``_download_video`` and the host backend both
+    delete ``dest`` before yt-dlp writes). The same thread always gets
+    the same path so prefetch and Stage 03 share one file.
+    """
     project_root = Path(__file__).resolve().parent.parent.parent
     tmp_dir = project_root / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     with contextlib.suppress(OSError):
         # Non-POSIX filesystems (e.g. FAT) silently ignore — best-effort.
         os.chmod(tmp_dir, 0o700)
-    return tmp_dir / f"{video.video_id}.mp4"
+    return tmp_dir / f"{video.video_id}-{os.getpid()}-{threading.get_ident()}.mp4"
 
 
 @dataclass
