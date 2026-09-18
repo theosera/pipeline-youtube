@@ -250,8 +250,8 @@ def _unit_folder_candidates(base: Path, playlist_title: str, run_date: datetime)
     """Yield likely playlist folders holding unit files.
 
     Order: canonical, then same-day folders (newest first), then folders from
-    earlier days (newest first). Matching is by sanitized title substring
-    (mirrors `_find_learning_folder` heuristics).
+    earlier days (newest first). Every non-canonical candidate must match the
+    sanitized playlist title *exactly* (see ``_folder_title``).
 
     The earlier-day tier is what makes Phase 3 work across midnight. The
     workflow is "Phase 1 → a human reads 02_Summary.md → Phase 3", and that
@@ -259,8 +259,14 @@ def _unit_folder_candidates(base: Path, playlist_title: str, run_date: datetime)
     reports "no 02_Summary.md found" for work that is sitting right there.
     Same-day is offered first, and only folders *older* than ``run_date`` are
     considered, so a stray future-dated folder (clock skew, a hand-typed
-    ``--run-timestamp``) can never outrank today's run. Historical folders must
-    also match the title exactly — see the comment on that tier below.
+    ``--run-timestamp``) can never outrank today's run.
+
+    Exact title matching is required on both tiers. A same-day substring rule
+    previously admitted a longer playlist created today (``testlist Advanced``)
+    when resuming ``testlist``. ``reviewed: true`` only gates approval — it does
+    not prove the folder belongs to this playlist — so an overlapping
+    ``video_id`` would let Phase 3 consume the wrong 02/03 notes and write
+    Stage 04 into the Advanced folder.
     """
     from .obsidian import _strip_playlist_category_prefix, sanitize_title_for_filename
 
@@ -283,8 +289,9 @@ def _unit_folder_candidates(base: Path, playlist_title: str, run_date: datetime)
                 # that merely share a word with the playlist title.
                 and _DATED_FOLDER_RE.match(child.name)
                 # Pre-defense folders can retain invisible title characters;
-                # normalize both sides so reviewed summaries remain resumable.
-                and title_needle in sanitize_title_for_filename(child.name)
+                # normalize via _folder_title so reviewed summaries remain
+                # resumable, but demand an exact title (not a substring).
+                and _folder_title(child.name) == title_needle
                 and child.name != canonical_name
             )
         ]
@@ -298,19 +305,7 @@ def _unit_folder_candidates(base: Path, playlist_title: str, run_date: datetime)
     yield from (child for child in matches if child.name.startswith(date_prefix))
     # Earlier days last, so a same-day reviewed summary always wins. The date is
     # a fixed-width YYYY-MM-DD prefix, so a string compare orders it.
-    #
-    # Historical folders are held to an *exact* title match, unlike the same-day
-    # tier's substring rule. Substring matching is safe within one day because a
-    # run only just created those folders; across all of history it would admit
-    # a different playlist whose title merely contains this one — resuming
-    # "Python" would accept "2026-04-17-0900 Python Advanced", and if that run
-    # covered the same video its reviewed summary (and, via the pinned lookup,
-    # its captures) would be consumed instead.
-    yield from (
-        child
-        for child in matches
-        if child.name[:10] < date_prefix and _folder_title(child.name) == title_needle
-    )
+    yield from (child for child in matches if child.name[:10] < date_prefix)
 
 
 def _folder_title(folder_name: str) -> str:
