@@ -1,18 +1,72 @@
 <!--
   CLAUDE.global.md — 全プロジェクト共通の「グローバル層」CLAUDE.md (リポ非依存)
 
+  ⚠️ このコメントブロックは Claude Code が読み込む版には含まれない (実測 2026-09-07:
+     注入された版は下の「# Global CLAUDE.md」から始まり、ここは 1 文字も入っていない)。
+     ⇒ 人間が読む設置手順であって、席に効く規則ではない。⛔ 席に守らせたい規則は
+     必ずこのコメントの外 (本文) に書く。⚠️ import 経路で剥がれるかは未測定。
+
   ■ これは何か
     どのリポジトリでも破ってはいけない普遍ルール (行動原則 / セキュリティ境界 /
     エスカレーション / スキル発火規律) だけを集約した薄いオーケストレーター層。
     リポ固有の規約は各リポの ./CLAUDE.md、詳細な作業規約は .claude/skills/ にある。
 
-  ■ 使い方 (手動配置)
-    このファイルは「共通名で全リポに同一コピー」されている版です。最終的には
-    各自のマシンで ~/.claude/CLAUDE.md として 1 つに集約して使うことを想定:
-        ln -s "$PWD/CLAUDE.global.md" ~/.claude/CLAUDE.md   # もしくは cp
-    Claude Code が自動ロードするのは CLAUDE.md / CLAUDE.local.md のみ。本ファイルは
-    別名なので自動ロードされず、プロジェクト CLAUDE.md と二重ロードされません。
-    内容は指定の全リポで完全同一に保つこと (どれか1つを直したら他リポへ同期)。
+  ■ 使い方 (配置と、同一性の確かめ方)
+    正典は obsidian-ai-pipeline の CLAUDE.global.md。各マシンでは
+    ~/.claude/CLAUDE.md がそこへの symlink であることを想定する:
+        cd "$(git rev-parse --show-toplevel)" &&
+        git remote get-url origin |
+          grep -Eq '^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)theosera/obsidian-ai-pipeline(\.git)?/?$' ||
+          { echo '⛔ 正典 checkout ではない (確認: pwd と git remote get-url origin)'; false; } &&
+        test -f CLAUDE.global.md &&
+        ln -s "$PWD/CLAUDE.global.md" ~/.claude/CLAUDE.md
+    ⛔ && を外さない。⭐ ここでの && は【検査に link を従わせる】ためにある。
+       外すと前段が落ちても ln が走る (実測 2026-09-10: 別 owner の checkout で
+       remote 検査 rc=1・test -f rc=0・ln rc=0 ⇒ 写しを指す link が黙って作られた)。
+       ⚠️ 下の「⛔ 2 つを && で繋がない」は【確認】側の話で、ここと逆の要求。
+    ⚠️ 2 つの検査は別のことを見ている。⛔ 片方で代用しない。
+       remote URL = ここが正典リポか ／ test -f = ファイルが実在するか。
+    ⛔ test -f だけでは足りない。同名のファイルは写しのリポにも在る
+       (実測 2026-09-08: 写しでも正典でも rc=0 で区別できない)。
+    ⛔ remote URL だけでも足りない。ln -s は存在しない対象でも成功するので、
+       ルートに居ない状態で走らせると dangling な symlink が黙って作られ、
+       グローバル層が 1 行も読まれなくなる (実測 2026-09-07)。
+       ⇒ ⭐ dangling を防いでいるのは【test -f と連鎖】であって cd ではない。
+       1 行目の cd が防ぐのは「ルート外だと test -f が偽になって手順が使えない」
+       ことのほう。⛔ cd を省いても連鎖があれば ln には到達しない
+       (★ 上記 2026-09-07 の実測は【連鎖が無かった旧版】の話)。
+    ⛔ 黙って落ちる形にしない。⭐ 落ちたときに【止まった】と分かる必要がある。
+       素の grep -q は無出力なので、写しで止まっても画面には何も出ない。
+       ⚠️ ただし URL そのものは出さない。★ この手順は【写しのリポで実行される】
+       ことを前提にしており (それを止めるのが目的)、写しには private リポが
+       含まれる。⇒ 判定結果だけを出し、origin URL を画面やログへ残さない。
+       ⭐ 代わりに【自分で確かめる手段】を渡す。⇒ 何が拒否されたかは、案内された
+       コマンドを人が自分で叩けば分かる。⛔ 出力に載せて残すのとは別のこと。
+    ⛔ host を省いたパターンにしない。接尾辞だけを見ると、namespace を保った
+       別ホストのミラーが正典として通る (実測 2026-09-10: gitlab.com /
+       evil.example / mirror.example がいずれも PASS した)。
+    ⚠️ fork・別ホストのミラー・origin 名が違う checkout では remote 検査が落ちる。
+       ⭐ そのときは推測させず、正典 checkout の絶対パスを明示して置く。
+       ⛔ ただし fallback でも存在確認を飛ばさない (上と同じ dangling の穴):
+           CANON=/path/to/obsidian-ai-pipeline/CLAUDE.global.md
+           test -f "$CANON" && ln -s "$CANON" ~/.claude/CLAUDE.md
+    ⚠️ cp で配置しない。コピーは正典が動いても何の signal も出さずに古くなる。
+    ⚠️ ln -s は既存の ~/.claude/CLAUDE.md を上書きしない (File exists で rc=1)。
+       ⛔ 逆に ln -sfn は黙って張り替える。⇒ 張り替える前に下の確認を通すこと。
+
+    ⚠️ 他のリポにも同名の写しが置かれているが、同一である保証は無い。
+       主張ではなく確認で扱うこと。⛔ 2 つを && で繋がない — 前段が偽なら
+       後段が黙って走らず、それは「確認しなかった」であって「一致」ではない:
+        readlink ~/.claude/CLAUDE.md
+    ⛔ 出力が空でないことでは足りない。出力そのものを読み、正典リポの
+       CLAUDE.global.md を指していることを確かめる。写しを指していれば、下の
+       cmp はファイル自身との比較になり常に成功する — 壊れたまま緑を返す。
+        cmp CLAUDE.global.md ~/.claude/CLAUDE.md   # 差が無ければ無出力
+
+    本ファイルは別名なので、それ自体は Claude Code に自動ロードされない。
+    ⚠️ ただしリポの CLAUDE.md が @CLAUDE.global.md を持てば import され、
+       正典 (symlink 経由) と写しが同時に載る。確かめるには:
+        grep -n '@CLAUDE.global.md' CLAUDE.md
 -->
 
 # Global CLAUDE.md — 普遍ルール (ガードレール層)
@@ -47,6 +101,14 @@
 - **必ず確認を求める**: 破壊的・外向き・不可逆な操作。例) `rm -rf` / `chmod` / `sudo` /
   force-push / ブランチ削除 / 外部サービスへの送信・公開 / 本番反映。
 - 1 つの文脈での承認は別の文脈へは引き継がれない。都度判断する。
+- **git 取り込みは fast-forward を既定にする**: `main` などの追跡ブランチへの `git pull` は
+  fast-forward のみ許可し、分岐していたら黙ってマージせず**失敗させて**手動判断する
+  (`git config --global pull.ff only`)。マージバブルの誤生成を防ぎ、想定外の分岐 (ローカル
+  main への誤コミット・履歴書き換え) を大きな声で顕在化させる。上流へ追随してリベースしたい
+  時だけ `git pull --rebase` を明示する。
+  ⚠️ `git config --global` の行は**人間が一度だけ行う事前設定**であって、
+  エージェントへの指示ではない。global 設定の変更を禁じているリポがあるため、
+  エージェントは設定に触れず、呼び出しごとに `git pull --ff-only` を明示する。
 - **PR は通常 PR を既定にする**: Draft を既定にせず、最初からレビュー可能な通常 PR として
   作成し、`Ready for review` への切り替え工程を作らない。Draft はユーザーが明示した場合、
   または merge 対象にしない umbrella PR の場合だけ使う。
@@ -99,3 +161,12 @@
   (= 決定論的ステップ。常時ロードの信頼性をスキルで再現する仕組み)。
 - スキルの `description` にもトリガ文が埋まっている。発火表と description の
   どちらか一方でも一致したら必ずロードしてから作業する。
+- **1 つの作業木を複数セッションで共有している場合は、`shared-tree-head` をロードする**。
+  発火条件: 共有作業木で HEAD を動かす前 (`git switch` / `checkout` / `worktree` /
+  `branch -D`)、共有作業木のファイルを「現物」として**読む前** (報告より前 — 事故は
+  読んだ時点で起きており、報告の直前に気づいても既に古い版を引用している)、枝が main に
+  入ったかを判断する前、走査・レビューを回す前、owner の指示が共有作業木を動かす形のとき。
+  ⚠️ **これをリポの発火表でなくここに書くのは、worktree が cwd のリポの外に在るから**。
+  実測 (2026-09-12 / 2 リポ): 実在する worktree **33 本のうち 31 本**で、そのリポの
+  `CLAUDE.md` に発火行が無い。⇒ 本ファイルは user 層へ symlink されるので、cwd が
+  どのリポでも読まれる。
