@@ -8,22 +8,17 @@ reprocessing.
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from pathlib import Path
 
 import click
 
 from .checkpoint import extract_trusted_video_id, read_trusted_video_id
-from .obsidian import format_playlist_folder_name
+from .obsidian import format_playlist_folder_name, playlist_folder_title
 from .path_safety import ensure_safe_path
 from .pipeline import LEARNING_BASE, UNIT_DIRS
 from .playlist import VideoMeta
 from .run_result import _strip_frontmatter
-
-# Playlist folders are named "YYYY-MM-DD-HHmm <title>" (legacy runs omit HHmm).
-# The match covers the date (and time when present); the rest is the title.
-_DATED_FOLDER_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:-\d{4})?")
 
 
 def _parse_run_timestamp(run_timestamp: str | None) -> datetime:
@@ -251,7 +246,7 @@ def _unit_folder_candidates(base: Path, playlist_title: str, run_date: datetime)
 
     Order: canonical, then same-day folders (newest first), then folders from
     earlier days (newest first). Every non-canonical candidate must match the
-    sanitized playlist title *exactly* (see ``_folder_title``).
+    sanitized playlist title *exactly* (see ``playlist_folder_title``).
 
     The earlier-day tier is what makes Phase 3 work across midnight. The
     workflow is "Phase 1 → a human reads 02_Summary.md → Phase 3", and that
@@ -284,14 +279,13 @@ def _unit_folder_candidates(base: Path, playlist_title: str, run_date: datetime)
             for child in base.iterdir()
             if (
                 child.is_dir()
-                # Require a real YYYY-MM-DD prefix rather than any directory:
-                # widening past today must not start matching unrelated folders
-                # that merely share a word with the playlist title.
-                and _DATED_FOLDER_RE.match(child.name)
-                # Pre-defense folders can retain invisible title characters;
-                # normalize via _folder_title so reviewed summaries remain
-                # resumable, but demand an exact title (not a substring).
-                and _folder_title(child.name) == title_needle
+                # Exact title, not a substring: widening past today must not
+                # start matching unrelated folders that merely share a word with
+                # the playlist title. playlist_folder_title also normalizes
+                # pre-defense names that still carry invisible characters, and
+                # returns "" for anything without a YYYY-MM-DD prefix — so this
+                # one test also rejects undated directories.
+                and playlist_folder_title(child.name) == title_needle
                 and child.name != canonical_name
             )
         ]
@@ -306,22 +300,6 @@ def _unit_folder_candidates(base: Path, playlist_title: str, run_date: datetime)
     # Earlier days last, so a same-day reviewed summary always wins. The date is
     # a fixed-width YYYY-MM-DD prefix, so a string compare orders it.
     yield from (child for child in matches if child.name[:10] < date_prefix)
-
-
-def _folder_title(folder_name: str) -> str:
-    """Return a playlist folder's sanitized title, stripped of its date prefix.
-
-    Folder names are ``YYYY-MM-DD-HHmm <title>``; runs from before the HHmm fix
-    use ``YYYY-MM-DD <title>``. Sanitizing keeps this comparable with a needle
-    built from a live playlist title even when the folder on disk predates the
-    concealment defenses.
-    """
-    match = _DATED_FOLDER_RE.match(folder_name)
-    if match is None:
-        return ""
-    from .obsidian import sanitize_title_for_filename
-
-    return sanitize_title_for_filename(folder_name[match.end() :].strip())
 
 
 def _collect_existing_learning_bodies(
@@ -341,12 +319,11 @@ def _collect_existing_learning_bodies(
     needs ``--run-timestamp``; the run date still wins whenever it has a folder
     that actually contains this playlist's video_ids.
 
-    Unlike Phase 3, this path has no ``reviewed: true`` gate, so same-day
-    substring matches from ``_unit_folder_candidates`` are filtered to an
-    *exact* playlist title before a folder is accepted. A same-day
-    ``testlist Advanced`` run must not hide yesterday's exact ``testlist``
-    material (and must not feed Advanced bodies into a ``testlist`` synthesis
-    when video_ids overlap).
+    Unlike Phase 3, this path has no ``reviewed: true`` gate, so a candidate is
+    accepted only once it holds one of this playlist's ``video_id``s. An *empty*
+    same-day ``testlist`` folder must not hide yesterday's completed ``testlist``
+    material; ``_unit_folder_candidates`` already keeps a different playlist
+    (``testlist Advanced``) out by exact title.
 
     Also returns the resolved folder name so stage 05 can reuse the exact
     legacy name instead of creating a new one next to it.
@@ -360,13 +337,12 @@ def _collect_existing_learning_bodies(
     preferred = format_playlist_folder_name(run_time, playlist_title)
     from .obsidian import _strip_playlist_category_prefix, sanitize_title_for_filename
 
-    # --synthesis-only has no reviewed:true gate. The shared candidate generator
-    # still uses same-day *substring* title matching (safe for Phase 3 because
-    # reviewed lookup filters further), so a longer playlist created today
-    # ("testlist Advanced") would otherwise win over yesterday's exact
-    # "testlist" folder and either synthesize the wrong bodies or report
-    # matched=0 while the real material sits one tier below. Hold every
-    # synthesis-only candidate to an exact title.
+    # --synthesis-only has no reviewed:true gate, so the exact title is
+    # re-asserted here: the generator yields the canonical folder
+    # unconditionally, and a caller-supplied playlist_title that sanitizes
+    # differently must not slip through on that tier. The video_id check below
+    # is what keeps an empty same-day folder from hiding yesterday's complete
+    # run.
     title_needle = sanitize_title_for_filename(_strip_playlist_category_prefix(playlist_title))
 
     def _scan_learning_bodies(folder: Path) -> dict[str, str]:
@@ -388,7 +364,7 @@ def _collect_existing_learning_bodies(
     for candidate in _unit_folder_candidates(base_dir, playlist_title, run_time):
         if not candidate.exists():
             continue
-        if title_needle and _folder_title(candidate.name) != title_needle:
+        if title_needle and playlist_folder_title(candidate.name) != title_needle:
             continue
         scanned = _scan_learning_bodies(candidate)
         matched_ids = [v.video_id for v in videos if v.video_id in scanned]

@@ -100,6 +100,33 @@ def format_playlist_folder_name(dt: datetime, playlist_title: str | None) -> str
     return f"{date_str}-{time_str}"
 
 
+# Playlist folders are named "YYYY-MM-DD-HHmm <title>" (legacy runs omit HHmm).
+# The match covers the date (and time when present); the rest is the title.
+_DATED_FOLDER_PREFIX_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:-\d{4})?")
+
+
+def playlist_folder_title(folder_name: str) -> str:
+    """Return a playlist folder's sanitized title, stripped of its date prefix.
+
+    The comparison-side inverse of `format_playlist_folder_name`. Sanitizing
+    keeps an on-disk name comparable with a needle built from a live playlist
+    title even when the folder predates the concealment defenses.
+
+    A name without a `YYYY-MM-DD` prefix yields `""`, so comparing against a
+    non-empty needle also rejects undated directories.
+
+    Both same-day fallback paths compare with this — `resume`'s candidate
+    generator and `services.checkpoint._find_learning_folder` — so the rule
+    that a fallback folder must match the playlist title *exactly* lives in one
+    place. A substring rule would let "ML Python" claim a same-day sibling
+    "ML Python Advanced" and consume the wrong playlist's notes.
+    """
+    match = _DATED_FOLDER_PREFIX_RE.match(folder_name)
+    if match is None:
+        return ""
+    return sanitize_title_for_filename(folder_name[match.end() :].strip())
+
+
 def resolve_unique_path(folder: Path, base_name: str, ext: str = ".md") -> Path:
     """Find an unused file path under `folder`; append -2, -3, ... on collision."""
     candidate = folder / f"{base_name}{ext}"
