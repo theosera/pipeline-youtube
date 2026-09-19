@@ -22,6 +22,18 @@ from .confusables import strip_invisibles
 _FILENAME_UNSAFE_RE = re.compile(r'[\\/:*?"<>|]')
 _WHITESPACE_RE = re.compile(r"\s+")
 
+# ext4 / APFS / NTFS all cap a single path component at 255 bytes. Stage 05
+# chapter notes already keep stems ≤ 200 bytes (``synthesis.chapter``); the
+# same ceiling applies here so ``YYYY-MM-DD-HHmm <title>`` plus a collision
+# suffix (``-2``) and ``.md`` still fit. Without this, a YouTube-max CJK
+# title (100 chars ≈ 300 UTF-8 bytes) makes ``mkdir`` / ``write_text`` raise
+# ``OSError: [Errno 36] File name too long`` and aborts the video.
+_MAX_PATH_COMPONENT_BYTES = 200
+# ``format_video_note_base`` / ``format_playlist_folder_name`` always use a
+# fixed-width ``YYYY-MM-DD-HHmm `` prefix when a title is present (16 bytes).
+_DATE_TIME_TITLE_PREFIX = "YYYY-MM-DD-HHmm "
+_DATE_TIME_TITLE_PREFIX_BYTES = len(_DATE_TIME_TITLE_PREFIX.encode("utf-8"))
+
 
 def sanitize_title_for_filename(raw: str | None) -> str:
     """Strip invisibles, replace OS-unsafe chars with space, collapse, strip.
@@ -34,6 +46,10 @@ def sanitize_title_for_filename(raw: str | None) -> str:
     (mixed-script) is intentionally not done here — it happens once at the
     fetch boundary (``playlist.fetch_metadata``) so this pure, widely-reused
     chokepoint never emits duplicate alerts on read/dedup scans.
+
+    Does **not** byte-truncate: callers that build on-disk names must run
+    ``limit_title_for_path_component`` (or go through ``format_*``) so resume
+    needles stay aligned with what was written.
     """
     if not raw:
         return ""
@@ -43,13 +59,36 @@ def sanitize_title_for_filename(raw: str | None) -> str:
     return cleaned.strip()
 
 
+def _utf8_byte_truncate(text: str, max_bytes: int) -> str:
+    """Truncate ``text`` to ``max_bytes`` UTF-8 bytes without splitting a codepoint."""
+    if max_bytes <= 0:
+        return ""
+    raw = text.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return text
+    return raw[:max_bytes].decode("utf-8", errors="ignore").rstrip()
+
+
+def limit_title_for_path_component(safe_title: str) -> str:
+    """Bound a sanitized title so ``YYYY-MM-DD-HHmm <title>`` stays ≤ 200 bytes.
+
+    Used by ``format_video_note_base`` / ``format_playlist_folder_name`` and by
+    resume/checkpoint needles so a truncated folder remains discoverable.
+    """
+    budget = _MAX_PATH_COMPONENT_BYTES - _DATE_TIME_TITLE_PREFIX_BYTES
+    return _utf8_byte_truncate(safe_title, budget)
+
+
 def format_video_note_base(dt: datetime, title: str | None) -> str:
     """Generate base filename for a video note.
 
     - With title:  'YYYY-MM-DD-HHmm <title>'
     - Without:     'YYYY-MM-DD HHmm'
+
+    The title portion is UTF-8-byte-truncated so the stem stays within
+    ``_MAX_PATH_COMPONENT_BYTES`` (see that constant).
     """
-    safe_title = sanitize_title_for_filename(title)
+    safe_title = limit_title_for_path_component(sanitize_title_for_filename(title))
     date_str = dt.strftime("%Y-%m-%d")
     time_str = dt.strftime("%H%M")
     if safe_title:
@@ -90,9 +129,12 @@ def format_playlist_folder_name(dt: datetime, playlist_title: str | None) -> str
 
     When the raw playlist title contains ASCII `/`, only the last segment is
     used as the display title — see `_strip_playlist_category_prefix`.
+
+    The title portion is UTF-8-byte-truncated so the folder name stays within
+    ``_MAX_PATH_COMPONENT_BYTES`` (ext4/APFS component limit).
     """
     display_title = _strip_playlist_category_prefix(playlist_title)
-    safe_title = sanitize_title_for_filename(display_title)
+    safe_title = limit_title_for_path_component(sanitize_title_for_filename(display_title))
     date_str = dt.strftime("%Y-%m-%d")
     time_str = dt.strftime("%H%M")
     if safe_title:

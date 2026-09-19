@@ -10,9 +10,11 @@ from pipeline_youtube.obsidian import (
     build_frontmatter,
     format_playlist_folder_name,
     format_video_note_base,
+    limit_title_for_path_component,
     resolve_unique_path,
     sanitize_title_for_filename,
 )
+from pipeline_youtube.services.obsidian import _MAX_PATH_COMPONENT_BYTES
 
 
 class TestSanitizeTitle:
@@ -121,6 +123,36 @@ class TestFormatPlaylistFolder:
             format_playlist_folder_name(dt, "Agent Teams／3 人編成")
             == "2026-04-16-0914 Agent Teams／3 人編成"
         )
+
+    def test_long_cjk_title_stays_within_path_component_bytes(self):
+        """YouTube allows 100-char titles; 80+ CJK chars exceed ext4's 255-byte cap."""
+        dt = datetime(2026, 8, 5, 11, 0)
+        long_title = "漢" * 100
+        folder = format_playlist_folder_name(dt, long_title)
+        note = format_video_note_base(dt, long_title)
+        assert len(folder.encode("utf-8")) <= _MAX_PATH_COMPONENT_BYTES
+        assert len(note.encode("utf-8")) <= _MAX_PATH_COMPONENT_BYTES
+        # Collision suffix + .md must still fit under the OS 255-byte limit.
+        assert len(f"{note}-99.md".encode("utf-8")) <= 255
+
+    def test_long_cjk_folder_is_mkdirable(self, tmp_path: Path):
+        dt = datetime(2026, 8, 5, 11, 0)
+        folder = tmp_path / format_playlist_folder_name(dt, "漢" * 100)
+        folder.mkdir()
+        assert folder.is_dir()
+        note_path = resolve_unique_path(folder, format_video_note_base(dt, "あ" * 100), ".md")
+        note_path.write_text("ok", encoding="utf-8")
+        assert note_path.exists()
+
+    def test_path_title_needle_matches_truncated_folder(self):
+        """Resume/checkpoint needles must use the same title budget as format_*."""
+        full = "漢" * 100
+        limited = limit_title_for_path_component(sanitize_title_for_filename(full))
+        dt = datetime(2026, 8, 5, 11, 0)
+        folder = format_playlist_folder_name(dt, full)
+        assert limited
+        assert limited in folder
+        assert limited == folder.split(" ", 1)[1]
 
 
 class TestResolveUniquePath:
