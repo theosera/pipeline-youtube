@@ -199,6 +199,29 @@ class TestCollectExistingLearningBodies:
         assert bodies == ["body\n"]
         assert folder_name == folder.name
 
+    def test_emptied_04_note_is_not_a_synthesis_input(self, tmp_path: Path):
+        """A truncated 04 note keeps its frontmatter but must not reach Stage 05.
+
+        The scan keys on trusted frontmatter, so an emptied note is still found
+        for its video_id. Counting it would let it pass ``min_playlist_size``
+        and synthesize from nothing, so an empty body drops the video.
+        """
+        config.set_vault_root(tmp_path)
+        dt = datetime(2026, 4, 18, 8, 0)
+        folder = tmp_path / LEARNING_BASE / UNIT_DIRS["learning"] / "2026-04-18-0800 testlist"
+        _write_learning(folder / "emptied.md", _VID_A, body="")
+        _write_learning(folder / "real.md", _VID_B, body="real body\n")
+
+        videos, bodies, _ = _collect_existing_learning_bodies(
+            [_vid(_VID_A), _vid(_VID_B)],
+            "testlist",
+            dt,
+            vault_root=config.get_vault_root(),
+        )
+
+        assert [video.video_id for video in videos] == [_VID_B]
+        assert bodies == ["real body\n"]
+
     def test_falls_back_to_an_earlier_day(self, tmp_path: Path, capsys):
         # --synthesis-only is usually run to re-do stage 05 over material that
         # already exists; that material is routinely from a previous day.
