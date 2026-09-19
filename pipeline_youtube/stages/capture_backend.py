@@ -75,6 +75,37 @@ class CaptureBackend(Protocol):
         ...
 
 
+# yt-dlp `outtmpl` is `{stem}.%(ext)s`. `merge_output_format=mp4` usually
+# writes dest directly; some videos only mux as mkv/webm. An interrupted
+# prior download of the same id leaves DASH fragments named `{stem}.f137.mp4`
+# beside them. A naive `{stem}.*` glob sorts those fragments first (`.f` <
+# `.m`/`.w`) and would rename the leftover onto dest, so ffmpeg then captures
+# from a partial file.
+_YTDLP_MEDIA_SUFFIXES = frozenset({".mp4", ".mkv", ".webm", ".m4v"})
+
+
+def _adopt_ytdlp_output(dest: Path) -> None:
+    """Point ``dest`` at yt-dlp's file when it used a different extension.
+
+    Only a file whose *entire* stem equals ``dest.stem`` is eligible — that
+    excludes DASH fragments (``{stem}.f137.mp4``) and ``.part`` temps
+    (``{stem}.mp4.part``). When several complete containers remain, the
+    newest mtime wins so this download beats an older leftover mux.
+    """
+    if dest.exists():
+        return
+    stem = dest.stem
+    candidates = [
+        p
+        for p in dest.parent.glob(f"{stem}.*")
+        if p.is_file() and p.stem == stem and p.suffix.lower() in _YTDLP_MEDIA_SUFFIXES
+    ]
+    if not candidates:
+        raise FileNotFoundError(f"yt-dlp produced no file for {dest}")
+    chosen = max(candidates, key=lambda p: p.stat().st_mtime)
+    chosen.rename(dest)
+
+
 # =====================================================
 # Host backend (default — current behavior)
 # =====================================================
@@ -111,13 +142,8 @@ class HostCaptureBackend:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
-        if not dest.exists():
-            # yt-dlp may have written with a different extension (e.g. .mkv).
-            stem = dest.stem
-            candidates = sorted(dest.parent.glob(f"{stem}.*"))
-            if not candidates:
-                raise FileNotFoundError(f"yt-dlp produced no file for {dest}")
-            candidates[0].rename(dest)
+        # yt-dlp may have written with a different extension (e.g. .mkv).
+        _adopt_ytdlp_output(dest)
 
         with contextlib.suppress(OSError):
             os.chmod(dest, 0o600)
@@ -354,12 +380,7 @@ class DockerCaptureBackend:
             ) from e
 
         # yt-dlp may have appended a non-mp4 extension; handle same as host.
-        if not dest.exists():
-            stem = dest.stem
-            candidates = sorted(dest.parent.glob(f"{stem}.*"))
-            if not candidates:
-                raise FileNotFoundError(f"yt-dlp (docker) produced no file for {dest}")
-            candidates[0].rename(dest)
+        _adopt_ytdlp_output(dest)
 
         with contextlib.suppress(OSError):
             os.chmod(dest, 0o600)
