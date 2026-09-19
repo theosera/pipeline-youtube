@@ -447,6 +447,14 @@ def _collect_existing_learning_bodies(
             continue
         # Decode with replacement rather than strictly: a note that picked up a
         # bad byte should degrade, not abort the whole synthesis run.
+        body = _strip_frontmatter(data.decode("utf-8", errors="replace"))
+        if not body:
+            # A truncated or hand-emptied 04 note still carries trusted
+            # frontmatter, so the scan above finds it — but it holds no learning
+            # material. Counting it would let it pass ``min_playlist_size`` and
+            # run Stage 05 on an empty source. (``_strip_frontmatter`` also
+            # returns "" for a whitespace-only body.)
+            continue
         matched_videos.append(v)
-        matched_bodies.append(_strip_frontmatter(data.decode("utf-8", errors="replace")))
+        matched_bodies.append(body)
     return matched_videos, matched_bodies, folder_name
