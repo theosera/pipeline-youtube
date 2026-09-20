@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from pipeline_youtube.checkpoint import (
+    _find_learning_folder,
     get_completed_video_ids,
     is_video_complete,
 )
@@ -29,6 +30,7 @@ def _create_04_md(
     title: str = "test",
     *,
     include_url: bool = True,
+    body: str = "Body.",
 ) -> Path:
     """Create a minimal 04 md with the real pipeline frontmatter shape.
 
@@ -52,7 +54,7 @@ def _create_04_md(
             "tags: [memo, youtube]",
             "---",
             "",
-            "Body.",
+            body,
             "",
         ]
     )
@@ -127,3 +129,64 @@ class TestGetCompletedVideoIds:
     def test_no_folder_returns_empty_set(self, vault):
         dt = datetime(2026, 4, 16, 9, 14)
         assert get_completed_video_ids("nonexistent", dt, vault_root=vault) == set()
+
+
+def _learning_base(vault: Path) -> Path:
+    return vault / "Permanent Note" / "08_YouTube学習" / "04_Learning_Material"
+
+
+def _iterdir_oldest_first(base: Path, real_iterdir):
+    """Yield ``base`` children oldest-name-first; delegate everywhere else."""
+
+    def _iterdir(self: Path):
+        if self.resolve() == base.resolve():
+            yield from sorted(real_iterdir(self), key=lambda p: p.name)
+            return
+        yield from real_iterdir(self)
+
+    return _iterdir
+
+
+class TestFindLearningFolderNewestWins:
+    def test_fallback_prefers_newest_same_day_folder(self, vault, monkeypatch):
+        """Canonical miss + two exact-title folders must not follow iterdir().
+
+        Morning 10:00 wrote 04 for A; afternoon 14:00 --force-video rewrote A.
+        An evening run (canonical 1800 missing) used to return whichever
+        folder iterdir() yielded first, so Stage 05 could synthesize the
+        stale morning body. Newest-name-first matches resume lookup.
+        """
+        morning = "2026-04-16-1000 AI駆動経営"
+        afternoon = "2026-04-16-1400 AI駆動経営"
+        _create_04_md(vault, morning, _VID_A, "朝", body="morning-body")
+        _create_04_md(vault, afternoon, _VID_A, "昼", body="afternoon-body")
+        _create_04_md(vault, afternoon, _VID_B, "昼のみ", body="afternoon-only")
+
+        monkeypatch.setattr(
+            Path,
+            "iterdir",
+            _iterdir_oldest_first(_learning_base(vault), Path.iterdir),
+        )
+
+        dt = datetime(2026, 4, 16, 18, 0)
+        folder = _find_learning_folder("AI駆動経営", dt, vault_root=vault)
+        assert folder is not None
+        assert folder.name == afternoon
+        assert get_completed_video_ids("AI駆動経営", dt, vault_root=vault) == {
+            _VID_A,
+            _VID_B,
+        }
+        assert is_video_complete(_VID_A, "AI駆動経営", dt, vault_root=vault) is True
+        assert is_video_complete(_VID_B, "AI駆動経営", dt, vault_root=vault) is True
+
+    def test_canonical_folder_still_wins_over_newer_sibling(self, vault):
+        """An explicit --run-timestamp matching morning must stay on morning."""
+        morning = "2026-04-16-1000 AI駆動経営"
+        afternoon = "2026-04-16-1400 AI駆動経営"
+        _create_04_md(vault, morning, _VID_A)
+        _create_04_md(vault, afternoon, _VID_B)
+        dt = datetime(2026, 4, 16, 10, 0)
+        folder = _find_learning_folder("AI駆動経営", dt, vault_root=vault)
+        assert folder is not None
+        assert folder.name == morning
+        assert get_completed_video_ids("AI駆動経営", dt, vault_root=vault) == {_VID_A}
