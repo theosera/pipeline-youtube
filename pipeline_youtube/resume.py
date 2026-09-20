@@ -343,7 +343,15 @@ def _collect_existing_learning_bodies(
     ``--synthesis-only`` follows the same order Phase 3 uses: the canonical
     folder for ``run_time``, then same-day runs (newest first), then earlier
     days (newest first). Re-synthesizing material produced yesterday no longer
-    needs ``--run-timestamp``; the run date still wins whenever it has a folder.
+    needs ``--run-timestamp``; the run date still wins whenever it has a folder
+    that actually contains this playlist's video_ids.
+
+    Unlike Phase 3, this path has no ``reviewed: true`` gate, so same-day
+    substring matches from ``_unit_folder_candidates`` are filtered to an
+    *exact* playlist title before a folder is accepted. A same-day
+    ``testlist Advanced`` run must not hide yesterday's exact ``testlist``
+    material (and must not feed Advanced bodies into a ``testlist`` synthesis
+    when video_ids overlap).
 
     Also returns the resolved folder name so stage 05 can reuse the exact
     legacy name instead of creating a new one next to it.
@@ -355,10 +363,50 @@ def _collect_existing_learning_bodies(
     base_dir = vault_root / safe_rel_base
 
     preferred = format_playlist_folder_name(run_time, playlist_title)
-    learning_dir = next(
-        (c for c in _unit_folder_candidates(base_dir, playlist_title, run_time) if c.exists()),
-        None,
-    )
+    from .obsidian import _strip_playlist_category_prefix, sanitize_title_for_filename
+
+    # --synthesis-only has no reviewed:true gate. The shared candidate generator
+    # still uses same-day *substring* title matching (safe for Phase 3 because
+    # reviewed lookup filters further), so a longer playlist created today
+    # ("testlist Advanced") would otherwise win over yesterday's exact
+    # "testlist" folder and either synthesize the wrong bodies or report
+    # matched=0 while the real material sits one tier below. Hold every
+    # synthesis-only candidate to an exact title.
+    title_needle = sanitize_title_for_filename(_strip_playlist_category_prefix(playlist_title))
+
+    def _scan_learning_bodies(folder: Path) -> dict[str, str]:
+        found: dict[str, str] = {}
+        for md in sorted(folder.glob("*.md")):
+            try:
+                data = md.read_bytes()
+            except OSError:
+                continue
+            vid = extract_trusted_video_id(data)
+            if vid is None:
+                continue
+            text = data.decode("utf-8", errors="replace")
+            found[vid] = _strip_frontmatter(text)
+        return found
+
+    learning_dir: Path | None = None
+    by_video_id: dict[str, str] = {}
+    for candidate in _unit_folder_candidates(base_dir, playlist_title, run_time):
+        if not candidate.exists():
+            continue
+        if title_needle and _folder_title(candidate.name) != title_needle:
+            continue
+        scanned = _scan_learning_bodies(candidate)
+        matched_ids = [v.video_id for v in videos if v.video_id in scanned]
+        if matched_ids:
+            learning_dir = candidate
+            by_video_id = scanned
+            break
+        # Exact folder but none of this playlist's videos — keep looking
+        # (a same-day partial run must not hide an earlier complete one).
+        if learning_dir is None:
+            learning_dir = candidate
+            by_video_id = scanned
+
     if learning_dir is None:
         raise click.UsageError(
             f"04 folder not found under {base_dir}. "
@@ -373,18 +421,6 @@ def _collect_existing_learning_bodies(
             click.echo(f"(resuming from {folder_name!r}, a run on {folder_name[:10]})")
         else:
             click.echo(f"(fallback: using folder {folder_name!r})")
-
-    by_video_id: dict[str, str] = {}
-    for md in sorted(learning_dir.glob("*.md")):
-        try:
-            data = md.read_bytes()
-        except OSError:
-            continue
-        vid = extract_trusted_video_id(data)
-        if vid is None:
-            continue
-        text = data.decode("utf-8", errors="replace")
-        by_video_id[vid] = _strip_frontmatter(text)
 
     matched_videos: list[VideoMeta] = []
     matched_bodies: list[str] = []
