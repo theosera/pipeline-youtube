@@ -182,14 +182,24 @@ def _find_reviewed_summary_md(
 def _find_existing_04_md(
     video_id: str, playlist_title: str, run_date: datetime, *, vault_root: Path
 ) -> Path | None:
-    """Locate the stage 04 md for a checkpoint-skipped video."""
-    from .checkpoint import _find_learning_folder
+    """Locate the stage 04 md for a checkpoint-skipped video.
 
-    folder = _find_learning_folder(playlist_title, run_date, vault_root=vault_root)
-    if folder is None:
-        return None
-    matches = [md for md in folder.glob("*.md") if read_trusted_video_id(md) == video_id]
-    return _prefer_latest_unit_md(matches)
+    Walks the same-day folders newest first and stops at the first one that
+    actually holds ``video_id``. An afternoon `--force-video` on one video
+    leaves a folder without the others, so reading only the newest folder
+    would hand Stage 05 nothing for them even though their notes exist in the
+    morning folder — the same partial-rerun case `get_completed_video_ids`
+    unions over. Within the chosen folder `_prefer_latest_unit_md` still picks
+    the freshest `-N` collision copy.
+    """
+    from .checkpoint import _find_learning_folders
+
+    for folder in _find_learning_folders(playlist_title, run_date, vault_root=vault_root):
+        matches = [md for md in folder.glob("*.md") if read_trusted_video_id(md) == video_id]
+        latest = _prefer_latest_unit_md(matches)
+        if latest is not None:
+            return latest
+    return None
 
 
 def _load_existing_04_body(

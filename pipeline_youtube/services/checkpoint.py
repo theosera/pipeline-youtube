@@ -101,16 +101,16 @@ def read_trusted_video_id(md_path: Path) -> str | None:
     return extract_trusted_video_id(data)
 
 
-def _find_learning_folder(
+def _find_learning_folders(
     playlist_title: str, run_date: datetime, *, vault_root: Path
-) -> Path | None:
-    """Locate the 04_Learning_Material playlist folder for a given date.
+) -> list[Path]:
+    """Every 04_Learning_Material folder this run may read, newest first.
 
-    Tries the canonical name first (`YYYY-MM-DD-HHmm <title>`), then falls
-    back to same-day folders whose *title* equals the sanitized playlist title
-    (legacy date-only names included). Returns None if nothing matches.
+    The canonical name (`YYYY-MM-DD-HHmm <title>`) comes first when it exists;
+    then the other same-day folders whose *title* equals the sanitized playlist
+    title (legacy date-only names included).
 
-    Two rules apply to that fallback, in this order — first narrow, then pick:
+    Two rules build that same-day set, in this order — first narrow, then order:
 
     1. Exact title. A substring rule would let a shorter playlist
        (`ML Python`) claim a longer same-day sibling (`ML Python Advanced`)
@@ -119,10 +119,17 @@ def _find_learning_folder(
        `obsidian.playlist_folder_title`, shared with the resume path so both
        same-day fallbacks stay in step.
     2. Newest first among what survives rule 1. `iterdir()` order is
-       filesystem-dependent, so returning the first match would let a morning
+       filesystem-dependent, so a first-match rule would let a morning
        run shadow an afternoon `--force-video` rewrite of the same playlist.
        Folder names open with `YYYY-MM-DD-HHmm`, so a descending name sort is
        a time sort — the same rule `resume._unit_folder_candidates` uses.
+
+    Why a list and not one folder: a partial rerun (`--force-video` on a single
+    video) writes a folder holding only that video. Reading completion from the
+    newest folder alone loses the videos that only an earlier folder has, so
+    their stages 01-04 run again even though they finished. Callers that decide
+    completion union across the whole list; callers that need a body walk it
+    newest first and stop at the folder that actually holds the `video_id`.
 
     Historical `04_Lerning_Material` (typo) folders are also searched
     so existing vaults continue to work without renaming. See
@@ -138,16 +145,12 @@ def _find_learning_folder(
     ]
     bases = [b for b in bases if b.exists()]
     if not bases:
-        return None
-    base = bases[0]
+        return []
 
-    # Canonical name
-    canonical = base / format_playlist_folder_name(run_date, playlist_title)
-    if canonical.exists():
-        return canonical
+    canonical = bases[0] / format_playlist_folder_name(run_date, playlist_title)
 
-    # Fallback: same-day folder with an exact title (handles legacy date-only
-    # names and pre-concealment invisible characters in the title segment).
+    # Same-day folders with an exact title (handles legacy date-only names and
+    # pre-concealment invisible characters in the title segment).
     date_prefix = run_date.strftime("%Y-%m-%d")
 
     # Also handle `/`-separated playlist titles (take last segment). Guard on the
@@ -156,29 +159,43 @@ def _find_learning_folder(
 
     display_title = _strip_playlist_category_prefix(playlist_title)
     title_needle = sanitize_title_for_filename(display_title)
-    if not title_needle:
-        return None
 
     matches: list[Path] = []
-    for b in bases:
-        try:
-            children = list(b.iterdir())
-        except OSError:
-            continue
-        for child in children:
-            if not child.is_dir() or not child.name.startswith(date_prefix):
+    if title_needle:
+        for b in bases:
+            try:
+                children = list(b.iterdir())
+            except OSError:
                 continue
-            # Folders created before the concealment defense may still contain
-            # zero-width/bidi characters. Comparing sanitized titles keeps those
-            # completed runs discoverable after upgrading.
-            if playlist_folder_title(child.name) == title_needle:
-                matches.append(child)
-    if not matches:
-        return None
+            for child in children:
+                if not child.is_dir() or not child.name.startswith(date_prefix):
+                    continue
+                # Folders created before the concealment defense may still contain
+                # zero-width/bidi characters. Comparing sanitized titles keeps those
+                # completed runs discoverable after upgrading.
+                if playlist_folder_title(child.name) == title_needle:
+                    matches.append(child)
     # Folder names start with YYYY-MM-DD-HHmm (legacy: YYYY-MM-DD), so a
     # descending name sort puts the newest same-day run first.
     matches.sort(key=lambda child: child.name, reverse=True)
-    return matches[0]
+
+    folders: list[Path] = []
+    if canonical.exists():
+        folders.append(canonical)
+    folders.extend(child for child in matches if child != canonical)
+    return folders
+
+
+def _find_learning_folder(
+    playlist_title: str, run_date: datetime, *, vault_root: Path
+) -> Path | None:
+    """The folder this run owns — canonical if present, else the newest sibling.
+
+    Kept for callers that need exactly one folder. Completion checks must not
+    stop here; see `_find_learning_folders` for why.
+    """
+    folders = _find_learning_folders(playlist_title, run_date, vault_root=vault_root)
+    return folders[0] if folders else None
 
 
 def is_video_complete(
@@ -190,14 +207,16 @@ def is_video_complete(
 ) -> bool:
     """Return True if a stage 04 md with matching video_id already exists.
 
-    Scans the 04_Learning_Material playlist folder for any .md file whose
-    YAML frontmatter contains `video_id: "<video_id>"`.
+    Scans **every** same-day 04_Learning_Material folder this playlist may own
+    for an .md file whose YAML frontmatter contains `video_id: "<video_id>"`.
+    A partial rerun leaves the other videos only in the earlier folder, so
+    stopping at the newest one would report them as incomplete.
     """
-    folder = _find_learning_folder(playlist_title, run_date, vault_root=vault_root)
-    if folder is None or not folder.exists():
-        return False
-
-    return any(read_trusted_video_id(md) == video_id for md in folder.glob("*.md"))
+    return any(
+        read_trusted_video_id(md) == video_id
+        for folder in _find_learning_folders(playlist_title, run_date, vault_root=vault_root)
+        for md in folder.glob("*.md")
+    )
 
 
 def get_completed_video_ids(
@@ -209,15 +228,15 @@ def get_completed_video_ids(
     """Return the set of video_ids that have completed stage 04.
 
     Useful for batch skip decisions without calling is_video_complete
-    in a loop (one folder scan instead of N).
+    in a loop (one sweep instead of N). The ids are the **union** over every
+    same-day folder of this playlist: a morning run finishing A and B followed
+    by an afternoon `--force-video A` leaves B only in the morning folder, and
+    counting the afternoon folder alone would re-run stages 01-04 for B.
     """
-    folder = _find_learning_folder(playlist_title, run_date, vault_root=vault_root)
-    if folder is None or not folder.exists():
-        return set()
-
     ids: set[str] = set()
-    for md in folder.glob("*.md"):
-        vid = read_trusted_video_id(md)
-        if vid is not None:
-            ids.add(vid)
+    for folder in _find_learning_folders(playlist_title, run_date, vault_root=vault_root):
+        for md in folder.glob("*.md"):
+            vid = read_trusted_video_id(md)
+            if vid is not None:
+                ids.add(vid)
     return ids

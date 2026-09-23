@@ -450,6 +450,32 @@ class TestResumeReviewedProcessing:
             "afternoon-updated\n"
         )
 
+    def test_checkpoint_skip_falls_back_to_the_folder_holding_the_video(self, tmp_path: Path):
+        """A partial afternoon rerun must not blank out the other videos' bodies.
+
+        Morning finished A and B; an afternoon `--force-video` rewrote A only.
+        The newest folder has no note for B, so a newest-folder-only lookup
+        returned None and Stage 05 lost B even though `get_completed_video_ids`
+        (which unions over the day) still skipped its stages 01-04. The lookup
+        now walks the same-day folders newest first and stops at the one that
+        actually holds the id — A from the afternoon, B from the morning.
+        """
+        config.set_vault_root(tmp_path)
+        learning = tmp_path / LEARNING_BASE / UNIT_DIRS["learning"]
+        morning_a = learning / "2026-04-18-0800 testlist" / "a.md"
+        morning_b = learning / "2026-04-18-0800 testlist" / "b.md"
+        afternoon_a = learning / "2026-04-18-1400 testlist" / "a.md"
+        _write_learning(morning_a, _VID_A, "morning-A\n")
+        _write_learning(morning_b, _VID_B, "morning-B\n")
+        _write_learning(afternoon_a, _VID_A, "afternoon-A\n")
+
+        dt = datetime(2026, 4, 18, 18, 0)
+        vault = config.get_vault_root()
+        assert _find_existing_04_md(_VID_A, "testlist", dt, vault_root=vault) == afternoon_a
+        assert _find_existing_04_md(_VID_B, "testlist", dt, vault_root=vault) == morning_b
+        assert _load_existing_04_body(_VID_A, "testlist", dt, vault_root=vault) == "afternoon-A\n"
+        assert _load_existing_04_body(_VID_B, "testlist", dt, vault_root=vault) == "morning-B\n"
+
     def test_existing_04_lookup_prefers_forced_collision_suffix(self, tmp_path: Path):
         config.set_vault_root(tmp_path)
         dt = datetime(2026, 4, 18, 12, 0)

@@ -200,7 +200,13 @@ class TestFindLearningFolderNewestWins:
         assert is_video_complete(_VID_B, "AI駆動経営", dt, vault_root=vault) is True
 
     def test_canonical_folder_still_wins_over_newer_sibling(self, vault):
-        """An explicit --run-timestamp matching morning must stay on morning."""
+        """An explicit --run-timestamp matching morning must stay on morning.
+
+        The folder this run *owns* is still the canonical one. Completion is a
+        separate question and spans the day: B finished in the afternoon
+        folder, so it must not be re-run just because this run's own folder is
+        the morning one.
+        """
         morning = "2026-04-16-1000 AI駆動経営"
         afternoon = "2026-04-16-1400 AI駆動経営"
         _create_04_md(vault, morning, _VID_A)
@@ -209,4 +215,37 @@ class TestFindLearningFolderNewestWins:
         folder = _find_learning_folder("AI駆動経営", dt, vault_root=vault)
         assert folder is not None
         assert folder.name == morning
-        assert get_completed_video_ids("AI駆動経営", dt, vault_root=vault) == {_VID_A}
+        assert get_completed_video_ids("AI駆動経営", dt, vault_root=vault) == {_VID_A, _VID_B}
+
+
+class TestPartialSameDayRerun:
+    """朝 A+B → 午後 `--force-video A` → 夕方再開、の取りこぼしを塞ぐ。"""
+
+    def test_partial_rerun_does_not_lose_earlier_completions(self, vault):
+        """The afternoon folder holds only A; B must stay complete.
+
+        Reading completion from the newest folder alone reported B as
+        incomplete, so an evening resume re-ran stages 01-04 for a video that
+        had already finished in the morning. Completion is now the union over
+        every same-day folder of this playlist.
+        """
+        morning = "2026-04-16-1000 AI駆動経営"
+        afternoon = "2026-04-16-1400 AI駆動経営"
+        _create_04_md(vault, morning, _VID_A, "朝A", body="morning-A")
+        _create_04_md(vault, morning, _VID_B, "朝B", body="morning-B")
+        _create_04_md(vault, afternoon, _VID_A, "昼A", body="afternoon-A")
+
+        dt = datetime(2026, 4, 16, 18, 0)  # canonical 1800 does not exist
+        folder = _find_learning_folder("AI駆動経営", dt, vault_root=vault)
+        assert folder is not None
+        assert folder.name == afternoon
+        assert get_completed_video_ids("AI駆動経営", dt, vault_root=vault) == {_VID_A, _VID_B}
+        assert is_video_complete(_VID_B, "AI駆動経営", dt, vault_root=vault) is True
+
+    def test_union_widens_across_folders_never_across_playlists(self, vault):
+        """The union spans this playlist's folders only — not a same-day sibling."""
+        _create_04_md(vault, "2026-04-16-1000 ML Python", _VID_A, "自分")
+        _create_04_md(vault, "2026-04-16-1400 ML Python Advanced", _VID_B, "他人")
+        dt = datetime(2026, 4, 16, 18, 0)
+        assert get_completed_video_ids("ML Python", dt, vault_root=vault) == {_VID_A}
+        assert is_video_complete(_VID_B, "ML Python", dt, vault_root=vault) is False
