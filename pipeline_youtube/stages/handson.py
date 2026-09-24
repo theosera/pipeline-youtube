@@ -63,8 +63,10 @@ from .scripts import run_stage_scripts
 
 # Output root for hands-on mode (user-specified sibling of the 08 tree,
 # same internal unit structure). The folder was created manually in the
-# vault; every write below goes through mkdir(parents=True, exist_ok=True)
-# so a pre-existing (or missing) root is equally fine.
+# vault; writes below go through mkdir(parents=True, exist_ok=True) so a
+# pre-existing (or missing) root is equally fine. The one exception is the
+# per-run 01 folder, which `_allocate_run_folder` reserves with
+# exist_ok=False so concurrent same-minute runs cannot share it.
 SESSION_BASE = "Permanent Note/09_YouTube学習_Session_only"
 SESSION_SCRIPTS_BASE = f"{SESSION_BASE}/01_Scripts_Processing_Unit"
 SESSION_SYNTHESIS_BASE = f"{SESSION_BASE}/05_Synthesis"
@@ -167,7 +169,7 @@ def run_stage_handson(
 
 
 def _allocate_run_folder(vault_root: Path, base_name: str) -> str:
-    """Return ``base_name``, or ``base_name-2`` / ``-3`` / … on collision.
+    """Reserve and return ``base_name``, or ``base_name-2`` / ``-3`` / … on collision.
 
     Hands-on writes fixed filenames into the run folder (``00_MOC.md``,
     ``NN_<label>.md``, ``pyt_<id>_hNN.webp``). A same-minute re-run that
@@ -176,6 +178,16 @@ def _allocate_run_folder(vault_root: Path, base_name: str) -> str:
     ``resolve_unique_path`` — asymmetric data loss. Checking all three
     parents (01 / 05 / ``_assets``) keeps the whole run on one unique
     folder name.
+
+    The name is *reserved*, not merely checked: the 01 folder is created here
+    with ``exist_ok=False``. ``mkdir`` is atomic, so when two same-minute runs
+    race for one name only one of them gets it; the other sees
+    ``FileExistsError`` and moves on to the next suffix. Checking ``exists()``
+    and creating the folder later let both runs pass the check and share one
+    folder — the overwrite this function exists to prevent. The 05 /
+    ``_assets`` checks stay as a pre-filter for leftovers of an interrupted
+    run; they need no atomicity, because only the run holding the 01
+    reservation ever writes to that name's 05 / ``_assets``.
     """
     name = base_name
     suffix = 2
@@ -187,8 +199,13 @@ def _allocate_run_folder(vault_root: Path, base_name: str) -> str:
             f"{SESSION_SYNTHESIS_BASE}/{name}", vault_root=vault_root
         )
         assets = vault_root / ensure_safe_path(f"{ASSETS_REL_PATH}/{name}", vault_root=vault_root)
-        if not scripts.exists() and not synthesis.exists() and not assets.exists():
-            return name
+        if not synthesis.exists() and not assets.exists():
+            try:
+                scripts.mkdir(parents=True, exist_ok=False)
+            except FileExistsError:
+                pass
+            else:
+                return name
         name = f"{base_name}-{suffix}"
         suffix += 1
 
@@ -223,6 +240,8 @@ def _run(
     if dry_run:
         scripts_path = scripts_dir / f"{note_base}.md"
     else:
+        # _allocate_run_folder already created (reserved) this folder; the
+        # exist_ok=True here is only the owner re-entering its own folder.
         scripts_dir.mkdir(parents=True, exist_ok=True)
         # Folder is already unique; keep resolve_unique_path as a belt-and-
         # braces guard against an odd same-stem leftover inside a fresh dir.
