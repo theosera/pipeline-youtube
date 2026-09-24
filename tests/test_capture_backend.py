@@ -96,6 +96,81 @@ class TestAdoptYtdlpOutput:
         assert dest.read_bytes() == b"this-download"
         assert old.exists()
 
+    def test_newer_fragment_is_still_ignored(self, tmp_path: Path):
+        """mtime alone must not decide: a fragment newer than the mux still loses."""
+        dest = tmp_path / "abc123abc12.mp4"
+        webm = tmp_path / "abc123abc12.webm"
+        webm.write_bytes(b"real-download")
+        past = time.time() - 3600
+        os.utime(webm, (past, past))
+        fragment = tmp_path / "abc123abc12.f137.mp4"
+        fragment.write_bytes(b"partial-dash")
+        _adopt_ytdlp_output(dest)
+        assert dest.read_bytes() == b"real-download"
+        assert fragment.exists()
+
+    def test_ignores_same_stem_non_media(self, tmp_path: Path):
+        """A same-stem thumbnail (`{id}.webp`) is not a video container."""
+        dest = tmp_path / "abc123abc12.mp4"
+        mkv = tmp_path / "abc123abc12.mkv"
+        mkv.write_bytes(b"real-download")
+        past = time.time() - 3600
+        os.utime(mkv, (past, past))
+        thumb = tmp_path / "abc123abc12.webp"
+        thumb.write_bytes(b"thumbnail")
+        _adopt_ytdlp_output(dest)
+        assert dest.read_bytes() == b"real-download"
+        assert thumb.exists()
+
+
+class TestDownloadVideoSkipsLeftoverFragment:
+    """Both backends adopt yt-dlp's output through `_adopt_ytdlp_output`.
+
+    The lexicographic pick lived in each `download_video`, so the helper tests
+    alone do not show that the call sites stopped choosing the fragment.
+    """
+
+    def test_host(self, tmp_path: Path):
+        dest = tmp_path / "abc123abc12.mp4"
+        fragment = tmp_path / "abc123abc12.f137.mp4"
+        fragment.write_bytes(b"partial-dash")
+
+        class FakeYDL:
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def download(self, urls):
+                (tmp_path / "abc123abc12.webm").write_bytes(b"real-download")
+
+        with patch.dict("sys.modules", {"yt_dlp": MagicMock(YoutubeDL=FakeYDL)}):
+            HostCaptureBackend().download_video(
+                "https://www.youtube.com/watch?v=abc123abc12", dest, resolution="480"
+            )
+        assert dest.read_bytes() == b"real-download"
+        assert fragment.read_bytes() == b"partial-dash"
+
+    def test_docker(self, docker_backend):
+        dest = docker_backend.tmp_dir / "abc123abc12.mp4"
+        fragment = docker_backend.tmp_dir / "abc123abc12.f137.mp4"
+        fragment.write_bytes(b"partial-dash")
+
+        def fake_run(*args, **kwargs):
+            (docker_backend.tmp_dir / "abc123abc12.webm").write_bytes(b"real-download")
+            return MagicMock(returncode=0)
+
+        with patch("subprocess.run", side_effect=fake_run):
+            docker_backend.download_video(
+                "https://www.youtube.com/watch?v=abc123abc12", dest, resolution="480"
+            )
+        assert dest.read_bytes() == b"real-download"
+        assert fragment.read_bytes() == b"partial-dash"
+
 
 # =====================================================
 # HostCaptureBackend
