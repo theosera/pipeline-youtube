@@ -8,17 +8,57 @@ reprocessing.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 
 import click
 
-from .checkpoint import extract_trusted_video_id, read_trusted_video_id
+from .checkpoint import read_trusted_video_id
 from .obsidian import format_playlist_folder_name, playlist_folder_title
 from .path_safety import ensure_safe_path
 from .pipeline import LEARNING_BASE, UNIT_DIRS
 from .playlist import VideoMeta
 from .run_result import _strip_frontmatter
+
+# ``resolve_unique_path`` appends ``-2``, ``-3``, … on same-folder collisions.
+_COLLISION_SUFFIX_RE = re.compile(r"-(\d+)$")
+
+
+def _collision_suffix_n(stem: str) -> int:
+    """Return the ``resolve_unique_path`` collision ordinal for a note stem.
+
+    Unsuffixed stems count as ``1``. A trailing ``-N`` with ``N >= 2`` is the
+    collision ordinal; bare titles that happen to end in ``-1`` stay at ``1``.
+    """
+    match = _COLLISION_SUFFIX_RE.search(stem)
+    if match is None:
+        return 1
+    n = int(match.group(1))
+    return n if n >= 2 else 1
+
+
+def _prefer_latest_unit_md(candidates: list[Path]) -> Path | None:
+    """Pick the freshest note among several files for the same ``video_id``.
+
+    Same-folder rewrites (``--force-video`` + matching ``--run-timestamp``)
+    leave both ``Title.md`` and ``Title-2.md``. A ``sorted(glob)`` last-wins
+    dict keeps the *stale* unsuffixed file because ``Title-2.md`` sorts before
+    ``Title.md`` (``'-' < '.'``). Prefer newer mtime, then higher collision
+    suffix, so later consumers (checkpoint skip / ``--synthesis-only``) feed
+    Stage 05 the forced rewrite.
+    """
+    if not candidates:
+        return None
+
+    def sort_key(path: Path) -> tuple[int, int, str]:
+        try:
+            mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = -1
+        return (mtime_ns, _collision_suffix_n(path.stem), path.name)
+
+    return max(candidates, key=sort_key)
 
 
 def _parse_run_timestamp(run_timestamp: str | None) -> datetime:
@@ -142,15 +182,23 @@ def _find_reviewed_summary_md(
 def _find_existing_04_md(
     video_id: str, playlist_title: str, run_date: datetime, *, vault_root: Path
 ) -> Path | None:
-    """Locate the stage 04 md for a checkpoint-skipped video."""
-    from .checkpoint import _find_learning_folder
+    """Locate the stage 04 md for a checkpoint-skipped video.
 
-    folder = _find_learning_folder(playlist_title, run_date, vault_root=vault_root)
-    if folder is None:
-        return None
-    for md in folder.glob("*.md"):
-        if read_trusted_video_id(md) == video_id:
-            return md
+    Walks the same-day folders newest first and stops at the first one that
+    actually holds ``video_id``. An afternoon `--force-video` on one video
+    leaves a folder without the others, so reading only the newest folder
+    would hand Stage 05 nothing for them even though their notes exist in the
+    morning folder — the same partial-rerun case `get_completed_video_ids`
+    unions over. Within the chosen folder `_prefer_latest_unit_md` still picks
+    the freshest `-N` collision copy.
+    """
+    from .checkpoint import _find_learning_folders
+
+    for folder in _find_learning_folders(playlist_title, run_date, vault_root=vault_root):
+        matches = [md for md in folder.glob("*.md") if read_trusted_video_id(md) == video_id]
+        latest = _prefer_latest_unit_md(matches)
+        if latest is not None:
+            return latest
     return None
 
 
@@ -345,22 +393,26 @@ def _collect_existing_learning_bodies(
     # run.
     title_needle = sanitize_title_for_filename(_strip_playlist_category_prefix(playlist_title))
 
-    def _scan_learning_bodies(folder: Path) -> dict[str, str]:
-        found: dict[str, str] = {}
-        for md in sorted(folder.glob("*.md")):
-            try:
-                data = md.read_bytes()
-            except OSError:
-                continue
-            vid = extract_trusted_video_id(data)
+    def _scan_learning_bodies(folder: Path) -> dict[str, Path]:
+        """Map each trusted video_id in ``folder`` to the freshest note holding it.
+
+        A same-folder rewrite (``--force-video`` with a matching
+        ``--run-timestamp``) leaves both ``Title.md`` and ``Title-2.md`` for one
+        video_id. Keeping the *path* rather than the body lets
+        ``_prefer_latest_unit_md`` pick the rewrite instead of whichever name
+        happens to sort last.
+        """
+        found: dict[str, Path] = {}
+        for md in folder.glob("*.md"):
+            vid = read_trusted_video_id(md)
             if vid is None:
                 continue
-            text = data.decode("utf-8", errors="replace")
-            found[vid] = _strip_frontmatter(text)
+            prev = found.get(vid)
+            found[vid] = md if prev is None else (_prefer_latest_unit_md([prev, md]) or md)
         return found
 
     learning_dir: Path | None = None
-    by_video_id: dict[str, str] = {}
+    by_video_id: dict[str, Path] = {}
     for candidate in _unit_folder_candidates(base_dir, playlist_title, run_time):
         if not candidate.exists():
             continue
@@ -396,8 +448,23 @@ def _collect_existing_learning_bodies(
     matched_videos: list[VideoMeta] = []
     matched_bodies: list[str] = []
     for v in videos:
-        body = by_video_id.get(v.video_id)
-        if body:
-            matched_videos.append(v)
-            matched_bodies.append(body)
+        md = by_video_id.get(v.video_id)
+        if md is None:
+            continue
+        try:
+            data = md.read_bytes()
+        except OSError:
+            continue
+        # Decode with replacement rather than strictly: a note that picked up a
+        # bad byte should degrade, not abort the whole synthesis run.
+        body = _strip_frontmatter(data.decode("utf-8", errors="replace"))
+        if not body:
+            # A truncated or hand-emptied 04 note still carries trusted
+            # frontmatter, so the scan above finds it — but it holds no learning
+            # material. Counting it would let it pass ``min_playlist_size`` and
+            # run Stage 05 on an empty source. (``_strip_frontmatter`` also
+            # returns "" for a whitespace-only body.)
+            continue
+        matched_videos.append(v)
+        matched_bodies.append(body)
     return matched_videos, matched_bodies, folder_name
