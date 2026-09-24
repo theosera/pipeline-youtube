@@ -162,11 +162,20 @@ def playlist_folder_title(folder_name: str) -> str:
     that a fallback folder must match the playlist title *exactly* lives in one
     place. A substring rule would let "ML Python" claim a same-day sibling
     "ML Python Advanced" and consume the wrong playlist's notes.
+
+    The title is also capped with `limit_title_for_path_component`, and every
+    needle compared against it must be capped the same way. New folders are
+    already capped when written; folders written before the cap may hold up to
+    ~239 bytes of title, and capping only the needle would hide them. The cost
+    is that two titles sharing their first capped bytes compare equal — which
+    `format_playlist_folder_name` already makes them for new folders.
     """
     match = _DATED_FOLDER_PREFIX_RE.match(folder_name)
     if match is None:
         return ""
-    return sanitize_title_for_filename(folder_name[match.end() :].strip())
+    return limit_title_for_path_component(
+        sanitize_title_for_filename(folder_name[match.end() :].strip())
+    )
 
 
 def resolve_unique_path(folder: Path, base_name: str, ext: str = ".md") -> Path:

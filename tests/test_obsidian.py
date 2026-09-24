@@ -5,15 +5,23 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
+from pipeline_youtube.checkpoint import get_completed_video_ids, is_video_complete
+from pipeline_youtube.config import reset_vault_root, set_vault_root
 from pipeline_youtube.obsidian import (
     _escape_yaml,
     build_frontmatter,
     format_playlist_folder_name,
     format_video_note_base,
     limit_title_for_path_component,
+    playlist_folder_title,
     resolve_unique_path,
     sanitize_title_for_filename,
 )
+from pipeline_youtube.pipeline import LEARNING_BASE, UNIT_DIRS
+from pipeline_youtube.playlist import VideoMeta
+from pipeline_youtube.resume import _collect_existing_learning_bodies, _unit_folder_candidates
 from pipeline_youtube.services.obsidian import _MAX_PATH_COMPONENT_BYTES
 
 
@@ -153,6 +161,111 @@ class TestFormatPlaylistFolder:
         assert limited
         assert limited in folder
         assert limited == folder.split(" ", 1)[1]
+
+
+# 70 CJK chars = 210 bytes: over the 184-byte title budget (200 - 16-byte
+# "YYYY-MM-DD-HHmm " prefix) yet still a legal on-disk name before the cap
+# existed (16 + 210 = 226 <= 255). The cap keeps 61 chars (183 bytes).
+_LONG = "漢" * 70
+_VID_A = "abc123DEFGH"
+
+
+@pytest.fixture()
+def vault(tmp_path: Path):
+    set_vault_root(tmp_path)
+    yield tmp_path
+    reset_vault_root()
+
+
+def _learning_dir(vault: Path) -> Path:
+    return vault / LEARNING_BASE / UNIT_DIRS["learning"]
+
+
+def _write_04(folder: Path, video_id: str, body: str = "learning body") -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "note.md").write_text(
+        f'---\ntitle: "x"\nURL: "https://www.youtube.com/watch?v={video_id}"\n'
+        f'video_id: "{video_id}"\n---\n\n{body}\n',
+        encoding="utf-8",
+    )
+
+
+def _video(video_id: str, playlist_title: str) -> VideoMeta:
+    return VideoMeta(
+        video_id=video_id,
+        title="t",
+        url=f"https://www.youtube.com/watch?v={video_id}",
+        duration=60,
+        channel="ch",
+        upload_date=None,
+        playlist_title=playlist_title,
+    )
+
+
+class TestCappedTitleStaysMatchable:
+    """A capped folder name must keep matching the exact-title lookups.
+
+    `format_*` cap the title on write; resume and checkpoint find a playlist's
+    folders by comparing `playlist_folder_title(name)` with a needle built from
+    the live title. Both sides are capped, so a long title still finds the
+    folders it wrote — and the ones written before the cap existed.
+    """
+
+    def test_folder_title_round_trips_capped_and_legacy_names(self):
+        needle = limit_title_for_path_component(sanitize_title_for_filename(_LONG))
+        capped = format_playlist_folder_name(datetime(2026, 8, 5, 9, 0), _LONG)
+        legacy = f"2026-08-05-0900 {_LONG}"
+        assert len(needle.encode("utf-8")) == 183
+        assert playlist_folder_title(capped) == needle
+        assert playlist_folder_title(legacy) == needle
+
+    def test_checkpoint_finds_a_same_day_capped_folder(self, vault):
+        morning = format_playlist_folder_name(datetime(2026, 8, 5, 9, 0), _LONG)
+        _write_04(_learning_dir(vault) / morning, _VID_A)
+        evening = datetime(2026, 8, 5, 18, 0)  # canonical 1800 does not exist
+        assert is_video_complete(_VID_A, _LONG, evening, vault_root=vault) is True
+        assert get_completed_video_ids(_LONG, evening, vault_root=vault) == {_VID_A}
+
+    def test_checkpoint_finds_a_legacy_uncapped_folder(self, vault):
+        """Written before the cap: the full 70-char title is on disk."""
+        _write_04(_learning_dir(vault) / f"2026-08-05-0900 {_LONG}", _VID_A)
+        evening = datetime(2026, 8, 5, 18, 0)
+        assert is_video_complete(_VID_A, _LONG, evening, vault_root=vault) is True
+
+    def test_synthesis_only_accepts_its_own_capped_canonical_folder(self, vault):
+        dt = datetime(2026, 8, 5, 9, 0)
+        canonical = format_playlist_folder_name(dt, _LONG)
+        _write_04(_learning_dir(vault) / canonical, _VID_A)
+        videos, bodies, folder_name = _collect_existing_learning_bodies(
+            [_video(_VID_A, _LONG)], _LONG, dt, vault_root=vault
+        )
+        assert [v.video_id for v in videos] == [_VID_A]
+        assert bodies == ["learning body\n"]
+        assert folder_name == canonical
+
+    def test_phase3_finds_an_earlier_day_capped_folder(self, vault):
+        base = _learning_dir(vault)
+        yesterday = base / format_playlist_folder_name(datetime(2026, 8, 4, 21, 0), _LONG)
+        yesterday.mkdir(parents=True)
+        candidates = list(_unit_folder_candidates(base, _LONG, datetime(2026, 8, 5, 9, 0)))
+        assert yesterday in candidates
+
+    def test_titles_differing_within_the_cap_stay_apart(self, vault):
+        """Capping must not loosen the exact-title rule inside the budget."""
+        other = "漢" * 60 + "字" * 10  # differs at char 61, inside the cap
+        _write_04(_learning_dir(vault) / f"2026-08-05-0900 {other}", _VID_A)
+        evening = datetime(2026, 8, 5, 18, 0)
+        assert is_video_complete(_VID_A, _LONG, evening, vault_root=vault) is False
+
+    def test_titles_equal_within_the_cap_already_share_a_name(self):
+        """The accepted cost: past the cap, titles are indistinguishable.
+
+        `format_playlist_folder_name` already gives both the same folder, so
+        the capped comparison does not introduce this collision.
+        """
+        dt = datetime(2026, 8, 5, 9, 0)
+        other = "漢" * 61 + "字" * 9  # differs at char 62, past the cap
+        assert format_playlist_folder_name(dt, other) == format_playlist_folder_name(dt, _LONG)
 
 
 class TestResolveUniquePath:

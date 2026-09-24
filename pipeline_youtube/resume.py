@@ -388,7 +388,11 @@ def _collect_existing_learning_bodies(
     base_dir = vault_root / safe_rel_base
 
     preferred = format_playlist_folder_name(run_time, playlist_title)
-    from .obsidian import _strip_playlist_category_prefix, sanitize_title_for_filename
+    from .obsidian import (
+        _strip_playlist_category_prefix,
+        limit_title_for_path_component,
+        sanitize_title_for_filename,
+    )
 
     # --synthesis-only has no reviewed:true gate, so the exact title is
     # re-asserted here: the generator yields the canonical folder
@@ -396,7 +400,11 @@ def _collect_existing_learning_bodies(
     # differently must not slip through on that tier. The video_id check below
     # is what keeps an empty same-day folder from hiding yesterday's complete
     # run.
-    title_needle = sanitize_title_for_filename(_strip_playlist_category_prefix(playlist_title))
+    # Capped like playlist_folder_title's side: without it a long title rejects
+    # even its own canonical folder, whose name format_* already capped.
+    title_needle = limit_title_for_path_component(
+        sanitize_title_for_filename(_strip_playlist_category_prefix(playlist_title))
+    )
 
     def _scan_learning_bodies(folder: Path) -> dict[str, Path]:
         """Map each trusted video_id in ``folder`` to the freshest note holding it.
