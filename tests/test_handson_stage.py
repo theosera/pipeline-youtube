@@ -6,6 +6,7 @@ behavior, dry-run write suppression, and the no-transcript abort.
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -222,3 +223,93 @@ class TestRunStageHandson:
         result = _run(vault)
         assert result.error is not None
         assert "RuntimeError" in result.error
+
+    def test_same_minute_rerun_does_not_overwrite_prior_notes(self, vault: Path, monkeypatch):
+        """Same HHmm folder must not wipe a prior successful hands-on run.
+
+        Scripts notes alone used ``resolve_unique_path`` (got ``-2``), while
+        ``00_MOC.md`` / step notes / clips reused fixed names under the same
+        folder and silently overwrote — asymmetric data loss on a same-minute
+        retry.
+        """
+        _stub_pipeline(monkeypatch)
+        first = _run(vault)
+        assert first.error is None
+        assert first.moc_path is not None
+        marker = "FIRST-RUN-MOC-MARKER"
+        first.moc_path.write_text(
+            first.moc_path.read_text(encoding="utf-8") + f"\n{marker}\n",
+            encoding="utf-8",
+        )
+        first_folder = first.moc_path.parent
+        first_moc = first.moc_path.read_text(encoding="utf-8")
+
+        second = _run(vault)
+        assert second.error is None
+        assert second.moc_path is not None
+        assert second.moc_path.parent != first_folder
+        assert second.moc_path.parent.name.endswith("-2")
+        assert first.moc_path.read_text(encoding="utf-8") == first_moc
+        assert marker in first.moc_path.read_text(encoding="utf-8")
+        assert marker not in second.moc_path.read_text(encoding="utf-8")
+
+        # Assets subfolder and scripts folder must track the same uniquified name
+        # so embeds stay coherent with the notes that reference them.
+        assert second.moc_path.parent.name in (second.step_paths[0].read_text(encoding="utf-8"))
+
+
+class TestAllocateRunFolder:
+    """`_allocate_run_folder` must *reserve* the name, not merely check it."""
+
+    _BASE = "2026-07-27-1200 Long Talk"
+
+    def test_name_is_held_on_return(self, vault: Path):
+        """No gap between allocation and first write may let another run take the name.
+
+        The old shape only checked ``exists()`` and left the folder to be
+        created later, so two allocations with no write in between both got
+        the base name. Holding the name on return closes that window.
+        """
+        first = handson_mod._allocate_run_folder(vault, self._BASE)
+        second = handson_mod._allocate_run_folder(vault, self._BASE)
+        assert first == self._BASE
+        assert second == f"{self._BASE}-2"
+        scripts = vault / handson_mod.SESSION_SCRIPTS_BASE
+        assert (scripts / first).is_dir()
+        assert (scripts / second).is_dir()
+
+    def test_concurrent_allocations_get_distinct_names(self, vault: Path):
+        """Same-minute runs racing for one name each end up with their own folder."""
+        workers = 8
+        barrier = threading.Barrier(workers)
+        names: list[str] = []
+        lock = threading.Lock()
+
+        def allocate() -> None:
+            barrier.wait()
+            name = handson_mod._allocate_run_folder(vault, self._BASE)
+            with lock:
+                names.append(name)
+
+        threads = [threading.Thread(target=allocate) for _ in range(workers)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert len(names) == workers
+        assert len(set(names)) == workers, f"runs shared a folder: {sorted(names)}"
+
+    @pytest.mark.parametrize(
+        "leftover_base",
+        [
+            handson_mod.SESSION_SCRIPTS_BASE,
+            handson_mod.SESSION_SYNTHESIS_BASE,
+            handson_mod.ASSETS_REL_PATH,
+        ],
+        ids=["01-only", "05-only", "assets-only"],
+    )
+    def test_interrupted_run_leftover_keeps_its_name(self, vault: Path, leftover_base: str):
+        """A run that died after writing only one of 01 / 05 / _assets still owns the name."""
+        (vault / leftover_base / self._BASE).mkdir(parents=True)
+        assert handson_mod._allocate_run_folder(vault, self._BASE) == f"{self._BASE}-2"
