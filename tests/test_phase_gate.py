@@ -173,6 +173,47 @@ class TestFilterToReviewed:
             == newer / "a.md"
         )
 
+    def test_reviewed_gate_survives_cjk_title_and_one_liner(self, tmp_path: Path):
+        """``--resume-reviewed`` must not skip notes whose frontmatter exceeds 500 bytes.
+
+        Stage 02 upserts ``one_liner`` into the summary frontmatter. With a long
+        CJK title that push puts the closing ``---`` past the old 500-byte read
+        window, and ``read_frontmatter_field(..., "reviewed")`` returned None —
+        so Phase 3 treated an operator-approved note as unreviewed.
+        """
+        from pipeline_youtube.services.obsidian import build_frontmatter, upsert_frontmatter_field
+
+        config.set_vault_root(tmp_path)
+        dt = datetime(2026, 4, 18, 8, 0)
+        folder = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"] / "2026-04-18-0800 testlist"
+        summary = folder / "a.md"
+        summary.parent.mkdir(parents=True, exist_ok=True)
+
+        fm = build_frontmatter(
+            dt=dt,
+            title="あ" * 60,
+            url=f"https://www.youtube.com/watch?v={_VID_A}",
+            tags=["memo", "youtube"],
+            extra={
+                "playlist": "い" * 10,
+                "video_id": _VID_A,
+                "reviewed": "true",
+            },
+        )
+        fm = upsert_frontmatter_field(fm, "one_liner", "う" * 40)
+        assert len(fm.encode("utf-8")) > 500
+        summary.write_text(fm + "\nbody\n", encoding="utf-8")
+
+        found = _find_reviewed_summary_md(
+            _VID_A, "testlist", dt, vault_root=config.get_vault_root()
+        )
+        kept = _filter_to_reviewed(
+            [(1, _vid(_VID_A))], "testlist", dt, vault_root=config.get_vault_root()
+        )
+
+        assert found == summary
+        assert [v.video_id for _, v in kept] == [_VID_A]
+
 
 class TestCollectExistingLearningBodies:
     def test_pre_concealment_folder_with_invisible_title(self, tmp_path: Path):
@@ -231,6 +272,75 @@ class TestCollectExistingLearningBodies:
         )
 
         assert folder_name == "2026-04-18-0900 testlist"
+
+    def test_same_day_superset_title_does_not_hide_earlier_day(self, tmp_path: Path, capsys):
+        # #142 routed --synthesis-only through _unit_folder_candidates. Same-day
+        # substring matching there is intentional for Phase 3, but synthesis-only
+        # has no reviewed gate — so today's "testlist Advanced" would win over
+        # yesterday's exact "testlist" and either synthesize the wrong bodies
+        # (shared video_ids) or report matched=0 while real material sits below.
+        config.set_vault_root(tmp_path)
+        base = tmp_path / LEARNING_BASE / UNIT_DIRS["learning"]
+        _write_learning(base / "2026-04-17-2100 testlist" / "note.md", _VID_1)
+        _write_learning(base / "2026-04-18-0800 testlist Advanced" / "other.md", "otherxxxxxA")
+
+        videos, bodies, folder_name = _collect_existing_learning_bodies(
+            [_vid(_VID_1)],
+            "testlist",
+            datetime(2026, 4, 18, 9, 0),
+            vault_root=config.get_vault_root(),
+        )
+
+        assert folder_name == "2026-04-17-2100 testlist"
+        assert [video.video_id for video in videos] == [_VID_1]
+        assert bodies == ["learning body\n"]
+        assert "2026-04-17-2100 testlist" in capsys.readouterr().out
+
+    def test_same_day_superset_title_does_not_steal_overlapping_video_ids(self, tmp_path: Path):
+        # Stronger form of the shadowing bug: the longer-titled same-day folder
+        # holds a learning note for the *same* video_id. Without an exact-title
+        # gate, Stage 05 would ingest Advanced's body under a "testlist" run.
+        config.set_vault_root(tmp_path)
+        base = tmp_path / LEARNING_BASE / UNIT_DIRS["learning"]
+        _write_learning(base / "2026-04-17-2100 testlist" / "note.md", _VID_1)
+        advanced = base / "2026-04-18-0800 testlist Advanced" / "note.md"
+        advanced.parent.mkdir(parents=True, exist_ok=True)
+        advanced.write_text(
+            f'---\ndate: 2026-04-18 08:00\ntitle: "x"\nplaylist: "testlist Advanced"\n'
+            f'video_id: "{_VID_1}"\n---\n\nadvanced body\n',
+            encoding="utf-8",
+        )
+
+        videos, bodies, folder_name = _collect_existing_learning_bodies(
+            [_vid(_VID_1)],
+            "testlist",
+            datetime(2026, 4, 18, 9, 0),
+            vault_root=config.get_vault_root(),
+        )
+
+        assert folder_name == "2026-04-17-2100 testlist"
+        assert [video.video_id for video in videos] == [_VID_1]
+        assert bodies == ["learning body\n"]
+
+    def test_empty_exact_same_day_folder_falls_through_to_earlier_day(self, tmp_path: Path, capsys):
+        # Today's exact folder exists but holds none of the requested video_ids
+        # (partial / unrelated run). Prefer yesterday's complete material.
+        config.set_vault_root(tmp_path)
+        base = tmp_path / LEARNING_BASE / UNIT_DIRS["learning"]
+        _write_learning(base / "2026-04-17-2100 testlist" / "note.md", _VID_1)
+        _write_learning(base / "2026-04-18-0800 testlist" / "other.md", "otherxxxxxA")
+
+        videos, bodies, folder_name = _collect_existing_learning_bodies(
+            [_vid(_VID_1)],
+            "testlist",
+            datetime(2026, 4, 18, 9, 0),
+            vault_root=config.get_vault_root(),
+        )
+
+        assert folder_name == "2026-04-17-2100 testlist"
+        assert [video.video_id for video in videos] == [_VID_1]
+        assert bodies == ["learning body\n"]
+        assert "2026-04-17-2100 testlist" in capsys.readouterr().out
 
     def test_missing_material_names_the_base_dir(self, tmp_path: Path):
         config.set_vault_root(tmp_path)
@@ -463,11 +573,11 @@ class TestResumeReviewedProcessing:
             "2026-04-17-2100 testlist",
         ]
 
-    def test_historical_folders_need_an_exact_title(self, tmp_path: Path):
-        # Substring matching is safe within one day (the run just made those
-        # folders) but across all history it would admit a *different* playlist
-        # whose title merely contains this one — and if that run covered the
-        # same video, Phase 3 would consume its artifacts.
+    def test_same_day_and_historical_folders_need_an_exact_title(self, tmp_path: Path):
+        # A longer playlist title that merely contains this one must never be
+        # admitted — same day or earlier. Overlapping video_ids would otherwise
+        # let --resume-reviewed consume the wrong 02/03 notes and write Stage 04
+        # into the Advanced folder.
         base = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"]
         for name in (
             "2026-04-17-0900 testlist Advanced",
@@ -480,11 +590,37 @@ class TestResumeReviewedProcessing:
 
         assert [c.name for c in candidates] == [
             "2026-04-18-1200 testlist",
-            # Same day keeps the substring rule, so the Advanced folder stays.
-            "2026-04-18-0800 testlist Advanced",
-            # Earlier days require an exact title, so only the plain one is kept.
+            # Exact title only — same-day Advanced is rejected.
             "2026-04-17-2100 testlist",
         ]
+
+    def test_same_day_superset_reviewed_summary_is_not_consumed(self, tmp_path: Path):
+        # reviewed:true is not a playlist-identity check. Today's Advanced run
+        # must not satisfy --resume-reviewed for the shorter title.
+        config.set_vault_root(tmp_path)
+        base = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"]
+        _write_summary(base / "2026-04-18-0800 testlist Advanced" / "a.md", _VID_A, "true")
+
+        found = _find_reviewed_summary_md(
+            _VID_A, "testlist", datetime(2026, 4, 18, 12, 0), vault_root=config.get_vault_root()
+        )
+
+        assert found is None
+
+    def test_same_day_superset_does_not_hide_yesterday_exact_reviewed(self, tmp_path: Path):
+        # Stronger form: same-day Advanced is considered before earlier days.
+        # Without an exact-title gate it would win over yesterday's real folder.
+        config.set_vault_root(tmp_path)
+        base = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"]
+        yesterday = base / "2026-04-17-2100 testlist"
+        _write_summary(yesterday / "a.md", _VID_A, "true")
+        _write_summary(base / "2026-04-18-0800 testlist Advanced" / "a.md", _VID_A, "true")
+
+        found = _find_reviewed_summary_md(
+            _VID_A, "testlist", datetime(2026, 4, 18, 12, 0), vault_root=config.get_vault_root()
+        )
+
+        assert found == yesterday / "a.md"
 
     def test_legacy_folder_without_hhmm_still_matches_exactly(self, tmp_path: Path):
         base = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"]
