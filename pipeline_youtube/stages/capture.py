@@ -94,10 +94,29 @@ class VideoPrefetch:
     future: Any  # concurrent.futures.Future[None]
 
     def wait(self, timeout: float = 600.0) -> Exception | None:
-        """Block until the download finishes. Returns the exception (if any)."""
+        """Block until the download finishes. Returns the exception (if any).
+
+        A wait timeout is not a download failure. Host yt-dlp has no timeout,
+        so a long/slow fetch can outlive ``timeout`` while still owning
+        ``path``. Treating that as an error used to make Stage 03 start a
+        second download to the same tmp file: ``_download_video`` unlinks
+        ``dest`` first, so the in-flight bytes vanish and two yt-dlp processes
+        race. If ``timeout`` expires and the future is still running, this
+        method keeps waiting until it actually completes.
+        """
         try:
             self.future.result(timeout=timeout)
             return None
+        except TimeoutError:
+            # Wait timed out, or the download itself raised TimeoutError.
+            # ``future.result()`` with no timeout distinguishes them: an
+            # in-flight download is waited out; a completed TimeoutError
+            # is re-raised immediately and returned below.
+            try:
+                self.future.result()
+                return None
+            except Exception as exc:  # noqa: BLE001 — propagate as return value
+                return exc
         except Exception as exc:  # noqa: BLE001 — propagate as return value
             return exc
 
