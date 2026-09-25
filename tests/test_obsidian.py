@@ -16,6 +16,8 @@ from pipeline_youtube.obsidian import (
     format_video_note_base,
     limit_title_for_path_component,
     playlist_folder_title,
+    playlist_title_for_path,
+    playlist_title_needles,
     resolve_unique_path,
     sanitize_title_for_filename,
 )
@@ -155,18 +157,22 @@ class TestFormatPlaylistFolder:
     def test_path_title_needle_matches_truncated_folder(self):
         """Resume/checkpoint needles must use the same title budget as format_*."""
         full = "漢" * 100
-        limited = limit_title_for_path_component(sanitize_title_for_filename(full))
+        limited = playlist_title_for_path(sanitize_title_for_filename(full))
         dt = datetime(2026, 8, 5, 11, 0)
         folder = format_playlist_folder_name(dt, full)
         assert limited
-        assert limited in folder
         assert limited == folder.split(" ", 1)[1]
+        assert limited in playlist_title_needles(full)
 
 
 # 70 CJK chars = 210 bytes: over the 184-byte title budget (200 - 16-byte
 # "YYYY-MM-DD-HHmm " prefix) yet still a legal on-disk name before the cap
-# existed (16 + 210 = 226 <= 255). The cap keeps 61 chars (183 bytes).
+# existed (16 + 210 = 226 <= 255). A new folder keeps 58 chars (174 bytes)
+# plus "~" and 8 hex of a digest: 174 + 9 = 183 bytes.
 _LONG = "漢" * 70
+# Shares _LONG's first 61 chars (all a plain 184-byte cut would keep), then
+# differs — a different playlist.
+_SAME_START = "漢" * 61 + "字" * 9
 _VID_A = "abc123DEFGH"
 
 
@@ -205,19 +211,21 @@ def _video(video_id: str, playlist_title: str) -> VideoMeta:
 class TestCappedTitleStaysMatchable:
     """A capped folder name must keep matching the exact-title lookups.
 
-    `format_*` cap the title on write; resume and checkpoint find a playlist's
-    folders by comparing `playlist_folder_title(name)` with a needle built from
-    the live title. Both sides are capped, so a long title still finds the
-    folders it wrote — and the ones written before the cap existed.
+    `format_playlist_folder_name` caps a long title and adds a digest of the
+    whole title; resume and checkpoint find a playlist's folders by checking
+    `playlist_folder_title(name)` against `playlist_title_needles`. A long
+    title finds the folders it wrote and the full-title ones written before the
+    cap existed, and nothing that merely shares its start.
     """
 
     def test_folder_title_round_trips_capped_and_legacy_names(self):
-        needle = limit_title_for_path_component(sanitize_title_for_filename(_LONG))
         capped = format_playlist_folder_name(datetime(2026, 8, 5, 9, 0), _LONG)
         legacy = f"2026-08-05-0900 {_LONG}"
-        assert len(needle.encode("utf-8")) == 183
-        assert playlist_folder_title(capped) == needle
-        assert playlist_folder_title(legacy) == needle
+        needles = playlist_title_needles(_LONG)
+        assert len(playlist_folder_title(capped).encode()) == 183
+        assert playlist_folder_title(capped) in needles
+        assert playlist_folder_title(legacy) == _LONG
+        assert playlist_folder_title(legacy) in needles
 
     def test_checkpoint_finds_a_same_day_capped_folder(self, vault):
         morning = format_playlist_folder_name(datetime(2026, 8, 5, 9, 0), _LONG)
@@ -257,15 +265,33 @@ class TestCappedTitleStaysMatchable:
         evening = datetime(2026, 8, 5, 18, 0)
         assert is_video_complete(_VID_A, _LONG, evening, vault_root=vault) is False
 
-    def test_titles_equal_within_the_cap_already_share_a_name(self):
-        """The accepted cost: past the cap, titles are indistinguishable.
+    def test_note_names_are_cut_without_a_digest(self):
+        """Notes cut to the same stem are kept apart by `-2`, not a digest."""
+        note = format_video_note_base(datetime(2026, 8, 5, 9, 0), _LONG)
+        assert note.split(" ", 1)[1] == limit_title_for_path_component(_LONG)
+        assert "~" not in note
 
-        `format_playlist_folder_name` already gives both the same folder, so
-        the capped comparison does not introduce this collision.
-        """
+    def test_titles_sharing_the_kept_start_get_distinct_folders(self):
+        """The digest keeps two long titles apart past the cut."""
         dt = datetime(2026, 8, 5, 9, 0)
-        other = "漢" * 61 + "字" * 9  # differs at char 62, past the cap
-        assert format_playlist_folder_name(dt, other) == format_playlist_folder_name(dt, _LONG)
+        assert format_playlist_folder_name(dt, _SAME_START) != format_playlist_folder_name(
+            dt, _LONG
+        )
+        assert playlist_title_needles(_SAME_START).isdisjoint(playlist_title_needles(_LONG))
+
+    def test_checkpoint_ignores_a_new_folder_of_a_same_start_playlist(self, vault):
+        """Another playlist's capped folder must not count as this one's run."""
+        other = format_playlist_folder_name(datetime(2026, 8, 5, 9, 0), _SAME_START)
+        _write_04(_learning_dir(vault) / other, _VID_A)
+        evening = datetime(2026, 8, 5, 18, 0)
+        assert is_video_complete(_VID_A, _LONG, evening, vault_root=vault) is False
+        assert get_completed_video_ids(_LONG, evening, vault_root=vault) == set()
+
+    def test_checkpoint_ignores_a_legacy_folder_of_a_same_start_playlist(self, vault):
+        """A pre-cap folder is matched on its full title, not its first bytes."""
+        _write_04(_learning_dir(vault) / f"2026-08-05-0900 {_SAME_START}", _VID_A)
+        evening = datetime(2026, 8, 5, 18, 0)
+        assert is_video_complete(_VID_A, _LONG, evening, vault_root=vault) is False
 
 
 class TestResolveUniquePath:

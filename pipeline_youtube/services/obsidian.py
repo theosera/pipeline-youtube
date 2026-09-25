@@ -13,6 +13,7 @@ Key rules from Template_Memo.md:
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime
 from pathlib import Path
@@ -72,11 +73,35 @@ def _utf8_byte_truncate(text: str, max_bytes: int) -> str:
 def limit_title_for_path_component(safe_title: str) -> str:
     """Bound a sanitized title so ``YYYY-MM-DD-HHmm <title>`` stays ≤ 200 bytes.
 
-    Used by ``format_video_note_base`` / ``format_playlist_folder_name`` and by
-    resume/checkpoint needles so a truncated folder remains discoverable.
+    Plain truncation, used for note names: two notes cut to the same stem are
+    kept apart by ``resolve_unique_path``'s ``-2`` suffix. Playlist folders
+    carry the playlist's identity, so they use ``playlist_title_for_path``.
     """
     budget = _MAX_PATH_COMPONENT_BYTES - _DATE_TIME_TITLE_PREFIX_BYTES
     return _utf8_byte_truncate(safe_title, budget)
+
+
+# A folder title over the budget keeps its start, then "~" and 8 hex of a
+# SHA-256 of the whole sanitized title (9 bytes).
+_TITLE_DIGEST_SEP = "~"
+_TITLE_DIGEST_HEX = 8
+
+
+def playlist_title_for_path(safe_title: str) -> str:
+    """The title part of a playlist folder name, within the same byte budget.
+
+    A title that fits is returned as is. A longer one keeps as much of its
+    start as fits before ``~<8 hex>``, a digest of the whole ``safe_title``,
+    so two playlists sharing that start still get different folders — and a
+    checkpoint cannot count one playlist's notes as the other's.
+    """
+    budget = _MAX_PATH_COMPONENT_BYTES - _DATE_TIME_TITLE_PREFIX_BYTES
+    raw = safe_title.encode("utf-8")
+    if len(raw) <= budget:
+        return safe_title
+    digest = hashlib.sha256(raw).hexdigest()[:_TITLE_DIGEST_HEX]
+    head = _utf8_byte_truncate(safe_title, budget - len(_TITLE_DIGEST_SEP) - _TITLE_DIGEST_HEX)
+    return f"{head}{_TITLE_DIGEST_SEP}{digest}"
 
 
 def format_video_note_base(dt: datetime, title: str | None) -> str:
@@ -130,11 +155,12 @@ def format_playlist_folder_name(dt: datetime, playlist_title: str | None) -> str
     When the raw playlist title contains ASCII `/`, only the last segment is
     used as the display title — see `_strip_playlist_category_prefix`.
 
-    The title portion is UTF-8-byte-truncated so the folder name stays within
-    ``_MAX_PATH_COMPONENT_BYTES`` (ext4/APFS component limit).
+    The title portion goes through ``playlist_title_for_path`` so the folder
+    name stays within ``_MAX_PATH_COMPONENT_BYTES`` (ext4/APFS component limit)
+    without two long titles sharing one folder.
     """
     display_title = _strip_playlist_category_prefix(playlist_title)
-    safe_title = limit_title_for_path_component(sanitize_title_for_filename(display_title))
+    safe_title = playlist_title_for_path(sanitize_title_for_filename(display_title))
     date_str = dt.strftime("%Y-%m-%d")
     time_str = dt.strftime("%H%M")
     if safe_title:
@@ -163,19 +189,31 @@ def playlist_folder_title(folder_name: str) -> str:
     place. A substring rule would let "ML Python" claim a same-day sibling
     "ML Python Advanced" and consume the wrong playlist's notes.
 
-    The title is also capped with `limit_title_for_path_component`, and every
-    needle compared against it must be capped the same way. New folders are
-    already capped when written; folders written before the cap may hold up to
-    ~239 bytes of title, and capping only the needle would hide them. The cost
-    is that two titles sharing their first capped bytes compare equal — which
-    `format_playlist_folder_name` already makes them for new folders.
+    Compare the result with ``playlist_title_needles`` — it covers both the
+    capped form new folders carry and the full title of folders written
+    before the byte cap.
     """
     match = _DATED_FOLDER_PREFIX_RE.match(folder_name)
     if match is None:
         return ""
-    return limit_title_for_path_component(
-        sanitize_title_for_filename(folder_name[match.end() :].strip())
-    )
+    return sanitize_title_for_filename(folder_name[match.end() :].strip())
+
+
+def playlist_title_needles(playlist_title: str | None) -> frozenset[str]:
+    """The ``playlist_folder_title`` values that belong to this playlist.
+
+    Two forms, equal when the title fits the budget: what
+    ``format_playlist_folder_name`` writes now (``playlist_title_for_path``),
+    and the full sanitized title that folders written before the byte cap
+    still carry (up to 255 - 16 = 239 bytes). Matching either one exactly
+    finds both, and a playlist that merely shares a long title's start matches
+    neither. Empty when the title sanitizes to nothing: callers must then
+    accept no fallback folder.
+    """
+    full = sanitize_title_for_filename(_strip_playlist_category_prefix(playlist_title))
+    if not full:
+        return frozenset()
+    return frozenset({full, playlist_title_for_path(full)})
 
 
 def resolve_unique_path(folder: Path, base_name: str, ext: str = ".md") -> Path:

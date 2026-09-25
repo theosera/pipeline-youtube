@@ -38,7 +38,7 @@ from pathlib import Path
 from ..obsidian import (
     format_playlist_folder_name,
     playlist_folder_title,
-    sanitize_title_for_filename,
+    playlist_title_needles,
 )
 from ..pipeline import LEARNING_BASE, LEGACY_LEARNING_DIR, UNIT_DIRS
 from .path_safety import ensure_safe_path
@@ -154,15 +154,11 @@ def _find_learning_folders(
     date_prefix = run_date.strftime("%Y-%m-%d")
 
     # Also handle `/`-separated playlist titles (take last segment). Guard on the
-    # stripped title: an empty needle must not match every dated folder.
-    from ..obsidian import _strip_playlist_category_prefix, limit_title_for_path_component
-
-    display_title = _strip_playlist_category_prefix(playlist_title)
-    # Capped like playlist_folder_title's side, or a long title never matches.
-    title_needle = limit_title_for_path_component(sanitize_title_for_filename(display_title))
+    # needles: an empty title must not match every dated folder.
+    title_needles = playlist_title_needles(playlist_title)
 
     matches: list[Path] = []
-    if title_needle:
+    if title_needles:
         for b in bases:
             try:
                 children = list(b.iterdir())
@@ -174,7 +170,7 @@ def _find_learning_folders(
                 # Folders created before the concealment defense may still contain
                 # zero-width/bidi characters. Comparing sanitized titles keeps those
                 # completed runs discoverable after upgrading.
-                if playlist_folder_title(child.name) == title_needle:
+                if playlist_folder_title(child.name) in title_needles:
                     matches.append(child)
     # Folder names start with YYYY-MM-DD-HHmm (legacy: YYYY-MM-DD), so a
     # descending name sort puts the newest same-day run first.

@@ -15,7 +15,7 @@ from pathlib import Path
 import click
 
 from .checkpoint import read_trusted_video_id
-from .obsidian import format_playlist_folder_name, playlist_folder_title
+from .obsidian import format_playlist_folder_name, playlist_folder_title, playlist_title_needles
 from .path_safety import ensure_safe_path
 from .pipeline import LEARNING_BASE, UNIT_DIRS
 from .playlist import VideoMeta
@@ -311,20 +311,12 @@ def _unit_folder_candidates(base: Path, playlist_title: str, run_date: datetime)
     ``video_id`` would let Phase 3 consume the wrong 02/03 notes and write
     Stage 04 into the Advanced folder.
     """
-    from .obsidian import (
-        _strip_playlist_category_prefix,
-        limit_title_for_path_component,
-        sanitize_title_for_filename,
-    )
-
     canonical_name = format_playlist_folder_name(run_date, playlist_title)
     yield base / canonical_name
 
     date_prefix = run_date.strftime("%Y-%m-%d")
-    display_title = _strip_playlist_category_prefix(playlist_title)
-    # Capped like playlist_folder_title's side, or a long title never matches.
-    title_needle = limit_title_for_path_component(sanitize_title_for_filename(display_title))
-    if not title_needle:
+    title_needles = playlist_title_needles(playlist_title)
+    if not title_needles:
         return
     try:
         matches = [
@@ -338,7 +330,7 @@ def _unit_folder_candidates(base: Path, playlist_title: str, run_date: datetime)
                 # pre-defense names that still carry invisible characters, and
                 # returns "" for anything without a YYYY-MM-DD prefix — so this
                 # one test also rejects undated directories.
-                and playlist_folder_title(child.name) == title_needle
+                and playlist_folder_title(child.name) in title_needles
                 and child.name != canonical_name
             )
         ]
@@ -388,23 +380,15 @@ def _collect_existing_learning_bodies(
     base_dir = vault_root / safe_rel_base
 
     preferred = format_playlist_folder_name(run_time, playlist_title)
-    from .obsidian import (
-        _strip_playlist_category_prefix,
-        limit_title_for_path_component,
-        sanitize_title_for_filename,
-    )
 
     # --synthesis-only has no reviewed:true gate, so the exact title is
     # re-asserted here: the generator yields the canonical folder
     # unconditionally, and a caller-supplied playlist_title that sanitizes
     # differently must not slip through on that tier. The video_id check below
     # is what keeps an empty same-day folder from hiding yesterday's complete
-    # run.
-    # Capped like playlist_folder_title's side: without it a long title rejects
-    # even its own canonical folder, whose name format_* already capped.
-    title_needle = limit_title_for_path_component(
-        sanitize_title_for_filename(_strip_playlist_category_prefix(playlist_title))
-    )
+    # run. Both needle forms are needed: a long title's canonical folder carries
+    # the capped form, and matching the full title alone would reject it.
+    title_needles = playlist_title_needles(playlist_title)
 
     def _scan_learning_bodies(folder: Path) -> dict[str, Path]:
         """Map each trusted video_id in ``folder`` to the freshest note holding it.
@@ -429,7 +413,7 @@ def _collect_existing_learning_bodies(
     for candidate in _unit_folder_candidates(base_dir, playlist_title, run_time):
         if not candidate.exists():
             continue
-        if title_needle and playlist_folder_title(candidate.name) != title_needle:
+        if title_needles and playlist_folder_title(candidate.name) not in title_needles:
             continue
         scanned = _scan_learning_bodies(candidate)
         matched_ids = [v.video_id for v in videos if v.video_id in scanned]
