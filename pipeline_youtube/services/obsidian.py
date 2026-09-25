@@ -13,6 +13,7 @@ Key rules from Template_Memo.md:
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,18 @@ from .confusables import strip_invisibles
 
 _FILENAME_UNSAFE_RE = re.compile(r'[\\/:*?"<>|]')
 _WHITESPACE_RE = re.compile(r"\s+")
+
+# ext4 / APFS / NTFS all cap a single path component at 255 bytes. Stage 05
+# chapter notes already keep stems ≤ 200 bytes (``synthesis.chapter``); the
+# same ceiling applies here so ``YYYY-MM-DD-HHmm <title>`` plus a collision
+# suffix (``-2``) and ``.md`` still fit. Without this, a YouTube-max CJK
+# title (100 chars ≈ 300 UTF-8 bytes) makes ``mkdir`` / ``write_text`` raise
+# ``OSError: [Errno 36] File name too long`` and aborts the video.
+_MAX_PATH_COMPONENT_BYTES = 200
+# ``format_video_note_base`` / ``format_playlist_folder_name`` always use a
+# fixed-width ``YYYY-MM-DD-HHmm `` prefix when a title is present (16 bytes).
+_DATE_TIME_TITLE_PREFIX = "YYYY-MM-DD-HHmm "
+_DATE_TIME_TITLE_PREFIX_BYTES = len(_DATE_TIME_TITLE_PREFIX.encode("utf-8"))
 
 
 def sanitize_title_for_filename(raw: str | None) -> str:
@@ -34,6 +47,10 @@ def sanitize_title_for_filename(raw: str | None) -> str:
     (mixed-script) is intentionally not done here — it happens once at the
     fetch boundary (``playlist.fetch_metadata``) so this pure, widely-reused
     chokepoint never emits duplicate alerts on read/dedup scans.
+
+    Does **not** byte-truncate: callers that build on-disk names must run
+    ``playlist_title_for_path`` (or go through ``format_*``) so resume
+    needles stay aligned with what was written.
     """
     if not raw:
         return ""
@@ -43,13 +60,75 @@ def sanitize_title_for_filename(raw: str | None) -> str:
     return cleaned.strip()
 
 
+def _utf8_byte_truncate(text: str, max_bytes: int) -> str:
+    """Truncate ``text`` to ``max_bytes`` UTF-8 bytes without splitting a codepoint."""
+    if max_bytes <= 0:
+        return ""
+    raw = text.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return text
+    return raw[:max_bytes].decode("utf-8", errors="ignore").rstrip()
+
+
+# A folder or note title over the budget keeps its start, then "~" and 8 hex of a
+# SHA-256 of the whole sanitized title (9 bytes).
+_TITLE_DIGEST_SEP = "~"
+_TITLE_DIGEST_HEX = 8
+_PLAYLIST_TITLE_BUDGET = _MAX_PATH_COMPONENT_BYTES - _DATE_TIME_TITLE_PREFIX_BYTES
+_TITLE_HEAD_BYTES = _PLAYLIST_TITLE_BUDGET - len(_TITLE_DIGEST_SEP) - _TITLE_DIGEST_HEX
+# That capped form is 180-184 bytes with a non-space before "~": the head is
+# cut at 175 bytes, loses up to 3 bytes of a split codepoint, then rstrip
+# drops at most one space (sanitize leaves no runs). A title that fits only
+# needs escaping when it has that length and ending.
+_CAPPED_TITLE_MIN_BYTES = _TITLE_HEAD_BYTES - 3 - 1 + len(_TITLE_DIGEST_SEP) + _TITLE_DIGEST_HEX
+_CAPPED_TITLE_TAIL_RE = re.compile(
+    rf"\S{re.escape(_TITLE_DIGEST_SEP)}[0-9a-f]{{{_TITLE_DIGEST_HEX}}}\Z"
+)
+
+
+def _reads_as_capped_title(safe_title: str) -> bool:
+    """True if a title that fits could equal another title's capped form."""
+    size = len(safe_title.encode("utf-8"))
+    return (
+        _CAPPED_TITLE_MIN_BYTES <= size <= _PLAYLIST_TITLE_BUDGET
+        and _CAPPED_TITLE_TAIL_RE.search(safe_title) is not None
+    )
+
+
+def playlist_title_for_path(safe_title: str) -> str:
+    """The title part of a playlist folder or video note name, within the budget.
+
+    A title that fits is returned as is. A longer one keeps as much of its
+    start as fits before ``~<8 hex>``, a digest of the whole ``safe_title``,
+    so two playlists sharing that start still get different folders — and a
+    checkpoint cannot count one playlist's notes as the other's. A title that
+    fits but reads like such a form gets one too, or a playlist named after
+    another's folder would share it.
+
+    Note names need the digest as well: every video of a run shares one
+    ``run_time``, and concurrent videos pick their paths before either
+    placeholder exists, so ``resolve_unique_path``'s ``-2`` cannot keep two
+    titles cut to the same start apart.
+    """
+    raw = safe_title.encode("utf-8")
+    if len(raw) <= _PLAYLIST_TITLE_BUDGET and not _reads_as_capped_title(safe_title):
+        return safe_title
+    digest = hashlib.sha256(raw).hexdigest()[:_TITLE_DIGEST_HEX]
+    head = _utf8_byte_truncate(safe_title, _TITLE_HEAD_BYTES)
+    return f"{head}{_TITLE_DIGEST_SEP}{digest}"
+
+
 def format_video_note_base(dt: datetime, title: str | None) -> str:
     """Generate base filename for a video note.
 
     - With title:  'YYYY-MM-DD-HHmm <title>'
     - Without:     'YYYY-MM-DD HHmm'
+
+    The title portion goes through ``playlist_title_for_path`` so the stem
+    stays within ``_MAX_PATH_COMPONENT_BYTES`` (see that constant) and two
+    titles differing past the cut keep different stems.
     """
-    safe_title = sanitize_title_for_filename(title)
+    safe_title = playlist_title_for_path(sanitize_title_for_filename(title))
     date_str = dt.strftime("%Y-%m-%d")
     time_str = dt.strftime("%H%M")
     if safe_title:
@@ -90,9 +169,13 @@ def format_playlist_folder_name(dt: datetime, playlist_title: str | None) -> str
 
     When the raw playlist title contains ASCII `/`, only the last segment is
     used as the display title — see `_strip_playlist_category_prefix`.
+
+    The title portion goes through ``playlist_title_for_path`` so the folder
+    name stays within ``_MAX_PATH_COMPONENT_BYTES`` (ext4/APFS component limit)
+    without two long titles sharing one folder.
     """
     display_title = _strip_playlist_category_prefix(playlist_title)
-    safe_title = sanitize_title_for_filename(display_title)
+    safe_title = playlist_title_for_path(sanitize_title_for_filename(display_title))
     date_str = dt.strftime("%Y-%m-%d")
     time_str = dt.strftime("%H%M")
     if safe_title:
@@ -120,11 +203,38 @@ def playlist_folder_title(folder_name: str) -> str:
     that a fallback folder must match the playlist title *exactly* lives in one
     place. A substring rule would let "ML Python" claim a same-day sibling
     "ML Python Advanced" and consume the wrong playlist's notes.
+
+    Compare the result with ``playlist_title_needles`` — it covers both the
+    capped form new folders carry and the full title of folders written
+    before the byte cap.
     """
     match = _DATED_FOLDER_PREFIX_RE.match(folder_name)
     if match is None:
         return ""
     return sanitize_title_for_filename(folder_name[match.end() :].strip())
+
+
+def playlist_title_needles(playlist_title: str | None) -> frozenset[str]:
+    """The ``playlist_folder_title`` values that belong to this playlist.
+
+    Two forms, equal when the title fits the budget: what
+    ``format_playlist_folder_name`` writes now (``playlist_title_for_path``),
+    and the full sanitized title that folders written before the byte cap
+    still carry (up to 255 - 16 = 239 bytes). Matching either one exactly
+    finds both, and a playlist that merely shares a long title's start matches
+    neither. A title that reads like a capped form keeps only the escaped
+    form: a folder bearing the title itself may be a long title's capped
+    folder, and the name cannot tell which, so its pre-cap folders are given
+    up (a rerun) rather than risk consuming another playlist's notes. Empty
+    when the title sanitizes to nothing: callers must then accept no fallback
+    folder.
+    """
+    full = sanitize_title_for_filename(_strip_playlist_category_prefix(playlist_title))
+    if not full:
+        return frozenset()
+    if _reads_as_capped_title(full):
+        return frozenset({playlist_title_for_path(full)})
+    return frozenset({full, playlist_title_for_path(full)})
 
 
 def resolve_unique_path(folder: Path, base_name: str, ext: str = ".md") -> Path:
