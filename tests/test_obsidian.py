@@ -173,6 +173,9 @@ _LONG = "漢" * 70
 # Shares _LONG's first 61 chars (all a plain 184-byte cut would keep), then
 # differs — a different playlist.
 _SAME_START = "漢" * 61 + "字" * 9
+# A different playlist literally titled like _LONG's capped folder
+# ("漢" * 58 + "~ee2b8cc6", 183 bytes): it fits, so it is not cut itself.
+_LOOK_ALIKE = playlist_title_for_path(_LONG)
 _VID_A = "abc123DEFGH"
 
 
@@ -215,7 +218,8 @@ class TestCappedTitleStaysMatchable:
     whole title; resume and checkpoint find a playlist's folders by checking
     `playlist_folder_title(name)` against `playlist_title_needles`. A long
     title finds the folders it wrote and the full-title ones written before the
-    cap existed, and nothing that merely shares its start.
+    cap existed, and nothing that merely shares its start or is spelled like
+    its capped form.
     """
 
     def test_folder_title_round_trips_capped_and_legacy_names(self):
@@ -292,6 +296,68 @@ class TestCappedTitleStaysMatchable:
         _write_04(_learning_dir(vault) / f"2026-08-05-0900 {_SAME_START}", _VID_A)
         evening = datetime(2026, 8, 5, 18, 0)
         assert is_video_complete(_VID_A, _LONG, evening, vault_root=vault) is False
+
+    def test_a_title_spelled_like_a_capped_form_gets_its_own_folder(self):
+        dt = datetime(2026, 8, 5, 9, 0)
+        folder = format_playlist_folder_name(dt, _LOOK_ALIKE)
+        assert folder != format_playlist_folder_name(dt, _LONG)
+        assert len(folder.encode()) <= _MAX_PATH_COMPONENT_BYTES
+        assert playlist_title_needles(_LOOK_ALIKE).isdisjoint(playlist_title_needles(_LONG))
+
+    def test_checkpoint_keeps_a_look_alike_out_of_the_long_titles_folder(self, vault):
+        """That name is _LONG's folder; a pre-cap one of the look-alike's is given up."""
+        _write_04(_learning_dir(vault) / f"2026-08-05-0900 {_LOOK_ALIKE}", _VID_A)
+        evening = datetime(2026, 8, 5, 18, 0)
+        assert is_video_complete(_VID_A, _LOOK_ALIKE, evening, vault_root=vault) is False
+        assert get_completed_video_ids(_LOOK_ALIKE, evening, vault_root=vault) == set()
+
+    def test_phase3_keeps_a_look_alike_out_of_the_long_titles_folder(self, vault):
+        base = _learning_dir(vault)
+        yesterday = base / format_playlist_folder_name(datetime(2026, 8, 4, 21, 0), _LONG)
+        yesterday.mkdir(parents=True)
+        candidates = list(_unit_folder_candidates(base, _LOOK_ALIKE, datetime(2026, 8, 5, 9, 0)))
+        assert yesterday not in candidates
+
+    def test_every_capped_form_is_escaped_when_used_as_a_title(self):
+        """Capped forms span exactly 180-184 bytes, and each one is escaped.
+
+        The kept head ends wherever the 175-byte cut lands: inside a 1-4 byte
+        codepoint at any offset, with or without a space before it.
+        """
+        sizes = set()
+        for kept in range(165, 176):
+            for gap in ("", " "):
+                for char in ("b", "é", "漢", "𠮷"):
+                    title = "a" * kept + gap + char * 30
+                    capped = playlist_title_for_path(title)
+                    sizes.add(len(capped.encode()))
+                    assert playlist_title_for_path(capped) != capped
+                    assert playlist_title_needles(capped).isdisjoint(playlist_title_needles(title))
+        assert (min(sizes), max(sizes)) == (180, 184)
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "Release notes~deadbeef",  # far below 180 bytes
+            "a" * 170 + "~deadbeef",  # 179 bytes: one under the shortest capped form
+            "a" * 172 + " ~deadbeef",  # rstrip never leaves a space before "~"
+            "a" * 173 + "~DEADBEEF",  # hexdigest is lower-case
+        ],
+        ids=["short", "179-bytes", "space-before-sep", "upper-hex"],
+    )
+    def test_a_title_no_capped_form_can_equal_keeps_its_name_and_folders(self, title, vault):
+        folder = format_playlist_folder_name(datetime(2026, 8, 5, 9, 0), title)
+        assert folder == f"2026-08-05-0900 {title}"
+        _write_04(_learning_dir(vault) / folder, _VID_A)
+        evening = datetime(2026, 8, 5, 18, 0)
+        assert is_video_complete(_VID_A, title, evening, vault_root=vault) is True
+
+    def test_a_long_title_ending_like_a_digest_keeps_its_pre_cap_folder(self, vault):
+        """Over the budget it is cut anyway, so its full title stays a needle."""
+        long_title = "漢" * 60 + "~deadbeef"  # 189 bytes
+        _write_04(_learning_dir(vault) / f"2026-08-05-0900 {long_title}", _VID_A)
+        evening = datetime(2026, 8, 5, 18, 0)
+        assert is_video_complete(_VID_A, long_title, evening, vault_root=vault) is True
 
 
 class TestResolveUniquePath:

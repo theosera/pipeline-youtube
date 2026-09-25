@@ -85,6 +85,25 @@ def limit_title_for_path_component(safe_title: str) -> str:
 # SHA-256 of the whole sanitized title (9 bytes).
 _TITLE_DIGEST_SEP = "~"
 _TITLE_DIGEST_HEX = 8
+_PLAYLIST_TITLE_BUDGET = _MAX_PATH_COMPONENT_BYTES - _DATE_TIME_TITLE_PREFIX_BYTES
+_TITLE_HEAD_BYTES = _PLAYLIST_TITLE_BUDGET - len(_TITLE_DIGEST_SEP) - _TITLE_DIGEST_HEX
+# That capped form is 180-184 bytes with a non-space before "~": the head is
+# cut at 175 bytes, loses up to 3 bytes of a split codepoint, then rstrip
+# drops at most one space (sanitize leaves no runs). A title that fits only
+# needs escaping when it has that length and ending.
+_CAPPED_TITLE_MIN_BYTES = _TITLE_HEAD_BYTES - 3 - 1 + len(_TITLE_DIGEST_SEP) + _TITLE_DIGEST_HEX
+_CAPPED_TITLE_TAIL_RE = re.compile(
+    rf"\S{re.escape(_TITLE_DIGEST_SEP)}[0-9a-f]{{{_TITLE_DIGEST_HEX}}}\Z"
+)
+
+
+def _reads_as_capped_title(safe_title: str) -> bool:
+    """True if a title that fits could equal another title's capped form."""
+    size = len(safe_title.encode("utf-8"))
+    return (
+        _CAPPED_TITLE_MIN_BYTES <= size <= _PLAYLIST_TITLE_BUDGET
+        and _CAPPED_TITLE_TAIL_RE.search(safe_title) is not None
+    )
 
 
 def playlist_title_for_path(safe_title: str) -> str:
@@ -93,14 +112,15 @@ def playlist_title_for_path(safe_title: str) -> str:
     A title that fits is returned as is. A longer one keeps as much of its
     start as fits before ``~<8 hex>``, a digest of the whole ``safe_title``,
     so two playlists sharing that start still get different folders — and a
-    checkpoint cannot count one playlist's notes as the other's.
+    checkpoint cannot count one playlist's notes as the other's. A title that
+    fits but reads like such a form gets one too, or a playlist named after
+    another's folder would share it.
     """
-    budget = _MAX_PATH_COMPONENT_BYTES - _DATE_TIME_TITLE_PREFIX_BYTES
     raw = safe_title.encode("utf-8")
-    if len(raw) <= budget:
+    if len(raw) <= _PLAYLIST_TITLE_BUDGET and not _reads_as_capped_title(safe_title):
         return safe_title
     digest = hashlib.sha256(raw).hexdigest()[:_TITLE_DIGEST_HEX]
-    head = _utf8_byte_truncate(safe_title, budget - len(_TITLE_DIGEST_SEP) - _TITLE_DIGEST_HEX)
+    head = _utf8_byte_truncate(safe_title, _TITLE_HEAD_BYTES)
     return f"{head}{_TITLE_DIGEST_SEP}{digest}"
 
 
@@ -207,12 +227,18 @@ def playlist_title_needles(playlist_title: str | None) -> frozenset[str]:
     and the full sanitized title that folders written before the byte cap
     still carry (up to 255 - 16 = 239 bytes). Matching either one exactly
     finds both, and a playlist that merely shares a long title's start matches
-    neither. Empty when the title sanitizes to nothing: callers must then
-    accept no fallback folder.
+    neither. A title that reads like a capped form keeps only the escaped
+    form: a folder bearing the title itself may be a long title's capped
+    folder, and the name cannot tell which, so its pre-cap folders are given
+    up (a rerun) rather than risk consuming another playlist's notes. Empty
+    when the title sanitizes to nothing: callers must then accept no fallback
+    folder.
     """
     full = sanitize_title_for_filename(_strip_playlist_category_prefix(playlist_title))
     if not full:
         return frozenset()
+    if _reads_as_capped_title(full):
+        return frozenset({playlist_title_for_path(full)})
     return frozenset({full, playlist_title_for_path(full)})
 
 
