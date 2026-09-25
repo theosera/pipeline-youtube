@@ -49,7 +49,7 @@ def sanitize_title_for_filename(raw: str | None) -> str:
     chokepoint never emits duplicate alerts on read/dedup scans.
 
     Does **not** byte-truncate: callers that build on-disk names must run
-    ``limit_title_for_path_component`` (or go through ``format_*``) so resume
+    ``playlist_title_for_path`` (or go through ``format_*``) so resume
     needles stay aligned with what was written.
     """
     if not raw:
@@ -70,18 +70,7 @@ def _utf8_byte_truncate(text: str, max_bytes: int) -> str:
     return raw[:max_bytes].decode("utf-8", errors="ignore").rstrip()
 
 
-def limit_title_for_path_component(safe_title: str) -> str:
-    """Bound a sanitized title so ``YYYY-MM-DD-HHmm <title>`` stays ≤ 200 bytes.
-
-    Plain truncation, used for note names: two notes cut to the same stem are
-    kept apart by ``resolve_unique_path``'s ``-2`` suffix. Playlist folders
-    carry the playlist's identity, so they use ``playlist_title_for_path``.
-    """
-    budget = _MAX_PATH_COMPONENT_BYTES - _DATE_TIME_TITLE_PREFIX_BYTES
-    return _utf8_byte_truncate(safe_title, budget)
-
-
-# A folder title over the budget keeps its start, then "~" and 8 hex of a
+# A folder or note title over the budget keeps its start, then "~" and 8 hex of a
 # SHA-256 of the whole sanitized title (9 bytes).
 _TITLE_DIGEST_SEP = "~"
 _TITLE_DIGEST_HEX = 8
@@ -107,7 +96,7 @@ def _reads_as_capped_title(safe_title: str) -> bool:
 
 
 def playlist_title_for_path(safe_title: str) -> str:
-    """The title part of a playlist folder name, within the same byte budget.
+    """The title part of a playlist folder or video note name, within the budget.
 
     A title that fits is returned as is. A longer one keeps as much of its
     start as fits before ``~<8 hex>``, a digest of the whole ``safe_title``,
@@ -115,6 +104,11 @@ def playlist_title_for_path(safe_title: str) -> str:
     checkpoint cannot count one playlist's notes as the other's. A title that
     fits but reads like such a form gets one too, or a playlist named after
     another's folder would share it.
+
+    Note names need the digest as well: every video of a run shares one
+    ``run_time``, and concurrent videos pick their paths before either
+    placeholder exists, so ``resolve_unique_path``'s ``-2`` cannot keep two
+    titles cut to the same start apart.
     """
     raw = safe_title.encode("utf-8")
     if len(raw) <= _PLAYLIST_TITLE_BUDGET and not _reads_as_capped_title(safe_title):
@@ -130,10 +124,11 @@ def format_video_note_base(dt: datetime, title: str | None) -> str:
     - With title:  'YYYY-MM-DD-HHmm <title>'
     - Without:     'YYYY-MM-DD HHmm'
 
-    The title portion is UTF-8-byte-truncated so the stem stays within
-    ``_MAX_PATH_COMPONENT_BYTES`` (see that constant).
+    The title portion goes through ``playlist_title_for_path`` so the stem
+    stays within ``_MAX_PATH_COMPONENT_BYTES`` (see that constant) and two
+    titles differing past the cut keep different stems.
     """
-    safe_title = limit_title_for_path_component(sanitize_title_for_filename(title))
+    safe_title = playlist_title_for_path(sanitize_title_for_filename(title))
     date_str = dt.strftime("%Y-%m-%d")
     time_str = dt.strftime("%H%M")
     if safe_title:

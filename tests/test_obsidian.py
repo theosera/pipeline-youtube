@@ -14,14 +14,18 @@ from pipeline_youtube.obsidian import (
     build_frontmatter,
     format_playlist_folder_name,
     format_video_note_base,
-    limit_title_for_path_component,
     playlist_folder_title,
     playlist_title_for_path,
     playlist_title_needles,
     resolve_unique_path,
     sanitize_title_for_filename,
 )
-from pipeline_youtube.pipeline import LEARNING_BASE, UNIT_DIRS
+from pipeline_youtube.pipeline import (
+    LEARNING_BASE,
+    UNIT_DIRS,
+    compute_note_paths,
+    create_placeholder_notes,
+)
 from pipeline_youtube.playlist import VideoMeta
 from pipeline_youtube.resume import _collect_existing_learning_bodies, _unit_folder_candidates
 from pipeline_youtube.services.obsidian import _MAX_PATH_COMPONENT_BYTES
@@ -269,11 +273,39 @@ class TestCappedTitleStaysMatchable:
         evening = datetime(2026, 8, 5, 18, 0)
         assert is_video_complete(_VID_A, _LONG, evening, vault_root=vault) is False
 
-    def test_note_names_are_cut_without_a_digest(self):
-        """Notes cut to the same stem are kept apart by `-2`, not a digest."""
-        note = format_video_note_base(datetime(2026, 8, 5, 9, 0), _LONG)
-        assert note.split(" ", 1)[1] == limit_title_for_path_component(_LONG)
-        assert "~" not in note
+    def test_note_names_carry_the_same_capped_form_as_folders(self):
+        dt = datetime(2026, 8, 5, 9, 0)
+        note = format_video_note_base(dt, _LONG)
+        assert note.split(" ", 1)[1] == playlist_title_for_path(_LONG)
+        assert note != format_video_note_base(dt, _SAME_START)
+
+    def test_concurrent_videos_sharing_the_kept_start_get_distinct_notes(self, vault):
+        """Both videos pick their paths before either placeholder exists.
+
+        `_run_videos_concurrent` allows that order: each task runs
+        `compute_note_paths` before `create_placeholder_notes`, so `-2` cannot
+        keep two notes cut to the same stem apart. Their stems must differ.
+        """
+        dt = datetime(2026, 8, 5, 9, 0)
+        first, second = (
+            VideoMeta(
+                video_id=video_id,
+                title=title,
+                url=f"https://www.youtube.com/watch?v={video_id}",
+                duration=60,
+                channel="ch",
+                upload_date=None,
+                playlist_title="PL",
+            )
+            for video_id, title in (("aaaaaaaaaaa", _LONG), ("bbbbbbbbbbb", _SAME_START))
+        )
+        first_paths = compute_note_paths(first, dt, vault_root=vault)
+        second_paths = compute_note_paths(second, dt, vault_root=vault)
+        create_placeholder_notes(first, dt, vault_root=vault)
+        create_placeholder_notes(second, dt, vault_root=vault)
+        assert first_paths.keys() == second_paths.keys()
+        for unit, path in first_paths.items():
+            assert path != second_paths[unit]
 
     def test_titles_sharing_the_kept_start_get_distinct_folders(self):
         """The digest keeps two long titles apart past the cut."""
