@@ -23,6 +23,7 @@ from pipeline_youtube.stages.capture_backend import (
     DockerCaptureBackend,
     HostCaptureBackend,
     _adopt_ytdlp_output,
+    _clear_ytdlp_outputs,
     _host_ffmpeg_encoders,
 )
 
@@ -170,6 +171,80 @@ class TestDownloadVideoSkipsLeftoverFragment:
             )
         assert dest.read_bytes() == b"real-download"
         assert fragment.read_bytes() == b"partial-dash"
+
+
+class TestClearYtdlpOutputs:
+    def test_removes_complete_containers_only(self, tmp_path: Path):
+        stem = "abc123abc12"
+        containers = [tmp_path / f"{stem}{ext}" for ext in (".mp4", ".mkv", ".webm", ".m4v")]
+        kept = [
+            tmp_path / f"{stem}.f137.mp4",  # DASH fragment: yt-dlp resumes from it
+            tmp_path / f"{stem}.mp4.part",
+            tmp_path / f"{stem}.webp",
+            tmp_path / "zzz999zzz99.mkv",  # another video
+        ]
+        for f in containers + kept:
+            f.write_bytes(b"x")
+        _clear_ytdlp_outputs(tmp_path / f"{stem}.mp4")
+        assert [f for f in containers if f.exists()] == []
+        assert all(f.exists() for f in kept)
+
+
+def _future_mtime(path: Path) -> None:
+    ahead = time.time() + 3600
+    os.utime(path, (ahead, ahead))
+
+
+class TestDownloadVideoClearsStaleContainers:
+    """A leftover complete container must not beat this run's output.
+
+    yt-dlp may reuse an old complete file instead of writing a new one, so a
+    leftover can carry the newest mtime. Clearing before the download leaves
+    only this run's container for `_adopt_ytdlp_output` to pick.
+    """
+
+    def test_host(self, tmp_path: Path):
+        dest = tmp_path / "abc123abc12.mp4"
+        stale = tmp_path / "abc123abc12.mkv"
+        stale.write_bytes(b"stale-download")
+        _future_mtime(stale)
+
+        class FakeYDL:
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def download(self, urls):
+                (tmp_path / "abc123abc12.webm").write_bytes(b"this-download")
+
+        with patch.dict("sys.modules", {"yt_dlp": MagicMock(YoutubeDL=FakeYDL)}):
+            HostCaptureBackend().download_video(
+                "https://www.youtube.com/watch?v=abc123abc12", dest, resolution="480"
+            )
+        assert dest.read_bytes() == b"this-download"
+        assert not stale.exists()
+
+    def test_docker(self, docker_backend):
+        dest = docker_backend.tmp_dir / "abc123abc12.mp4"
+        stale = docker_backend.tmp_dir / "abc123abc12.mkv"
+        stale.write_bytes(b"stale-download")
+        _future_mtime(stale)
+
+        def fake_run(*args, **kwargs):
+            (docker_backend.tmp_dir / "abc123abc12.webm").write_bytes(b"this-download")
+            return MagicMock(returncode=0)
+
+        with patch("subprocess.run", side_effect=fake_run):
+            docker_backend.download_video(
+                "https://www.youtube.com/watch?v=abc123abc12", dest, resolution="480"
+            )
+        assert dest.read_bytes() == b"this-download"
+        assert not stale.exists()
 
 
 # =====================================================

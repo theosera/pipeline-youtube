@@ -84,22 +84,42 @@ class CaptureBackend(Protocol):
 _YTDLP_MEDIA_SUFFIXES = frozenset({".mp4", ".mkv", ".webm", ".m4v"})
 
 
-def _adopt_ytdlp_output(dest: Path) -> None:
-    """Point ``dest`` at yt-dlp's file when it used a different extension.
+def _ytdlp_containers(dest: Path) -> list[Path]:
+    """Complete same-stem containers beside ``dest`` (``dest`` itself included).
 
-    Only a file whose *entire* stem equals ``dest.stem`` is eligible — that
+    Only a file whose *entire* stem equals ``dest.stem`` counts — that
     excludes DASH fragments (``{stem}.f137.mp4``) and ``.part`` temps
-    (``{stem}.mp4.part``). When several complete containers remain, the
-    newest mtime wins so this download beats an older leftover mux.
+    (``{stem}.mp4.part``).
     """
-    if dest.exists():
-        return
     stem = dest.stem
-    candidates = [
+    return [
         p
         for p in dest.parent.glob(f"{stem}.*")
         if p.is_file() and p.stem == stem and p.suffix.lower() in _YTDLP_MEDIA_SUFFIXES
     ]
+
+
+def _clear_ytdlp_outputs(dest: Path) -> None:
+    """Remove complete containers an earlier download left beside ``dest``.
+
+    Run before yt-dlp so the only container afterwards is this run's: mtime
+    alone cannot tell them apart when yt-dlp reuses an old complete file
+    instead of writing a new one. Fragments and ``.part`` temps are kept so
+    an interrupted download can still resume.
+    """
+    for p in _ytdlp_containers(dest):
+        p.unlink()
+
+
+def _adopt_ytdlp_output(dest: Path) -> None:
+    """Point ``dest`` at yt-dlp's file when it used a different extension.
+
+    Candidates are ``_ytdlp_containers``. Callers clear leftovers first with
+    ``_clear_ytdlp_outputs``; if several still remain, the newest mtime wins.
+    """
+    if dest.exists():
+        return
+    candidates = _ytdlp_containers(dest)
     if not candidates:
         raise FileNotFoundError(f"yt-dlp produced no file for {dest}")
     chosen = max(candidates, key=lambda p: p.stat().st_mtime)
@@ -123,8 +143,7 @@ class HostCaptureBackend:
         # call time instead of at module import time.
         import yt_dlp  # type: ignore[import-untyped]
 
-        if dest.exists():
-            dest.unlink()
+        _clear_ytdlp_outputs(dest)
 
         fmt = (
             f"bestvideo[height<={resolution}][ext=mp4]+bestaudio[ext=m4a]/"
@@ -347,6 +366,7 @@ class DockerCaptureBackend:
 
     def download_video(self, url: str, dest: Path, *, resolution: str) -> None:
         container_dest = self._host_to_container(dest)
+        _clear_ytdlp_outputs(dest)
         fmt = (
             f"bestvideo[height<={resolution}][ext=mp4]+bestaudio[ext=m4a]/"
             f"best[height<={resolution}][ext=mp4]/"
