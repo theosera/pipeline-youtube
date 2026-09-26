@@ -8,12 +8,15 @@ paths it writes to must be the ones it reserved.
 from __future__ import annotations
 
 import threading
+import time
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 from pipeline_youtube import config
+from pipeline_youtube import pipeline as pipeline_mod
 from pipeline_youtube.pipeline import UNIT_DIRS, reserve_note_paths
 from pipeline_youtube.playlist import VideoMeta
 
@@ -66,13 +69,14 @@ class TestSequentialReservation:
             assert paths[unit].is_file(), unit
         assert not paths["learning"].exists()
 
-    def test_learning_reservation_blocks_a_later_video(self, vault):
-        # 04 is not written as an empty file, so the reservation itself must
-        # keep a later same-title video away from it.
-        first = reserve_note_paths(_video("aaaaaaaaaaa"), RUN_TIME, vault_root=vault)
+    def test_reservation_without_files_still_blocks_a_later_video(self, vault):
+        # 04 is never written as an empty file, so nothing on disk marks it as
+        # taken. A dry-run reservation writes nothing at all and isolates that
+        # case: only the in-process reservation keeps the next video away.
+        first = reserve_note_paths(_video("aaaaaaaaaaa"), RUN_TIME, dry_run=True, vault_root=vault)
         second = reserve_note_paths(_video("bbbbbbbbbbb"), RUN_TIME, vault_root=vault)
-        assert first["learning"] != second["learning"]
-        assert second["learning"].parent.name == first["learning"].parent.name
+        for unit in ALL_UNITS:
+            assert first[unit] != second[unit], unit
 
     def test_skips_a_suffix_taken_in_any_unit(self, vault):
         # A stray file in 04 alone must push the whole set to the next suffix,
@@ -94,7 +98,17 @@ class TestSequentialReservation:
 
 
 class TestConcurrentReservation:
-    def test_threads_never_share_a_path(self, vault):
+    @pytest.mark.parametrize("slow_record", [False, True], ids=["plain", "slow-record"])
+    def test_threads_never_share_a_path(self, vault, monkeypatch, slow_record):
+        if slow_record:
+            # Widen the gap between choosing a suffix and recording it, so the
+            # threads interleave there unless the choice is serialized.
+            class SlowRecordSet(set[Path]):
+                def update(self, *others: Iterable[Path]) -> None:
+                    time.sleep(0.01)
+                    super().update(*others)
+
+            monkeypatch.setattr(pipeline_mod, "_reserved_paths", SlowRecordSet())
         videos = [_video(f"v{i:010d}") for i in range(8)]
         barrier = threading.Barrier(len(videos))
         results: dict[str, dict[str, Path]] = {}
