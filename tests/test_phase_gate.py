@@ -507,7 +507,7 @@ class TestResumeReviewedProcessing:
         monkeypatch.setattr(vp_mod, "run_stage_scripts", forbidden_stage)
         monkeypatch.setattr(vp_mod, "run_stage_summary", forbidden_stage)
         monkeypatch.setattr(vp_mod, "run_stage_capture", forbidden_stage)
-        monkeypatch.setattr(vp_mod, "create_placeholder_notes", forbidden_stage)
+        monkeypatch.setattr(vp_mod, "reserve_note_paths", forbidden_stage)
 
         def fake_learning(
             video,
