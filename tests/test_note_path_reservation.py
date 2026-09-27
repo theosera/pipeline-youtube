@@ -7,8 +7,10 @@ paths it writes to must be the ones it reserved.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
+import unicodedata
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
@@ -103,8 +105,8 @@ class TestConcurrentReservation:
         if slow_record:
             # Widen the gap between choosing a suffix and recording it, so the
             # threads interleave there unless the choice is serialized.
-            class SlowRecordSet(set[Path]):
-                def update(self, *others: Iterable[Path]) -> None:
+            class SlowRecordSet(set[str]):
+                def update(self, *others: Iterable[str]) -> None:
                     time.sleep(0.01)
                     super().update(*others)
 
@@ -112,13 +114,13 @@ class TestConcurrentReservation:
         videos = [_video(f"v{i:010d}") for i in range(8)]
         barrier = threading.Barrier(len(videos))
         results: dict[str, dict[str, Path]] = {}
-        errors: list[BaseException] = []
+        errors: list[Exception] = []
 
         def worker(video: VideoMeta) -> None:
             try:
                 barrier.wait()
                 results[video.video_id] = reserve_note_paths(video, RUN_TIME, vault_root=vault)
-            except BaseException as exc:  # surfaced below with the full trace
+            except Exception as exc:  # surfaced below with the full trace
                 errors.append(exc)
 
         threads = [threading.Thread(target=worker, args=(v,)) for v in videos]
@@ -131,3 +133,87 @@ class TestConcurrentReservation:
         for unit in ALL_UNITS:
             chosen = [results[v.video_id][unit] for v in videos]
             assert len(set(chosen)) == len(videos), unit
+
+
+def _case_insensitive(folder: Path) -> bool:
+    probe = folder / "CaseProbe.tmp"
+    probe.write_text("x", encoding="utf-8")
+    try:
+        return (folder / "caseprobe.tmp").exists()
+    finally:
+        probe.unlink()
+
+
+def _reserve_pair(vault: Path, first: str, second: str) -> tuple[Path, Path]:
+    barrier = threading.Barrier(2)
+    out: dict[str, Path] = {}
+
+    def worker(key: str, title: str) -> None:
+        barrier.wait()
+        out[key] = reserve_note_paths(_video(f"{key * 11}", title), RUN_TIME, vault_root=vault)[
+            "scripts"
+        ]
+
+    threads = [
+        threading.Thread(target=worker, args=("a", first)),
+        threading.Thread(target=worker, args=("b", second)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return out["a"], out["b"]
+
+
+def _folded(path: Path) -> str:
+    # Independent of the code under test: how APFS compares names.
+    return unicodedata.normalize("NFC", str(path)).casefold()
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    return a.exists() and b.exists() and os.path.samefile(a, b)
+
+
+class TestSpellingVariants:
+    """Titles one volume treats as the same file must not share a note (#184)."""
+
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [
+            ("Foo", "foo"),
+            (unicodedata.normalize("NFC", "が講座"), unicodedata.normalize("NFD", "が講座")),
+        ],
+        ids=["case", "nfc-nfd"],
+    )
+    def test_concurrent_variants_get_separate_files(self, vault, first, second):
+        a, b = _reserve_pair(vault, first, second)
+        assert not _same_file(a, b)
+
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [
+            ("Foo", "foo"),
+            (unicodedata.normalize("NFC", "が講座"), unicodedata.normalize("NFD", "が講座")),
+        ],
+        ids=["case", "nfc-nfd"],
+    )
+    def test_registry_key_folds_variants(self, vault, first, second):
+        # A dry run writes nothing, so only the registry key can keep the
+        # second spelling off the first one's path.
+        a = reserve_note_paths(
+            _video("aaaaaaaaaaa", first), RUN_TIME, dry_run=True, vault_root=vault
+        )
+        b = reserve_note_paths(
+            _video("bbbbbbbbbbb", second), RUN_TIME, dry_run=True, vault_root=vault
+        )
+        assert _folded(a["scripts"]) != _folded(b["scripts"])
+
+    def test_placeholders_exist_before_the_lock_is_released(self, vault, monkeypatch):
+        # With the registry key left unfolded, only placeholders written under
+        # the lock let the second spelling see the first one's file on a
+        # case-insensitive volume.
+        if not _case_insensitive(vault):
+            pytest.skip("needs a case-insensitive volume (e.g. APFS default)")
+        monkeypatch.setattr(pipeline_mod, "_reservation_key", str)
+        a, b = _reserve_pair(vault, "Foo", "foo")
+        assert not _same_file(a, b)

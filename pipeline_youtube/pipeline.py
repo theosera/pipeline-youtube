@@ -23,6 +23,7 @@ ahead of time should use `compute_note_paths` (pure path calc, no write).
 from __future__ import annotations
 
 import threading
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -82,11 +83,23 @@ def compute_note_paths(
     return paths
 
 
-# Paths handed out by `reserve_note_paths` in this process. 04 is never
-# written as an empty placeholder, so the filesystem alone cannot tell a
-# concurrent task that a same-stem 04 path is already taken.
+# Paths handed out by `reserve_note_paths` in this process, keyed by
+# `_reservation_key`. 04 is never written as an empty placeholder (and a
+# dry run writes nothing), so the filesystem alone cannot tell a concurrent
+# task that such a path is already taken.
 _reservation_lock = threading.Lock()
-_reserved_paths: set[Path] = set()
+_reserved_paths: set[str] = set()
+
+
+def _reservation_key(path: Path) -> str:
+    """Fold a path the way a case- and normalization-insensitive volume does.
+
+    APFS (the macOS default) treats ``Foo.md`` / ``foo.md`` and NFC / NFD
+    spellings as one file. Comparing folded keys keeps two such titles from
+    reserving the same file; on a case-sensitive volume they only move one of
+    them to the next suffix.
+    """
+    return unicodedata.normalize("NFC", str(path)).casefold()
 
 
 def reserve_note_paths(
@@ -117,16 +130,23 @@ def reserve_note_paths(
         while True:
             suffix = "" if i == 1 else f"-{i}"
             candidate = {k: f / f"{note_base}{suffix}.md" for k, f in folders.items()}
-            if not any(p.exists() or p in _reserved_paths for p in candidate.values()):
+            if not any(
+                p.exists() or _reservation_key(p) in _reserved_paths for p in candidate.values()
+            ):
                 break
             i += 1
-        _reserved_paths.update(candidate.values())
+        _reserved_paths.update(_reservation_key(p) for p in candidate.values())
 
-    if not dry_run:
-        for unit_key in DEFAULT_PLACEHOLDER_UNITS:
-            path = candidate[unit_key]
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(_placeholder_frontmatter(video, run_time, unit_key), encoding="utf-8")
+        # Written before the lock is released, so a task that reserves next
+        # sees these files on disk even under a spelling the registry key
+        # would not fold.
+        if not dry_run:
+            for unit_key in DEFAULT_PLACEHOLDER_UNITS:
+                path = candidate[unit_key]
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(
+                    _placeholder_frontmatter(video, run_time, unit_key), encoding="utf-8"
+                )
     return candidate
 
 
