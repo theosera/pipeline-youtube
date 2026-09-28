@@ -760,6 +760,73 @@ class TestResumeReviewedProcessing:
             tmp_path / LEARNING_BASE / UNIT_DIRS["learning"] / folder / "a-2.md"
         )
 
+    @pytest.mark.parametrize("descending", [False, True], ids=["glob-asc", "glob-desc"])
+    def test_resume_reviewed_capture_pairing_ignores_glob_order(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, descending: bool
+    ):
+        """Reviewed a-2.md must consume capture a-2.md whichever order glob lists.
+
+        ``Path.glob`` order is filesystem-dependent. The end-to-end test above
+        only goes red where the volume happens to list the stale ``a.md`` first,
+        so a call site that stopped passing ``preferred_stem`` could pass CI on
+        one machine and pair the wrong capture on another. Forcing both orders
+        makes that regression fail everywhere.
+        """
+        config.set_vault_root(tmp_path)
+        resume_time = datetime(2026, 4, 18, 12, 0)
+        folder = "2026-04-18-0800 testlist"
+        summary_base = tmp_path / LEARNING_BASE / UNIT_DIRS["summary"]
+        capture_base = tmp_path / LEARNING_BASE / UNIT_DIRS["capture"]
+        _write_summary(summary_base / folder / "a.md", _VID_A, "false")
+        _write_summary(summary_base / folder / "a-2.md", _VID_A, "true")
+        _write_capture(capture_base / folder / "a.md", _VID_A)
+        _write_capture(capture_base / folder / "a-2.md", _VID_A)
+
+        real_glob = Path.glob
+
+        def ordered_glob(self: Path, pattern: str, *args, **kwargs):
+            found = real_glob(self, pattern, *args, **kwargs)
+            return iter(sorted(found, key=lambda p: p.name, reverse=descending))
+
+        monkeypatch.setattr(Path, "glob", ordered_glob)
+
+        # Record instead of asserting inside the fake: _process_video turns any
+        # exception into result.error, which would hide which path was wrong.
+        seen: dict[str, Path] = {}
+
+        def fake_learning(video, summary_md_path, capture_md_path, learning_md_path, **kwargs):
+            seen["summary"] = summary_md_path
+            seen["capture"] = capture_md_path
+            learning_md_path.parent.mkdir(parents=True, exist_ok=True)
+            learning_md_path.write_text(
+                f'---\nvideo_id: "{video.video_id}"\n---\n\nlearning body\n',
+                encoding="utf-8",
+            )
+            return ClaudeResponse(
+                text="learning body",
+                model="sonnet",
+                input_tokens=1,
+                output_tokens=2,
+                total_cost_usd=0.01,
+            )
+
+        monkeypatch.setattr(vp_mod, "run_stage_learning", fake_learning)
+
+        result = vp_mod._process_video(
+            _vid(_VID_A),
+            resume_time,
+            dry_run=False,
+            capture_format="auto",
+            models={"stage_02": "sonnet", "stage_04": "sonnet"},
+            resume_reviewed=True,
+            playlist_title="testlist",
+            vault_root=config.get_vault_root(),
+        )
+
+        assert result.ok, result.error
+        assert seen["summary"] == summary_base / folder / "a-2.md"
+        assert seen["capture"] == capture_base / folder / "a-2.md"
+
     def test_same_day_folder_candidates_are_newest_first(self, tmp_path: Path):
         # iterdir() order is filesystem-dependent; the fallback must not depend
         # on it when two Phase 1 runs exist for the same playlist.
