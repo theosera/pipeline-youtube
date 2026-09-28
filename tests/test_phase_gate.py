@@ -688,6 +688,30 @@ class TestResumeReviewedProcessing:
 
         assert found is None
 
+    def test_pinned_stem_capture_must_carry_the_same_video_id(self, tmp_path: Path):
+        # A matching filename is not proof of ownership: a vault written before
+        # the shared-suffix reservation (#184), or a hand-renamed note, can hold
+        # another video's capture under the reviewed summary's stem. Accepting it
+        # would feed Stage 04 that video's images; falling back to a.md would mix
+        # in the stale run. Both must fail closed.
+        config.set_vault_root(tmp_path)
+        folder = "2026-04-18-0800 testlist"
+        capture_base = tmp_path / LEARNING_BASE / UNIT_DIRS["capture"]
+        _write_capture(capture_base / folder / "a.md", _VID_A)
+        _write_capture(capture_base / folder / "a-2.md", _VID_B)
+
+        found = _find_unit_md(
+            _VID_A,
+            "testlist",
+            datetime(2026, 4, 18, 12, 0),
+            "capture",
+            vault_root=config.get_vault_root(),
+            preferred_folder_name=folder,
+            preferred_stem="a-2",
+        )
+
+        assert found is None
+
     def test_resume_reviewed_pairs_capture_with_reviewed_summary_stem(
         self, tmp_path: Path, monkeypatch
     ):
