@@ -447,6 +447,55 @@ class TestRunStageCapture:
         assert f"![[{playlist_folder}/pyt__h3decBW12Q_00-2.webp]]" in rerun_body
         assert f"![[{playlist_folder}/pyt__h3decBW12Q_00.webp]]" not in rerun_body
 
+    def test_rerun_suffix_keeps_gif_extension(self, vault, monkeypatch):
+        """A GIF rerun gets ``_NN-2.gif`` and leaves the prior ``_NN.gif`` alone.
+
+        The collision check re-splits ``pyt_{id}_NN.{ext}`` into stem and
+        extension for ``resolve_unique_path``. Every other test here pins WebP,
+        so an extension hard-coded to ``.webp`` in that split would pass them
+        all while GIF captures (ffmpeg without libwebp) were misnamed and
+        checked for collisions against the wrong files.
+        """
+        video, paths = _setup_case(vault)
+
+        def fake_download(url, dest, resolution="480", *, backend=None):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"stub")
+
+        monkeypatch.setattr(capture_stage, "_download_video", fake_download)
+        monkeypatch.setattr(
+            capture_stage,
+            "_resolve_capture_format",
+            lambda _fmt, _backend: _FormatChoice(ext="gif", strategy="native_gif"),
+        )
+        monkeypatch.setattr(subprocess, "run", _fake_successful_ffmpeg)
+
+        # A prior run's captures already sit in this playlist's assets folder.
+        playlist_folder = paths["capture"].parent.name
+        assets_dir = config.get_vault_root() / capture_stage.ASSETS_REL_PATH / playlist_folder
+        assets_dir.mkdir(parents=True)
+        prior = [assets_dir / f"pyt__h3decBW12Q_{i:02d}.gif" for i in range(4)]
+        for p in prior:
+            p.write_bytes(b"PRIOR")
+
+        result = run_stage_capture(
+            video,
+            summary_md_path=paths["summary"],
+            capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
+        )
+
+        assert [p.name for p in result.image_paths] == [
+            "pyt__h3decBW12Q_00-2.gif",
+            "pyt__h3decBW12Q_01-2.gif",
+            "pyt__h3decBW12Q_02-2.gif",
+            "pyt__h3decBW12Q_03-2.gif",
+        ]
+        for p in prior:
+            assert p.read_bytes() == b"PRIOR", f"prior capture overwritten: {p.name}"
+        body = paths["capture"].read_text(encoding="utf-8")
+        assert f"![[{playlist_folder}/pyt__h3decBW12Q_00-2.gif]]" in body
+
     def test_temp_video_deleted_after_run(self, vault, monkeypatch):
         video, paths = _setup_case(vault)
         recorded_paths: list[Path] = []
