@@ -18,7 +18,7 @@ from typing import Any
 import click
 
 from .glossary import Glossary
-from .pipeline import reserve_note_paths
+from .pipeline import NoteReservations, reserve_note_paths
 from .playlist import VideoMeta
 from .resume import (
     _find_reviewed_summary_md,
@@ -127,6 +127,7 @@ def _process_video(
     known_terms: list[tuple[str, str]] | None = None,
     use_innertube: bool = True,
     vault_root: Path,
+    reservations: NoteReservations,
 ) -> VideoRunResult:
     try:
         if resume_reviewed:
@@ -145,7 +146,9 @@ def _process_video(
                 vault_root=vault_root,
             )
 
-        paths = reserve_note_paths(video, run_time, dry_run=dry_run, vault_root=vault_root)
+        paths = reserve_note_paths(
+            video, run_time, reservations=reservations, dry_run=dry_run, vault_root=vault_root
+        )
 
         correct_model = models["stage_01_correct"] if correct_transcript else None
         if correct_model:
@@ -322,6 +325,7 @@ async def _run_videos_concurrent(
     known_terms: list[tuple[str, str]] | None = None,
     use_innertube: bool = True,
     vault_root: Path,
+    reservations: NoteReservations,
 ) -> list[VideoRunResult]:
     """Process multiple videos concurrently with bounded parallelism."""
     sem = asyncio.Semaphore(concurrency)
@@ -350,6 +354,7 @@ async def _run_videos_concurrent(
                 known_terms=known_terms,
                 use_innertube=use_innertube,
                 vault_root=vault_root,
+                reservations=reservations,
             )
 
     tasks = [_task(i, v) for i, v in enumerate(videos, 1)]

@@ -13,7 +13,7 @@ import pytest
 from pipeline_youtube import config
 from pipeline_youtube import pipeline_runner as pr_mod
 from pipeline_youtube import video_processing as vp_mod
-from pipeline_youtube.pipeline import LEARNING_BASE, UNIT_DIRS
+from pipeline_youtube.pipeline import LEARNING_BASE, UNIT_DIRS, NoteReservations
 from pipeline_youtube.playlist import VideoMeta
 from pipeline_youtube.providers.claude_cli import ClaudeResponse
 from pipeline_youtube.resume import (
@@ -543,6 +543,7 @@ class TestResumeReviewedProcessing:
             resume_reviewed=True,
             playlist_title="testlist",
             vault_root=config.get_vault_root(),
+            reservations=NoteReservations(),
         )
 
         assert result.ok
@@ -596,6 +597,7 @@ class TestResumeReviewedProcessing:
             resume_reviewed=True,
             playlist_title="testlist",
             vault_root=config.get_vault_root(),
+            reservations=NoteReservations(),
         )
 
         assert result.ok
@@ -617,6 +619,7 @@ class TestResumeReviewedProcessing:
             resume_reviewed=True,
             playlist_title=None,
             vault_root=config.get_vault_root(),
+            reservations=NoteReservations(),
         )
 
         assert not result.ok
@@ -753,6 +756,7 @@ class TestResumeReviewedProcessing:
             resume_reviewed=True,
             playlist_title="testlist",
             vault_root=config.get_vault_root(),
+            reservations=NoteReservations(),
         )
 
         assert result.ok
@@ -821,6 +825,7 @@ class TestResumeReviewedProcessing:
             resume_reviewed=True,
             playlist_title="testlist",
             vault_root=config.get_vault_root(),
+            reservations=NoteReservations(),
         )
 
         assert result.ok, result.error

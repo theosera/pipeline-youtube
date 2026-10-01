@@ -19,6 +19,7 @@ from .checkpoint import get_completed_video_ids
 from .cli_types import CliRequest, ExecutionPlan, ResolvedInput, Runtime
 from .handson_runner import run_handson
 from .parallel import orchestrate_sub_agents, strip_cli_option
+from .pipeline import NoteReservations
 from .playlist import VideoMeta
 from .proper_noun_sheet import (
     _promote_corrections_to_glossary,
@@ -315,7 +316,9 @@ def _process_all_videos(
             to_process, playlist_title, run_time, vault_root=runtime.vault_root
         )
 
-    # Process remaining videos
+    # Process remaining videos. One registry per run: shared by this run's
+    # tasks, never carried into a later run in the same process.
+    reservations = NoteReservations()
     if to_process and request.concurrency > 1:
         process_videos = [v for _, v in to_process]
         concurrent_results = asyncio.run(
@@ -338,6 +341,7 @@ def _process_all_videos(
                 known_terms=known_terms,
                 use_innertube=cfg.use_innertube,
                 vault_root=runtime.vault_root,
+                reservations=reservations,
             )
         )
         results.extend(concurrent_results)
@@ -362,6 +366,7 @@ def _process_all_videos(
                 known_terms=known_terms,
                 use_innertube=cfg.use_innertube,
                 vault_root=runtime.vault_root,
+                reservations=reservations,
             )
             results.append(result)
 
