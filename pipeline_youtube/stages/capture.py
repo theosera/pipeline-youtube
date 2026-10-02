@@ -464,7 +464,14 @@ def run_stage_capture(
             staged_name = f"{len(outcomes):03d}.{ext}"
             staged_path = staging_dir / staged_name
 
-            start = max(0.0, rng.center_sec - window_seconds / 2.0)
+            # The ranges come from an LLM's summary and can lie past the
+            # video's end, where ffmpeg exits 0 with an empty or short clip
+            # (#189). With the length known, such a range fails here, and a
+            # window that runs over the end is moved back inside.
+            start = _capture_start(rng, window_seconds, video.duration)
+            if start is None:
+                outcomes.append(CaptureOutcome(range=rng, image_path=None, error="range_past_end"))
+                continue
             try:
                 extractor(
                     tmp_video_path,
@@ -676,6 +683,28 @@ def _capture_image_name(video_id: str, idx: int, ext: str = "webp") -> str:
     alone. Contiguous zero-padded indices starting from 00.
     """
     return f"pyt_{video_id}_{idx:02d}.{ext}"
+
+
+def _capture_start(rng: SummaryRange, window_seconds: float, duration: object) -> float | None:
+    """Start of the capture window centered on ``rng``, or None past the video's end.
+
+    Without a usable length (None, 0 or less, or not a number --
+    ``--local-media`` has none) the window is centered as before. With one, a
+    range that starts at or after the end is past it (None), and a window that
+    would run over the end is moved back so it ends there; a video shorter than
+    the window starts at 0. The range's start decides, not its center: yt-dlp
+    gives the length in whole seconds, so a center inside the video's last
+    second could read as past the end.
+    """
+    start = max(0.0, rng.center_sec - window_seconds / 2.0)
+    # NaN and infinity get past this test, and leave the window centered
+    # below: no start is >= them, and min() keeps its first argument when the
+    # comparison is false.
+    if not isinstance(duration, int | float) or isinstance(duration, bool) or duration <= 0:
+        return start
+    if rng.start_sec >= duration:
+        return None
+    return max(0.0, min(start, duration - window_seconds))
 
 
 def _check_capture(dir_fd: int, name: str, ext: str) -> tuple[int, int]:

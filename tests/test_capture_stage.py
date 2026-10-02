@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 import errno
+import math
 import os
 import subprocess
 from datetime import datetime
@@ -17,6 +19,7 @@ from pipeline_youtube.playlist import VideoMeta
 from pipeline_youtube.stages import capture as capture_stage
 from pipeline_youtube.stages.capture import (
     CaptureResult,
+    SummaryRange,
     _capture_image_name,
     _FormatChoice,
     parse_summary_ranges,
@@ -980,3 +983,105 @@ class TestStagedCapture:
         assert (result.error or "").startswith("staging_dir_failed: "), result.error
         assert result.outcomes == []
         assert list(elsewhere.iterdir()) == [] or linked == "the assets folder"
+
+
+# =====================================================
+# #189: ranges against the video's length
+# =====================================================
+
+
+class TestRangeInsideVideo:
+    @pytest.mark.parametrize(
+        ("start_sec", "end_sec", "duration", "start"),
+        [
+            (10, 20, 60, 13.25),  # well inside: centered, as before
+            (57, 60, 60, 56.5),  # runs over the end: moved back to end there
+            # The center at or past a length rounded down to whole seconds:
+            # the range starts inside, so its window is moved inside.
+            (59, 61, 60, 56.5),
+            (58, 62, 60, 56.5),
+            (60, 62, 60, None),  # starts at the end: past it
+            (65, 75, 60, None),
+            (0, 2, 2, 0.0),  # a video shorter than the window starts at 0
+            (57, 60, None, 56.75),  # length unknown (--local-media): centered
+            (65, 75, 0, 68.25),  # length 0 means unknown too
+            (65, 75, math.nan, 68.25),  # so does a length that is no number
+            (65, 75, math.inf, 68.25),
+            (65, 75, -60, 68.25),
+            (65, 75, "60", 68.25),
+            (65, 75, True, 68.25),
+        ],
+    )
+    def test_capture_start(self, start_sec, end_sec, duration, start):
+        rng = SummaryRange(start_sec=start_sec, end_sec=end_sec, heading="h")
+        assert capture_stage._capture_start(rng, 3.5, duration) == start
+
+    def _run(self, vault, monkeypatch, summary, duration):
+        video, paths = _setup_case(vault, summary_md_content=summary)
+        video = dataclasses.replace(video, duration=duration)
+        _pin(monkeypatch)
+        starts: list[str] = []
+
+        def recording_ffmpeg(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args")
+            starts.append(cmd[cmd.index("-ss") + 1])
+            return _fake_successful_ffmpeg(*args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", recording_ffmpeg)
+        result = run_stage_capture(
+            video,
+            summary_md_path=paths["summary"],
+            capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
+        )
+        return result, starts, paths
+
+    def test_a_range_past_the_end_fails_without_running_ffmpeg(self, vault, monkeypatch):
+        """The past range sits between two others, so the numbering is seen to
+        close up over it."""
+        summary = (
+            "### [00:10 ~ 00:20] inside\n"
+            "### [01:05 ~ 01:15] past the 60 s end\n"
+            "### [00:30 ~ 00:40] inside again\n"
+        )
+        result, starts, paths = self._run(vault, monkeypatch, summary, 60)
+
+        assert starts == ["13.25", "33.25"]
+        assert result.outcomes[1].image_path is None
+        assert result.outcomes[1].error == "range_past_end"
+        assert [p.name for p in result.image_paths] == [
+            "pyt__h3decBW12Q_00.webp",
+            "pyt__h3decBW12Q_01.webp",
+        ]
+        assert "<!-- capture failed: range_past_end -->" in paths["capture"].read_text(
+            encoding="utf-8"
+        )
+
+    @pytest.mark.parametrize(
+        ("summary", "start"),
+        [
+            ("### [00:57 ~ 01:00] straddling the end\n", "56.50"),
+            # Centered on the 60 s length, but starting inside it.
+            ("### [00:59 ~ 01:01] centered on the end\n", "56.50"),
+        ],
+    )
+    def test_a_window_over_the_end_is_moved_inside(self, vault, monkeypatch, summary, start):
+        result, starts, _ = self._run(vault, monkeypatch, summary, 60)
+
+        assert starts == [start]
+        assert result.success_count == 1
+
+    def test_a_window_that_starts_at_zero_runs(self, vault, monkeypatch):
+        """A window starting at 0.0 is a start, not a range past the end."""
+        result, starts, _ = self._run(vault, monkeypatch, "### [00:00 ~ 00:03] opening\n", 60)
+
+        assert starts == ["0.00"]
+        assert result.success_count == 1
+
+    def test_an_unknown_length_keeps_the_centered_window(self, vault, monkeypatch):
+        """The control: --local-media has no length, so nothing is moved or refused."""
+        summary = "### [00:57 ~ 01:00] straddling\n### [01:05 ~ 01:15] past 60 s\n"
+        result, starts, _ = self._run(vault, monkeypatch, summary, None)
+
+        assert starts == ["56.75", "68.25"]
+        assert result.success_count == 2
