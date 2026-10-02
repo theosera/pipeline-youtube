@@ -40,14 +40,17 @@ still run and the md records the failure as an HTML comment.
 from __future__ import annotations
 
 import contextlib
+import os
 import re
+import shutil
+import stat
 import subprocess
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from ..obsidian import resolve_unique_path
 from ..path_safety import ensure_safe_path
 from ..playlist import VideoMeta
 from .capture_backend import CaptureBackend, HostCaptureBackend
@@ -67,6 +70,16 @@ DEFAULT_RESOLUTION = "480"
 CaptureFormat = Literal["auto", "webp", "gif"]
 
 _TMP_SWEEP_EXTENSIONS = (".mp4", ".webm", ".m4a", ".mkv")
+
+# Each run_stage_capture call makes one hidden staging directory under the
+# assets folder (same filesystem, so a finished image can be hard-linked into
+# place, and inside the Docker backend's /assets mount). Obsidian skips
+# dot-folders, so a directory left behind by a killed parent stays out of the
+# vault's file list.
+_STAGING_PREFIX = ".pyt-capture-"
+# Upper bound on the -2, -3 ... names tried when publishing, so a folder that
+# somehow holds every candidate fails the range instead of looping.
+_PUBLISH_MAX_CANDIDATES = 10_000
 
 
 def _tmp_video_path(video: VideoMeta) -> Path:
@@ -191,6 +204,10 @@ class SummaryRange:
     def end_mmss(self) -> str:
         mm, ss = divmod(self.end_sec, 60)
         return f"{mm:02d}:{ss:02d}"
+
+
+class CaptureCheckError(Exception):
+    """A capture ffmpeg reported as finished is not a complete image (#190)."""
 
 
 @dataclass(frozen=True)
@@ -407,25 +424,44 @@ def run_stage_capture(
 
     outcomes: list[CaptureOutcome] = []
     success_counter = 0
+    staging_dir: Path | None = None
     try:
+        # ffmpeg creates its output the moment it starts and fills it in
+        # 256 KiB writes, so a run that is killed (the subprocess timeout)
+        # or stops early leaves a partial file at whatever name it was given
+        # (#190). Every image is therefore made in this run's own staging
+        # directory, checked, and only then published under its final name.
+        try:
+            staging_dir = Path(tempfile.mkdtemp(prefix=_STAGING_PREFIX, dir=assets_dir))
+        except OSError as e:
+            return CaptureResult(
+                ranges=ranges,
+                video_downloaded=downloaded,
+                capture_format=ext,
+                error=f"staging_dir_failed: {type(e).__name__}",
+            )
         for rng in ranges:
             image_name = _capture_image_name(video.video_id, success_counter, ext)
             # A rerun in the same minute (e.g. --force-video) reuses this
             # playlist folder, and reserve_note_paths moves its notes to
-            # Title-2.md. ffmpeg -y would still clobber the pyt_{id}_NN.* the
-            # earlier notes embed, so pick a free name here too.
-            image_path = resolve_unique_path(assets_dir, Path(image_name).stem, f".{ext}")
+            # Title-2.md. The pyt_{id}_NN.* the earlier notes embed must not be
+            # replaced, so publishing takes the first free name: -2, -3 ...
+            staged_path = staging_dir / f"{len(outcomes):03d}.{ext}"
 
             start = max(0.0, rng.center_sec - window_seconds / 2.0)
             try:
                 extractor(
                     tmp_video_path,
-                    image_path,
+                    staged_path,
                     start_sec=start,
                     duration=window_seconds,
                     fps=fps,
                     scale_height=scale_height,
                     backend=active_backend,
+                )
+                _check_capture(staged_path, ext)
+                image_path = _publish_capture(
+                    staged_path, assets_dir, Path(image_name).stem, f".{ext}"
                 )
             except subprocess.CalledProcessError as e:
                 stderr = (e.stderr or b"").decode("utf-8", errors="replace")[-200:]
@@ -461,6 +497,12 @@ def run_stage_capture(
             capture_format=ext,
         )
     finally:
+        # Only this run's staging directory: published images are hard links
+        # outside it, so removing it takes the staged names, partial outputs
+        # and palettes and nothing else. A failure here does not undo an
+        # image that was published.
+        if staging_dir is not None:
+            shutil.rmtree(staging_dir, ignore_errors=True)
         # delete_video=False preserves a caller-owned source (e.g. the user's
         # --local-media file); only clean up files this stage downloaded.
         if delete_video:
@@ -614,6 +656,60 @@ def _capture_image_name(video_id: str, idx: int, ext: str = "webp") -> str:
     alone. Contiguous zero-padded indices starting from 00.
     """
     return f"pyt_{video_id}_{idx:02d}.{ext}"
+
+
+def _check_capture(path: Path, ext: str) -> None:
+    """Raise ``CaptureCheckError`` unless ``path`` looks like a whole image.
+
+    Structural checks only, read through one descriptor that does not follow a
+    link: a regular file, not empty, the format's signature, and the format's
+    own end — a WebP's RIFF size must match the file size, and a GIF must end
+    with its trailer byte. A writer killed part way leaves 0 bytes or a cut-off
+    file, and both fail here; a clip that is short but whole passes.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as e:
+        raise CaptureCheckError(f"output_unreadable: {type(e).__name__}") from e
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise CaptureCheckError("output_not_a_regular_file")
+        if st.st_size == 0:
+            raise CaptureCheckError("output_empty")
+        head = f.read(12)
+        if ext == "webp":
+            if len(head) < 12 or head[:4] != b"RIFF" or head[8:12] != b"WEBP":
+                raise CaptureCheckError("output_not_webp")
+            if int.from_bytes(head[4:8], "little") + 8 != st.st_size:
+                raise CaptureCheckError("output_truncated")
+        elif ext == "gif":
+            if head[:6] not in (b"GIF87a", b"GIF89a"):
+                raise CaptureCheckError("output_not_gif")
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\x3b":
+                raise CaptureCheckError("output_truncated")
+        else:
+            raise CaptureCheckError(f"unknown_format: {ext}")
+
+
+def _publish_capture(staged: Path, folder: Path, stem: str, ext: str) -> Path:
+    """Give a checked image its final name, never replacing a file.
+
+    Tries ``{stem}{ext}``, then ``{stem}-2{ext}``, ``-3`` ... — the names
+    ``resolve_unique_path`` picks — with ``os.link``, which fails when the name
+    exists, so a name taken between looking and writing (a concurrent run) is
+    skipped rather than overwritten. There is no fallback to a rename or a
+    copy: a filesystem without hard links fails the range instead.
+    """
+    for i in range(1, _PUBLISH_MAX_CANDIDATES + 1):
+        candidate = folder / (f"{stem}{ext}" if i == 1 else f"{stem}-{i}{ext}")
+        try:
+            os.link(staged, candidate)
+        except FileExistsError:
+            continue
+        return candidate
+    raise CaptureCheckError("no_free_name")
 
 
 def _download_video(

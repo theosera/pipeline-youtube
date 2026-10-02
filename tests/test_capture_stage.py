@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import errno
+import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -152,6 +154,21 @@ def _setup_case(vault: Path, summary_md_content: str = SAMPLE_SUMMARY):
     return video, paths
 
 
+def _webp(payload: bytes = b"VP8L") -> bytes:
+    """The smallest file Stage 03's check takes for a whole WebP (#190)."""
+    body = b"WEBP" + payload
+    return b"RIFF" + len(body).to_bytes(4, "little") + body
+
+
+def _gif(payload: bytes = b"") -> bytes:
+    """The smallest file Stage 03's check takes for a whole GIF (#190)."""
+    return b"GIF89a" + payload + b";"
+
+
+def _image_for(path: Path, payload: bytes = b"VP8L") -> bytes:
+    return _gif(payload) if path.suffix == ".gif" else _webp(payload)
+
+
 def _fake_successful_ffmpeg(*args, **kwargs):
     """Mock ffmpeg that creates the output file."""
     # subprocess.run signature: run(cmd, ...)
@@ -159,7 +176,7 @@ def _fake_successful_ffmpeg(*args, **kwargs):
     # Last arg is the output path
     output_path = Path(cmd[-1])
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_bytes(b"\x52\x49\x46\x46")  # RIFF header stub
+    output_path.write_bytes(_image_for(output_path))
     return MagicMock(returncode=0, stdout=b"", stderr=b"")
 
 
@@ -414,7 +431,7 @@ class TestRunStageCapture:
             cmd = args[0] if args else kwargs.get("args")
             output_path = Path(cmd[-1])
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_bytes(b"RERUN")
+            output_path.write_bytes(_webp(b"RERUN"))
             return MagicMock(returncode=0, stdout=b"", stderr=b"")
 
         monkeypatch.setattr(subprocess, "run", fake_rerun_ffmpeg)
@@ -439,7 +456,7 @@ class TestRunStageCapture:
             "pyt__h3decBW12Q_03-2.webp",
         ]
         for p in second.image_paths:
-            assert p.read_bytes() == b"RERUN"
+            assert p.read_bytes() == _webp(b"RERUN")
             assert p.parent.name == playlist_folder
 
         assert paths["capture"].read_text(encoding="utf-8") == prior_body
@@ -529,3 +546,165 @@ class TestRunStageCapture:
 
         assert len(recorded_paths) == 1
         assert not recorded_paths[0].exists(), "temp video should be deleted"
+
+
+# =====================================================
+# #190: make in a staging directory, check, publish without replacing
+# =====================================================
+
+
+def _pin(monkeypatch, ext: str = "webp") -> None:
+    def fake_download(url, dest, resolution="480", *, backend=None):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"stub")
+
+    monkeypatch.setattr(capture_stage, "_download_video", fake_download)
+    strategy = "native_gif" if ext == "gif" else "direct"
+    monkeypatch.setattr(
+        capture_stage,
+        "_resolve_capture_format",
+        lambda _fmt, _backend: _FormatChoice(ext=ext, strategy=strategy),
+    )
+
+
+def _assets_dir(paths) -> Path:
+    return config.get_vault_root() / capture_stage.ASSETS_REL_PATH / paths["capture"].parent.name
+
+
+class TestStagedCapture:
+    def test_a_killed_ffmpeg_leaves_no_partial_file_and_no_name_shift(self, vault, monkeypatch):
+        """The first range's ffmpeg is killed by the subprocess timeout after
+        creating its output (0 bytes, as ffmpeg does at start). Before #190 that
+        file stayed at pyt_{id}_00.webp and the next image became _00-2.webp."""
+        video, paths = _setup_case(vault)
+        _pin(monkeypatch)
+        outputs: list[Path] = []
+
+        def killed_first(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args")
+            output_path = Path(cmd[-1])
+            outputs.append(output_path)
+            if len(outputs) == 1:
+                output_path.write_bytes(b"")
+                raise subprocess.TimeoutExpired(cmd, 0.1)
+            return _fake_successful_ffmpeg(*args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", killed_first)
+        result = run_stage_capture(
+            video,
+            summary_md_path=paths["summary"],
+            capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
+        )
+
+        assert result.outcomes[0].image_path is None
+        assert "TimeoutExpired" in (result.outcomes[0].error or "")
+        assert [p.name for p in result.image_paths] == [
+            "pyt__h3decBW12Q_00.webp",
+            "pyt__h3decBW12Q_01.webp",
+            "pyt__h3decBW12Q_02.webp",
+        ]
+        assets = _assets_dir(paths)
+        assert sorted(p.name for p in assets.iterdir()) == [p.name for p in result.image_paths]
+        # ffmpeg only ever wrote inside this run's staging directory, which is gone.
+        staging = {p.parent for p in outputs}
+        assert len(staging) == 1
+        (staging_dir,) = staging
+        assert staging_dir.parent == assets
+        assert staging_dir.name.startswith(".pyt-capture-")
+        assert not staging_dir.exists()
+
+    @pytest.mark.parametrize(
+        ("ext", "written", "reason"),
+        [
+            ("webp", b"", "output_empty"),
+            ("webp", _webp()[:-2], "output_truncated"),
+            ("webp", _gif(), "output_not_webp"),
+            ("gif", _gif()[:-1], "output_truncated"),
+            ("gif", _webp(), "output_not_gif"),
+        ],
+    )
+    def test_an_unusable_output_with_exit_zero_is_a_failure(
+        self, vault, monkeypatch, ext, written, reason
+    ):
+        video, paths = _setup_case(vault)
+        _pin(monkeypatch, ext)
+        calls = {"final": 0}
+
+        def first_output_unusable(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args")
+            output_path = Path(cmd[-1])
+            if output_path.suffix == f".{ext}":
+                calls["final"] += 1
+                if calls["final"] == 1:
+                    output_path.write_bytes(written)
+                    return MagicMock(returncode=0, stdout=b"", stderr=b"")
+            return _fake_successful_ffmpeg(*args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", first_output_unusable)
+        result = run_stage_capture(
+            video,
+            summary_md_path=paths["summary"],
+            capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
+        )
+
+        assert result.outcomes[0].image_path is None
+        assert result.outcomes[0].error == f"CaptureCheckError: {reason}"
+        assert result.success_count == 3
+        names = sorted(p.name for p in _assets_dir(paths).iterdir())
+        assert names == [f"pyt__h3decBW12Q_{i:02d}.{ext}" for i in range(3)]
+        assert "<!-- capture failed: CaptureCheckError" in paths["capture"].read_text(
+            encoding="utf-8"
+        )
+
+    def test_a_name_taken_after_the_check_is_skipped_not_replaced(self, vault, monkeypatch):
+        """Another run takes pyt_{id}_00.webp between the free-name look and the
+        write. Publishing links, which fails on an existing name, so this run's
+        image goes to -2 and the other file keeps its bytes."""
+        video, paths = _setup_case(vault)
+        _pin(monkeypatch)
+        monkeypatch.setattr(subprocess, "run", _fake_successful_ffmpeg)
+        real_link = os.link
+        taken: list[Path] = []
+
+        def link_after_someone_else(src, dst, *a, **kw):
+            dst = Path(dst)
+            if not taken:
+                dst.write_bytes(b"OTHER RUN")
+                taken.append(dst)
+            return real_link(src, dst, *a, **kw)
+
+        monkeypatch.setattr(capture_stage.os, "link", link_after_someone_else)
+        result = run_stage_capture(
+            video,
+            summary_md_path=paths["summary"],
+            capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
+        )
+
+        assert taken, "publishing did not link: a rename or a copy can replace a name"
+        assert taken[0].name == "pyt__h3decBW12Q_00.webp"
+        assert taken[0].read_bytes() == b"OTHER RUN"
+        assert result.image_paths[0].name == "pyt__h3decBW12Q_00-2.webp"
+        assert result.image_paths[0].read_bytes() == _webp()
+
+    def test_no_hard_links_fails_the_range_without_a_fallback(self, vault, monkeypatch):
+        video, paths = _setup_case(vault)
+        _pin(monkeypatch)
+        monkeypatch.setattr(subprocess, "run", _fake_successful_ffmpeg)
+
+        def no_links(src, dst, *a, **kw):
+            raise PermissionError(errno.EPERM, "hard links are not supported here")
+
+        monkeypatch.setattr(capture_stage.os, "link", no_links)
+        result = run_stage_capture(
+            video,
+            summary_md_path=paths["summary"],
+            capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
+        )
+
+        assert result.success_count == 0
+        assert all("PermissionError" in (o.error or "") for o in result.outcomes)
+        assert list(_assets_dir(paths).iterdir()) == []
