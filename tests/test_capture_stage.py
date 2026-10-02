@@ -669,10 +669,11 @@ class TestStagedCapture:
         taken: list[Path] = []
 
         def link_after_someone_else(src, dst, *a, **kw):
-            dst = Path(dst)
+            # The publish names files relative to directory descriptors.
             if not taken:
-                dst.write_bytes(b"OTHER RUN")
-                taken.append(dst)
+                other = _assets_dir(paths) / dst
+                other.write_bytes(b"OTHER RUN")
+                taken.append(other)
             return real_link(src, dst, *a, **kw)
 
         monkeypatch.setattr(capture_stage.os, "link", link_after_someone_else)
@@ -706,5 +707,276 @@ class TestStagedCapture:
         )
 
         assert result.success_count == 0
-        assert all("PermissionError" in (o.error or "") for o in result.outcomes)
+        # A fixed reason: the OSError's own message names both paths.
+        assert all(o.error == "CaptureCheckError: publish_failed: EPERM" for o in result.outcomes)
         assert list(_assets_dir(paths).iterdir()) == []
+
+    @pytest.mark.parametrize("swap", ["a link to a file outside", "another file"])
+    def test_a_staged_name_swapped_after_the_check_is_not_published(
+        self, vault, monkeypatch, tmp_path, swap
+    ):
+        """Between the check and the link, the staged name is replaced (the
+        staging directory is in the assets folder, which a Docker capture
+        container can write). The publish must link the file it checked or
+        nothing: before, os.link followed the link and published the outside
+        file as pyt_{id}_00.webp."""
+        video, paths = _setup_case(vault)
+        _pin(monkeypatch)
+        monkeypatch.setattr(subprocess, "run", _fake_successful_ffmpeg)
+        outside = tmp_path / "outside-secret.txt"
+        outside.write_bytes(b"NOT AN IMAGE")
+        real_check = capture_stage._check_capture
+        swapped: list[str] = []
+
+        def check_then_swap(dir_fd, name, ext):
+            checked = real_check(dir_fd, name, ext)
+            if not swapped:
+                os.rename(name, f"{name}.checked", src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                if swap == "another file":
+                    with open(
+                        os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=dir_fd),
+                        "wb",
+                    ) as f:
+                        f.write(_webp(b"SWAP"))
+                else:
+                    os.symlink(outside, name, dir_fd=dir_fd)
+                swapped.append(name)
+            return checked
+
+        monkeypatch.setattr(capture_stage, "_check_capture", check_then_swap)
+        # The publish stats the new name right after the link. If the link had
+        # followed the swapped-in symbolic link, the outside file would be
+        # linked into the assets folder at that moment, open to a container,
+        # even though it is unlinked again right after.
+        real_stat = os.stat
+        outside_links: list[int] = []
+
+        def stat_and_count(path, *a, **kw):
+            outside_links.append(os.lstat(outside).st_nlink)
+            return real_stat(path, *a, **kw)
+
+        monkeypatch.setattr(capture_stage.os, "stat", stat_and_count)
+        result = run_stage_capture(
+            video,
+            summary_md_path=paths["summary"],
+            capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
+        )
+
+        assert swapped, "the swap never ran"
+        assert result.outcomes[0].image_path is None
+        assert result.outcomes[0].error == "CaptureCheckError: output_replaced"
+        assert [p.name for p in result.image_paths] == [
+            f"pyt__h3decBW12Q_{i:02d}.webp" for i in range(3)
+        ]
+        for p in _assets_dir(paths).iterdir():
+            assert not p.is_symlink()
+            assert p.read_bytes() == _webp(), p.name
+        assert outside.read_bytes() == b"NOT AN IMAGE"
+        assert outside.stat().st_nlink == 1
+        assert outside_links and max(outside_links) == 1, outside_links
+
+    @pytest.mark.parametrize(
+        ("make", "reason"),
+        [
+            ("fifo", "output_not_a_regular_file"),
+            ("hard link to another file", "output_linked"),
+            ("symlink", "output_unreadable: ELOOP"),
+        ],
+    )
+    def test_a_staged_output_that_is_no_plain_file_is_refused(
+        self, vault, monkeypatch, tmp_path, make, reason
+    ):
+        """What sits at the staged name is not a file ffmpeg wrote: a FIFO (the
+        check must not block on it), a hard link to a file elsewhere, or a
+        symbolic link."""
+        video, paths = _setup_case(vault)
+        _pin(monkeypatch)
+        outside = tmp_path / "outside.webp"
+        outside.write_bytes(_webp())
+        calls = {"n": 0}
+
+        def odd_first_output(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args")
+            calls["n"] += 1
+            if calls["n"] == 1:
+                out = Path(cmd[-1])
+                if make == "fifo":
+                    os.mkfifo(out)
+                elif make == "symlink":
+                    out.symlink_to(outside)
+                else:
+                    os.link(outside, out)
+                return MagicMock(returncode=0, stdout=b"", stderr=b"")
+            return _fake_successful_ffmpeg(*args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", odd_first_output)
+        result = run_stage_capture(
+            video,
+            summary_md_path=paths["summary"],
+            capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
+        )
+
+        assert result.outcomes[0].error == f"CaptureCheckError: {reason}"
+        assert result.success_count == 3
+        assert outside.stat().st_nlink == 1
+
+    def test_a_webp_longer_than_its_riff_size_is_refused(self, vault, monkeypatch):
+        video, paths = _setup_case(vault)
+        _pin(monkeypatch)
+        calls = {"n": 0}
+
+        def overlong_first(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args")
+            calls["n"] += 1
+            if calls["n"] == 1:
+                Path(cmd[-1]).write_bytes(_webp() + b"\x00\x00")
+                return MagicMock(returncode=0, stdout=b"", stderr=b"")
+            return _fake_successful_ffmpeg(*args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", overlong_first)
+        result = run_stage_capture(
+            video,
+            summary_md_path=paths["summary"],
+            capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
+        )
+        assert result.outcomes[0].error == "CaptureCheckError: output_overlong"
+
+    def test_publishing_stops_after_the_last_candidate_name(self, vault, monkeypatch):
+        video, paths = _setup_case(vault, summary_md_content="### [00:10 ~ 00:20] one\n")
+        _pin(monkeypatch)
+        monkeypatch.setattr(subprocess, "run", _fake_successful_ffmpeg)
+        monkeypatch.setattr(capture_stage, "_PUBLISH_MAX_CANDIDATES", 2)
+        assets = _assets_dir(paths)
+        assets.mkdir(parents=True)
+        for name in ("pyt__h3decBW12Q_00.webp", "pyt__h3decBW12Q_00-2.webp"):
+            (assets / name).write_bytes(b"PRIOR")
+        result = run_stage_capture(
+            video,
+            summary_md_path=paths["summary"],
+            capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
+        )
+        assert result.outcomes[0].error == "CaptureCheckError: no_free_name"
+        assert sorted(p.name for p in assets.iterdir()) == [
+            "pyt__h3decBW12Q_00-2.webp",
+            "pyt__h3decBW12Q_00.webp",
+        ]
+
+    def test_each_range_has_its_own_staged_file(self, vault, monkeypatch):
+        """A published image is a hard link to its staged file, so if two ranges
+        shared a staged name, the second ffmpeg -y would rewrite the first
+        image. Each output here carries its own bytes."""
+        video, paths = _setup_case(vault)
+        _pin(monkeypatch)
+        calls = {"n": 0}
+
+        def numbered(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args")
+            calls["n"] += 1
+            out = Path(cmd[-1])
+            with open(out, "wb") as f:  # truncates in place, as ffmpeg -y does
+                f.write(_webp(f"IMG{calls['n']}".encode()))
+            return MagicMock(returncode=0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(subprocess, "run", numbered)
+        result = run_stage_capture(
+            video,
+            summary_md_path=paths["summary"],
+            capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
+        )
+        assert [p.read_bytes() for p in result.image_paths] == [
+            _webp(f"IMG{i}".encode()) for i in range(1, 5)
+        ]
+
+    def test_a_staging_directory_that_cannot_be_made_names_the_error_class(
+        self, vault, monkeypatch
+    ):
+        video, paths = _setup_case(vault)
+        _pin(monkeypatch)
+
+        def no_tmp(*a, **kw):
+            raise PermissionError(errno.EACCES, "denied")
+
+        monkeypatch.setattr(capture_stage.tempfile, "mkdtemp", no_tmp)
+        result = run_stage_capture(
+            video,
+            summary_md_path=paths["summary"],
+            capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
+        )
+        assert result.error == "staging_dir_failed: PermissionError"
+        assert result.outcomes == []
+
+    def test_a_staging_directory_that_cannot_be_removed_does_not_fail_the_stage(
+        self, vault, monkeypatch
+    ):
+        """Removing the staging directory is best effort: the images are already
+        published. Here its entries cannot be unlinked, and the stage still
+        returns its result."""
+        video, paths = _setup_case(vault)
+        _pin(monkeypatch)
+        staging: list[Path] = []
+
+        def lock_the_staging_dir(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args")
+            result = _fake_successful_ffmpeg(*args, **kwargs)
+            staging.append(Path(cmd[-1]).parent)
+            Path(cmd[-1]).parent.chmod(0o500)
+            return result
+
+        monkeypatch.setattr(subprocess, "run", lock_the_staging_dir)
+        try:
+            result = run_stage_capture(
+                video,
+                summary_md_path=paths["summary"],
+                capture_md_path=paths["capture"],
+                vault_root=config.get_vault_root(),
+            )
+        finally:
+            for d in staging:
+                if d.exists():
+                    d.chmod(0o700)
+        if os.geteuid() == 0:
+            pytest.skip("root removes the entries anyway")
+        assert result.error is None
+        assert result.success_count == 1
+        assert staging and staging[0].exists(), "the cleanup could not run, so the directory stays"
+
+    @pytest.mark.parametrize("linked", ["the staging directory", "the assets folder"])
+    def test_a_directory_that_is_a_link_stops_the_stage(self, vault, monkeypatch, tmp_path, linked):
+        """Both directories are opened once without following a link: one that
+        is a link (swapped in, or set up so) would make the check and the
+        publish act on another folder."""
+        video, paths = _setup_case(vault)
+        _pin(monkeypatch)
+        monkeypatch.setattr(subprocess, "run", _fake_successful_ffmpeg)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        if linked == "the assets folder":
+            assets = _assets_dir(paths)
+            assets.parent.mkdir(parents=True, exist_ok=True)
+            assets.symlink_to(elsewhere)
+        else:
+            real_mkdtemp = capture_stage.tempfile.mkdtemp
+
+            def linked_mkdtemp(*a, **kw):
+                made = Path(real_mkdtemp(*a, **kw))
+                made.rmdir()
+                made.symlink_to(elsewhere)
+                return str(made)
+
+            monkeypatch.setattr(capture_stage.tempfile, "mkdtemp", linked_mkdtemp)
+        result = run_stage_capture(
+            video,
+            summary_md_path=paths["summary"],
+            capture_md_path=paths["capture"],
+            vault_root=config.get_vault_root(),
+        )
+        # The errno differs by system (ENOTDIR on macOS, ELOOP elsewhere).
+        assert (result.error or "").startswith("staging_dir_failed: "), result.error
+        assert result.outcomes == []
+        assert list(elsewhere.iterdir()) == [] or linked == "the assets folder"
