@@ -80,16 +80,16 @@ def test_download_unlink_preserves_other_worker_files(video: VideoMeta, other_id
         dest.with_suffix(suffix).write_bytes(b"old own download")
         other.with_suffix(suffix).write_bytes(b"other worker")
 
-    def download(_urls):
+    def download(*args, **kwargs):
         # Real _download_video unlinks the MP4; the real host backend clears
         # same-stem alternative containers before the fake network boundary.
         for suffix in (".mp4", ".mkv", ".webm"):
             assert not dest.with_suffix(suffix).exists()
             assert other.with_suffix(suffix).read_bytes() == b"other worker"
         dest.write_bytes(b"new own download")
+        return Mock(wait=Mock(return_value=0))
 
-    with patch("yt_dlp.YoutubeDL") as ydl:
-        ydl.return_value.__enter__.return_value.download.side_effect = download
+    with patch("subprocess.Popen", side_effect=download), patch("os.killpg"):
         capture._download_video(video.watch_url, dest, backend=HostCaptureBackend())
 
     assert dest.read_bytes() == b"new own download"

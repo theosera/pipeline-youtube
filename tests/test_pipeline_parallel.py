@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import threading
 import time
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -82,7 +84,14 @@ class TestPrefetchHandle:
         handle = VideoPrefetch(path=tmp_path / "video.mp4", future=future)
 
         assert handle.wait() is None
-        future.result.assert_called_once_with(timeout=600.0)
+        assert 599 < future.result.call_args.kwargs["timeout"] <= 600
+
+    def test_wait_uses_deadline_from_start_not_new_budget(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr("pipeline_youtube.stages.capture.time.monotonic", lambda: 1000.0)
+        future = Mock()
+        handle = VideoPrefetch(path=tmp_path / "video.mp4", future=future, started_at=450.0)
+        assert handle.wait(timeout=None) is None
+        future.result.assert_called_once_with(timeout=50.0)
 
 
 @pytest.fixture
@@ -145,8 +154,9 @@ def process_with_prefetch(tmp_path: Path, monkeypatch):
     )
     monkeypatch.setattr(cap_mod, "ensure_safe_path", lambda p, **kwargs: p)
 
-    def process(handle: VideoPrefetch):
-        monkeypatch.setattr(vp_mod, "prefetch_video_download", lambda *args, **kwargs: handle)
+    def process(handle: VideoPrefetch | None = None):
+        if handle is not None:
+            monkeypatch.setattr(vp_mod, "prefetch_video_download", lambda *args, **kwargs: handle)
         result = vp_mod._process_video(
             _video(),
             datetime(2026, 10, 3, 12, 0),
@@ -162,36 +172,71 @@ def process_with_prefetch(tmp_path: Path, monkeypatch):
 
 
 class TestPrefetchHandoff:
+    def test_never_finishing_prefetch_returns_within_deadline(
+        self, tmp_path: Path, process_with_prefetch, monkeypatch
+    ):
+        """Self-bounded regression: even the broken implementation can be released."""
+        from pipeline_youtube.stages import capture as cap_mod
+
+        monkeypatch.setattr(cap_mod, "PREFETCH_TIMEOUT_SECONDS", 0.05, raising=False)
+        future: Future[None] = Future()
+        future.set_running_or_notify_cancel()
+        handle = VideoPrefetch(path=tmp_path / "pending.mp4", future=future)
+        finished = threading.Event()
+        results = []
+
+        def process():
+            try:
+                results.append(process_with_prefetch(handle))
+            finally:
+                finished.set()
+
+        worker = threading.Thread(target=process, daemon=True)
+        worker.start()
+        try:
+            assert finished.wait(0.5), "_process_video exceeded the prefetch deadline"
+            result, capture_spy, download_spy = results[0]
+            assert not result.ok
+            assert "prefetch_timeout" in result.error
+            capture_spy.assert_not_called()
+            download_spy.assert_not_called()
+            assert not future.done(), "a wait timeout must not pretend the writer stopped"
+        finally:
+            future.set_exception(RuntimeError("test releases the pending writer"))
+            worker.join(timeout=1)
+        assert not worker.is_alive()
+
     def test_pending_prefetch_finishes_before_stage03_without_second_download(
         self, tmp_path: Path, process_with_prefetch
     ):
         path = _tmp_video_path(_video())
-        waits: list[float | None] = []
+        future: Future[None] = Future()
+        future.set_running_or_notify_cancel()
 
-        class PendingDownload:
-            def result(self, timeout: float | None = None) -> None:
-                waits.append(timeout)
-                if timeout is not None:
-                    raise FutureTimeoutError("download is still running")
-                path.write_bytes(b"prefetched mp4")
+        def finish_download():
+            path.write_bytes(b"prefetched mp4")
+            future.set_result(None)
 
-        handle = VideoPrefetch(path=path, future=PendingDownload())
-
-        result, capture_spy, download_spy = process_with_prefetch(handle)
+        handle = VideoPrefetch(path=path, future=future)
+        timer = threading.Timer(0.05, finish_download)
+        timer.start()
+        try:
+            result, capture_spy, download_spy = process_with_prefetch(handle)
+        finally:
+            timer.join(timeout=1)
 
         assert result.ok
         capture_spy.assert_called_once()
         download_spy.assert_not_called()
         assert capture_spy.call_args.kwargs["prefetched_video_path"] == handle.path
-        assert waits == [None]
+        assert future.done()
 
-    @pytest.mark.parametrize("error_type", [RuntimeError, FutureTimeoutError])
     def test_completed_prefetch_failure_allows_stage03_download(
-        self, tmp_path: Path, process_with_prefetch, error_type
+        self, tmp_path: Path, process_with_prefetch
     ):
         path = _tmp_video_path(_video())
         future: Future[None] = Future()
-        future.set_exception(error_type("download failed"))
+        future.set_exception(RuntimeError("download failed"))
         handle = VideoPrefetch(path=path, future=future)
 
         result, capture_spy, download_spy = process_with_prefetch(handle)
@@ -201,6 +246,77 @@ class TestPrefetchHandoff:
         assert capture_spy.call_args.kwargs["prefetched_video_path"] is None
         download_spy.assert_called_once()
         assert download_spy.call_args.args[1] == handle.path
+
+    def test_stage02_exception_keeps_path_owned_until_writer_finishes(
+        self, process_with_prefetch, monkeypatch
+    ):
+        from pipeline_youtube import video_processing as vp_mod
+        from pipeline_youtube.stages import capture as cap_mod
+
+        monkeypatch.setattr(cap_mod, "PREFETCH_TIMEOUT_SECONDS", 0.05)
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+        handles = []
+        real_prefetch = cap_mod.prefetch_video_download
+        summary = vp_mod.run_stage_summary
+
+        def tracked_prefetch(*args, **kwargs):
+            handle = real_prefetch(*args, **kwargs)
+            handles.append(handle)
+            return handle
+
+        def download(url, path, *args, **kwargs):
+            calls.append(path)
+            started.set()
+            assert release.wait(2), "test writer was not released"
+            path.write_bytes(b"complete")
+
+        def failing_summary(*args, **kwargs):
+            assert started.wait(1)
+            raise RuntimeError("Stage 02 failed")
+
+        monkeypatch.setattr(vp_mod, "prefetch_video_download", tracked_prefetch)
+        monkeypatch.setattr(cap_mod, "_download_video", download)
+        monkeypatch.setattr(vp_mod, "run_stage_summary", failing_summary)
+        try:
+            first, capture_spy, _ = process_with_prefetch()
+            assert "Stage 02 failed" in first.error
+            assert not handles[0].future.done()
+            monkeypatch.setattr(vp_mod, "run_stage_summary", summary)
+            second, _, _ = process_with_prefetch()  # same thread, video, and path
+            assert second.error == "prefetch_timeout"
+            capture_spy.assert_not_called()
+            assert len(calls) == 1, "second writer started on the still-owned path"
+            assert handles[0] is handles[1]
+        finally:
+            release.set()
+            for handle in handles:
+                handle.future.result(timeout=1)
+        # Callback completion is distinct from result() becoming observable.
+        deadline = time.monotonic() + 1
+        while handles[0].path in cap_mod._prefetch_by_path and time.monotonic() < deadline:
+            time.sleep(0.001)
+        third, _, _ = process_with_prefetch()
+        assert third.ok
+        assert len(calls) == 2
+        assert calls[0] == calls[1]
+
+    @pytest.mark.parametrize(
+        "error", [TimeoutError("backend timeout"), subprocess.TimeoutExpired("fake", 600)]
+    )
+    def test_backend_timeout_quarantines_path_without_retry(
+        self, process_with_prefetch, monkeypatch, error
+    ):
+        from pipeline_youtube.stages import capture as cap_mod
+
+        download = Mock(side_effect=error)
+        monkeypatch.setattr(cap_mod, "_download_video", download)
+        first, capture_spy, _ = process_with_prefetch()
+        second, _, _ = process_with_prefetch()
+        assert first.error == second.error == "prefetch_timeout"
+        capture_spy.assert_not_called()
+        download.assert_called_once()
 
 
 class TestParallelOverlap:
