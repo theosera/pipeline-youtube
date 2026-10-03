@@ -5,7 +5,7 @@ from __future__ import annotations
 import stat
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -38,11 +38,11 @@ class TestTmpDirPermissions:
         """HostCaptureBackend must tighten downloaded file perms to 0o600."""
         dest = tmp_path / "v.mp4"
 
-        def fake_download(urls):
+        def fake_download(*args, **kwargs):
             dest.write_bytes(b"x")  # mimic yt-dlp writing the file
+            return Mock(wait=Mock(return_value=0))
 
-        with patch("yt_dlp.YoutubeDL") as mock_ydl:
-            mock_ydl.return_value.__enter__.return_value.download = fake_download
+        with patch("subprocess.Popen", side_effect=fake_download), patch("os.killpg"):
             HostCaptureBackend().download_video(
                 "https://youtube.com/watch?v=x", dest, resolution="480"
             )

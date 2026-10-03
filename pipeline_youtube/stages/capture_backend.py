@@ -32,11 +32,13 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
+import signal
 import subprocess
+import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, ClassVar, Protocol
+from typing import ClassVar, Protocol
 
 
 class CaptureBackendError(RuntimeError):
@@ -133,19 +135,16 @@ def _adopt_ytdlp_output(dest: Path) -> None:
 # Host backend (default — current behavior)
 # =====================================================
 
+HOST_DOWNLOAD_TIMEOUT_SECONDS = 600.0
+
 
 @dataclass(frozen=True)
 class HostCaptureBackend:
-    """Default backend: direct host subprocess + yt-dlp Python API."""
+    """Default backend: host subprocesses, including a bounded yt-dlp process."""
 
     name: ClassVar[str] = "host"
 
     def download_video(self, url: str, dest: Path, *, resolution: str) -> None:
-        # Imported lazily so `uv run --no-extras` setups that don't have
-        # yt-dlp in the main deps still allow host mode to error at
-        # call time instead of at module import time.
-        import yt_dlp  # type: ignore[import-untyped]
-
         _clear_ytdlp_outputs(dest)
 
         fmt = (
@@ -153,16 +152,48 @@ class HostCaptureBackend:
             f"best[height<={resolution}][ext=mp4]/"
             f"best[height<={resolution}]"
         )
-        ydl_opts: dict[str, Any] = {
-            "format": fmt,
-            "outtmpl": str(dest.with_suffix("")) + ".%(ext)s",
-            "quiet": True,
-            "no_warnings": True,
-            "noprogress": True,
-            "merge_output_format": "mp4",
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+        cmd = [
+            sys.executable,
+            "-m",
+            "yt_dlp",
+            "--ignore-config",
+            "--quiet",
+            "--no-warnings",
+            "--no-progress",
+            "--merge-output-format",
+            "mp4",
+            "-f",
+            fmt,
+            "-o",
+            str(dest.with_suffix("")) + ".%(ext)s",
+            "--",
+            url,
+        ]
+        # A process-wide deadline also covers slow continuous transfers and
+        # ffmpeg merging. No pipes: an inherited pipe in a stuck descendant
+        # must not make cleanup block. Host execution is supported on POSIX.
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        try:
+            returncode = proc.wait(timeout=HOST_DOWNLOAD_TIMEOUT_SECONDS)
+        finally:
+            try:
+                if os.name == "posix":
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(proc.pid, signal.SIGKILL)
+                elif proc.poll() is None:
+                    proc.kill()
+                proc.wait(timeout=5)
+            except Exception as exc:
+                # An unconfirmed stop must never permit a second writer.
+                raise TimeoutError("host download stop could not be confirmed") from exc
+        if returncode:
+            raise CaptureBackendError(f"yt-dlp (host) exited {returncode}")
 
         # yt-dlp may have written with a different extension (e.g. .mkv).
         _adopt_ytdlp_output(dest)

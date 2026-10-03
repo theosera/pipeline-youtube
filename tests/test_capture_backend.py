@@ -8,8 +8,12 @@ translation.
 
 from __future__ import annotations
 
+import contextlib
 import os
+import signal
 import subprocess
+import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -171,20 +175,15 @@ class TestDownloadVideoSkipsLeftoverFragment:
         fragment = tmp_path / "abc123abc12.f137.mp4"
         fragment.write_bytes(b"partial-dash")
 
-        class FakeYDL:
-            def __init__(self, opts):
-                pass
+        def finish_download(*args, **kwargs):
+            (tmp_path / "abc123abc12.webm").write_bytes(b"real-download")
+            return 0
 
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *exc):
-                return False
-
-            def download(self, urls):
-                (tmp_path / "abc123abc12.webm").write_bytes(b"real-download")
-
-        with patch.dict("sys.modules", {"yt_dlp": MagicMock(YoutubeDL=FakeYDL)}):
+        with (
+            patch("subprocess.Popen") as popen,
+            patch("os.killpg"),
+        ):
+            popen.return_value.wait.side_effect = finish_download
             HostCaptureBackend().download_video(
                 "https://www.youtube.com/watch?v=abc123abc12", dest, resolution="480"
             )
@@ -264,20 +263,15 @@ class TestDownloadVideoClearsStaleContainers:
         stale.write_bytes(b"stale-download")
         _future_mtime(stale)
 
-        class FakeYDL:
-            def __init__(self, opts):
-                pass
+        def finish_download(*args, **kwargs):
+            (tmp_path / "abc123abc12.webm").write_bytes(b"this-download")
+            return 0
 
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *exc):
-                return False
-
-            def download(self, urls):
-                (tmp_path / "abc123abc12.webm").write_bytes(b"this-download")
-
-        with patch.dict("sys.modules", {"yt_dlp": MagicMock(YoutubeDL=FakeYDL)}):
+        with (
+            patch("subprocess.Popen") as popen,
+            patch("os.killpg"),
+        ):
+            popen.return_value.wait.side_effect = finish_download
             HostCaptureBackend().download_video(
                 "https://www.youtube.com/watch?v=abc123abc12", dest, resolution="480"
             )
@@ -308,6 +302,89 @@ class TestDownloadVideoClearsStaleContainers:
 
 
 class TestHostBackend:
+    def test_download_command_and_failure(self, tmp_path: Path):
+        dest = tmp_path / "video.mp4"
+        with patch("subprocess.Popen") as popen, patch("os.killpg"):
+            popen.return_value.wait.return_value = 7
+            with pytest.raises(CaptureBackendError, match="exited 7"):
+                HostCaptureBackend().download_video(
+                    "https://example.invalid/video", dest, resolution="480"
+                )
+        args, kwargs = popen.call_args
+        cmd = args[0]
+        assert cmd[:3] == [sys.executable, "-m", "yt_dlp"]
+        assert "--ignore-config" in cmd
+        assert cmd[-2:] == ["--", "https://example.invalid/video"]
+        assert cmd[cmd.index("-o") + 1] == str(dest.with_suffix("")) + ".%(ext)s"
+        assert "height<=480" in cmd[cmd.index("-f") + 1]
+        assert kwargs["start_new_session"] is True
+        assert kwargs["stdin"] == kwargs["stdout"] == kwargs["stderr"] == subprocess.DEVNULL
+
+    @pytest.mark.skipif(os.name != "posix", reason="host process-group cancellation is POSIX")
+    def test_download_deadline_stops_child_writer(self, tmp_path: Path, monkeypatch):
+        """Real local processes only; watchdog/cleanup also bound broken variants."""
+        from pipeline_youtube.stages import capture_backend as backend_mod
+
+        monkeypatch.setattr(backend_mod, "HOST_DOWNLOAD_TIMEOUT_SECONDS", 0.2)
+        heartbeat = tmp_path / "heartbeat"
+        child_script = (
+            "import pathlib,time,sys\n"
+            "p=pathlib.Path(sys.argv[1])\n"
+            "while True:\n"
+            " with p.open('ab') as f: f.write(b'x')\n"
+            " time.sleep(0.01)\n"
+        )
+        parent_script = (
+            "import subprocess,sys,time\n"
+            "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]])\n"
+            "time.sleep(60)\n"
+        )
+        real_popen = subprocess.Popen
+        processes = []
+        errors = []
+        done = threading.Event()
+
+        def local_process(_cmd, **kwargs):
+            proc = real_popen(
+                [sys.executable, "-c", parent_script, child_script, str(heartbeat)], **kwargs
+            )
+            processes.append(proc)
+            # Ensure the fake writer is active before the deadline starts.
+            limit = time.monotonic() + 1
+            while not heartbeat.exists() and time.monotonic() < limit:
+                time.sleep(0.005)
+            assert heartbeat.exists()
+            return proc
+
+        def download():
+            try:
+                HostCaptureBackend().download_video(
+                    "https://example.invalid/video", tmp_path / "video.mp4", resolution="480"
+                )
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                done.set()
+
+        monkeypatch.setattr(backend_mod.subprocess, "Popen", local_process)
+        worker = threading.Thread(target=download, daemon=True)
+        worker.start()
+        try:
+            assert done.wait(2), "host download exceeded its overall deadline"
+            assert len(errors) == 1 and isinstance(errors[0], subprocess.TimeoutExpired)
+            assert processes[0].poll() is not None
+            time.sleep(0.05)  # allow the group signal to reach the child
+            size = heartbeat.stat().st_size
+            time.sleep(0.1)
+            assert heartbeat.stat().st_size == size, "child writer survived timeout cleanup"
+        finally:
+            for proc in processes:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait(timeout=1)
+            worker.join(timeout=1)
+        assert not worker.is_alive()
+
     def test_name(self):
         assert HostCaptureBackend().name == "host"
 

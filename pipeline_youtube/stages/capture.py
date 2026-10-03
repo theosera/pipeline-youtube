@@ -47,7 +47,10 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import threading
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -67,6 +70,7 @@ DEFAULT_WINDOW_SECONDS = 3.5
 DEFAULT_FPS = 5
 DEFAULT_SCALE_HEIGHT = 480
 DEFAULT_RESOLUTION = "480"
+PREFETCH_TIMEOUT_SECONDS = 600.0
 
 CaptureFormat = Literal["auto", "webp", "gif"]
 
@@ -113,18 +117,37 @@ class VideoPrefetch:
 
     path: Path
     future: Any  # concurrent.futures.Future[None]
+    started_at: float = field(default_factory=time.monotonic)
 
     def wait(self, timeout: float | None = 600.0) -> Exception | None:
         """Wait for completion, returning a download error or wait timeout.
 
-        A finite timeout does not stop the download or release its path.
-        Use ``timeout=None`` before reusing or deleting that path.
+        Even ``timeout=None`` is bounded by the deadline from prefetch start.
+        A wait timeout does not stop the writer or release its path.
         """
+        remaining = max(0.0, self.started_at + PREFETCH_TIMEOUT_SECONDS - time.monotonic())
+        timeout = remaining if timeout is None else min(timeout, remaining)
         try:
             self.future.result(timeout=timeout)
             return None
         except Exception as exc:  # noqa: BLE001 — propagate as return value
             return exc
+
+
+_prefetch_lock = threading.Lock()
+_prefetch_by_path: dict[Path, VideoPrefetch] = {}
+
+
+def _release_prefetch(handle: VideoPrefetch) -> None:
+    # A backend timeout may leave an external writer alive (e.g. Docker's
+    # daemon). Keep that path quarantined for this process's lifetime. Waiting
+    # only timing out never marks the Future done and never reaches here.
+    error = handle.future.exception()
+    if isinstance(error, TimeoutError | subprocess.TimeoutExpired):
+        return
+    with _prefetch_lock:
+        if _prefetch_by_path.get(handle.path) is handle:
+            del _prefetch_by_path[handle.path]
 
 
 def prefetch_video_download(
@@ -133,7 +156,7 @@ def prefetch_video_download(
     *,
     backend: CaptureBackend | None = None,
 ) -> VideoPrefetch:
-    """Kick off a video download on a daemon thread and return the handle.
+    """Kick off a video download on a worker thread and return the handle.
 
     The caller should `wait()` on the handle before calling
     `run_stage_capture(..., prefetched_video_path=handle.path)`.
@@ -143,13 +166,25 @@ def prefetch_video_download(
     hardened container (slower per-call due to docker start overhead,
     but eliminates the R1 residual risk).
     """
-    from concurrent.futures import ThreadPoolExecutor
-
     path = _tmp_video_path(video)
-    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"pyt-dl-{video.video_id}")
-    future = executor.submit(_download_video, video.watch_url, path, resolution, backend=backend)
-    executor.shutdown(wait=False)  # thread keeps running until task completes
-    return VideoPrefetch(path=path, future=future)
+    with _prefetch_lock:
+        # Stage 02 may have failed while its download still owns this path.
+        # Reattach to that handle, retaining its original deadline.
+        if existing := _prefetch_by_path.get(path):
+            return existing
+        started_at = time.monotonic()
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"pyt-dl-{video.video_id}")
+        future = executor.submit(
+            _download_video, video.watch_url, path, resolution, backend=backend
+        )
+        handle = VideoPrefetch(path=path, future=future, started_at=started_at)
+        _prefetch_by_path[path] = handle
+    # Keep the worker alive at interpreter shutdown: the host backend must
+    # still enforce its deadline and kill its subprocess group after Stage 02
+    # fails. A daemon worker could leave the download orphaned on exit.
+    executor.shutdown(wait=False)
+    future.add_done_callback(lambda _: _release_prefetch(handle))
+    return handle
 
 
 def _assert_not_flaglike(path: Path) -> None:

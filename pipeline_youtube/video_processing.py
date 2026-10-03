@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import subprocess
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -224,9 +225,13 @@ def _process_video(
         # prefetched download. Both None → run_stage_capture downloads itself.
         prefetched_path = media_path
         if prefetch is not None:
-            # The prefetch owns its tmp path until the worker finishes. A
-            # finite wait timeout would let Stage 03 start a second writer.
+            # The handle bounds this wait from download start. On timeout,
+            # fail this video without starting Stage 03's fallback writer.
+            # Stage 02 exceptions leave ownership with the prefetch registry;
+            # a later call on this thread reattaches to the same download.
             err = prefetch.wait(timeout=None)
+            if isinstance(err, TimeoutError | subprocess.TimeoutExpired):
+                return VideoRunResult(video=video, error="prefetch_timeout")
             if err is None and prefetch.path.exists():
                 prefetched_path = prefetch.path
 
