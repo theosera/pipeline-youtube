@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from pipeline_youtube.playlist import VideoMeta
-from pipeline_youtube.stages.capture import VideoPrefetch, prefetch_video_download
+from pipeline_youtube.stages.capture import VideoPrefetch, _tmp_video_path, prefetch_video_download
 
 
 def _video() -> VideoMeta:
@@ -31,8 +31,8 @@ def _video() -> VideoMeta:
 @pytest.fixture(autouse=True)
 def _isolated_video_tmp_path(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
-        "pipeline_youtube.stages.capture._tmp_video_path",
-        lambda video: tmp_path / f"{video.video_id}.mp4",
+        "pipeline_youtube.stages.capture.__file__",
+        str(tmp_path / "pipeline_youtube/stages/capture.py"),
     )
 
 
@@ -165,7 +165,7 @@ class TestPrefetchHandoff:
     def test_pending_prefetch_finishes_before_stage03_without_second_download(
         self, tmp_path: Path, process_with_prefetch
     ):
-        path = tmp_path / f"{_video().video_id}.mp4"
+        path = _tmp_video_path(_video())
         waits: list[float | None] = []
 
         class PendingDownload:
@@ -189,7 +189,7 @@ class TestPrefetchHandoff:
     def test_completed_prefetch_failure_allows_stage03_download(
         self, tmp_path: Path, process_with_prefetch, error_type
     ):
-        path = tmp_path / f"{_video().video_id}.mp4"
+        path = _tmp_video_path(_video())
         future: Future[None] = Future()
         future.set_exception(error_type("download failed"))
         handle = VideoPrefetch(path=path, future=future)
