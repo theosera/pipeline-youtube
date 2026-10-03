@@ -224,7 +224,9 @@ def _process_video(
         # prefetched download. Both None → run_stage_capture downloads itself.
         prefetched_path = media_path
         if prefetch is not None:
-            err = prefetch.wait()
+            # The prefetch owns its tmp path until the worker finishes. A
+            # finite wait timeout would let Stage 03 start a second writer.
+            err = prefetch.wait(timeout=None)
             if err is None and prefetch.path.exists():
                 prefetched_path = prefetch.path
 
