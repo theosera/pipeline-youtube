@@ -26,8 +26,18 @@ import pytest
 
 # Match literal executables/modules, including shell/docker command arguments.
 # Do not print command arguments or destinations: they can contain credentials.
-_YT_DLP = re.compile(r"(?<![\w-])yt[-_]dlp(?:\.exe)?(?![\w-])")
+_YT_DLP = re.compile(r"(?<![\w-])yt[-_]dlp(?:\.exe)?(?![\w-])", re.IGNORECASE)
 _PROCESS_EVENTS = {"subprocess.Popen", "os.exec", "os.posix_spawn", "os.spawn", "os.system"}
+_SPAWN_FUNCTIONS = (
+    "spawnl",
+    "spawnle",
+    "spawnlp",
+    "spawnlpe",
+    "spawnv",
+    "spawnve",
+    "spawnvp",
+    "spawnvpe",
+)
 _LOOKUP_EVENTS = {"socket.getaddrinfo", "socket.gethostbyname", "socket.gethostbyaddr"}
 _CONNECTION_EVENTS = {"socket.connect", "socket.sendto", "socket.sendmsg"}
 
@@ -52,6 +62,24 @@ class _TestIsolation:
     enabled = True
     allow_network = False
     allow_yt_dlp = False
+
+    def check_command(self, command: Any) -> None:
+        if self.enabled and not self.allow_yt_dlp and _YT_DLP.search(str(command)):
+            pytest.fail("test isolation: blocked yt-dlp startup; mock the process", pytrace=False)
+
+    def wrap_spawn(self, spawn: Any) -> Any:
+        @wraps(spawn)
+        def checked(mode: int, file: Any, *args: Any, **kwargs: Any) -> Any:
+            # POSIX spawn* forks first and catches failures from exec in the
+            # child, returning 127. Reject in the parent before that fork.
+            if spawn.__name__.startswith("spawnv"):
+                argv = args[0] if args else kwargs.get("args", ())
+            else:
+                argv = args[:-1] if spawn.__name__.endswith("e") else args
+            self.check_command((file, argv))  # Never inspect the environment.
+            return spawn(mode, file, *args, **kwargs)
+
+        return checked
 
     def check_host(self, host: Any) -> None:
         if self.enabled and not self.allow_network and not _is_loopback(host):
@@ -97,10 +125,7 @@ class _TestIsolation:
             command = args[:1] if event == "os.system" else args[:2]
             if event == "os.spawn":
                 command = args[1:3]
-            if _YT_DLP.search(str(command)):
-                pytest.fail(
-                    "test isolation: blocked yt-dlp startup; mock the process", pytrace=False
-                )
+            self.check_command(command)
         if self.allow_network:
             return
         host = None
@@ -139,6 +164,9 @@ def pytest_configure(config: pytest.Config) -> None:
     _isolation = _TestIsolation()
     sys.addaudithook(_isolation.audit)
     _patches = pytest.MonkeyPatch()
+    for name in _SPAWN_FUNCTIONS:
+        if hasattr(os, name):
+            _patches.setattr(os, name, _isolation.wrap_spawn(getattr(os, name)))
     for name in ("connect", "connect_ex", "sendto", "sendmsg"):
         if hasattr(socket.socket, name):
             method = getattr(socket.socket, name)
