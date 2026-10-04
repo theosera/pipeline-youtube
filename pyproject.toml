@@ -58,6 +58,15 @@ required-version = ">=0.11.8,<0.12"
 testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
+markers = [
+    "allow_real_network: permit external network in this test; skipped unless --run-real-integration is supplied",
+    "allow_real_yt_dlp: permit real yt-dlp (including child network); skipped unless --run-real-integration is supplied",
+]
+filterwarnings = [
+    # A missed mock in a worker must fail the test, not merely emit a warning.
+    "error::pytest.PytestUnhandledThreadExceptionWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
+]
 
 [tool.ruff]
 line-length = 100
