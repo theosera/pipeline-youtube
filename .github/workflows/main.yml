@@ -59,61 +59,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Verify test isolation with inert positive controls
-        # Keep the controls inside this test job (Issue #210 scope). A second
-        # audit hook stops every attempted effect even if the guard regresses.
-        run: |
-          uv run python - <<'PY'
-          import pathlib
-          import sys
-          import tempfile
-          import textwrap
-          import pytest
-
-          sys.path.insert(0, str(pathlib.Path("tests").resolve()))
-          import conftest
-
-          class IndependentInterception(BaseException):
-              pass
-
-          class Backstop:
-              def pytest_sessionstart(self, session):
-                  # Installed AFTER the candidate's pytest_configure hook.
-                  def stop(event, args):
-                      if event in {"subprocess.Popen", "socket.connect", "socket.getaddrinfo"}:
-                          raise IndependentInterception("independent backstop: " + event)
-                  sys.addaudithook(stop)
-
-          with tempfile.TemporaryDirectory() as directory:
-              probe = pathlib.Path(directory) / "test_isolation.py"
-              probe.write_text(textwrap.dedent('''\
-                  import socket
-                  import subprocess
-                  import sys
-                  import pytest
-
-                  @pytest.mark.parametrize("command", [
-                      ["yt-dlp", "--version"],
-                      [sys.executable, "-m", "yt_dlp", "--version"],
-                  ])
-                  def test_tool_guard(command):
-                      with pytest.raises(pytest.fail.Exception, match="test isolation: blocked yt-dlp"):
-                          subprocess.Popen(command)
-
-                  def test_connection_guard():
-                      with socket.socket() as connection:
-                          with pytest.raises(pytest.fail.Exception, match="test isolation: blocked external network"):
-                              connection.connect(("192.0.2.1", 443))
-
-                  def test_dns_guard():
-                      with pytest.raises(pytest.fail.Exception, match="test isolation: blocked external network"):
-                          socket.getaddrinfo("example.invalid", 443)
-                  '''))
-              raise SystemExit(pytest.main(
-                  ["-c", "pyproject.toml", str(probe), "-q", "--tb=short"],
-                  plugins=[conftest, Backstop()],
-              ))
-          PY
+      - name: Verify test isolation with inert regression controls
+        # Includes independent backstops even when the candidate guard regresses.
+        run: uv run pytest tests/test_test_isolation.py -q --tb=short
 
       - name: Run tests with coverage
         run: uv run --with pytest-cov pytest tests/ -q --tb=short --cov=pipeline_youtube --cov-report=xml --cov-report=term
