@@ -25,6 +25,18 @@ three defensive layers before accepting a checkpoint marker:
   3. If a `URL:` field is also present in the frontmatter, enforces
      that it references the same video_id (integrity cross-check).
 
+Quoting is deliberately *not* one of those layers. A field may be written
+`video_id: "abc"` or `video_id: abc`; layer 2 validates the value either way.
+Obsidian has been observed to rewrite pipeline-written frontmatter and drop
+the double quotes; which feature does it, and under what conditions, is not
+known. Every field it touched then read as absent, so a marker read as "no
+marker found": the stage 04 checkpoint reported finished videos as
+incomplete and stages 01-04 would run for them a second time, and Phase 3
+(`--resume-reviewed`) could not reach the reviewed notes — an unquoted 02
+gives `no 02_Summary.md found`, an unquoted 03 `reviewed_capture_not_found`.
+Accepting the bare form also restores layer 3 for those files: an unquoted
+`URL:` used to parse as absent, which skipped the cross-check entirely.
+
 On failure the file is silently skipped — same safe fallback as
 "no matching file found".
 """
@@ -49,12 +61,24 @@ _YT_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 # Match a YAML frontmatter block that opens the file: `---\n...\n---`.
 _FRONTMATTER_BLOCK_RE = re.compile(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", re.DOTALL)
 
-# Inside-frontmatter field lines.
-_VIDEO_ID_LINE_RE = re.compile(r'^video_id:\s*"([^"\n]+)"\s*$', re.MULTILINE)
-_URL_LINE_RE = re.compile(r'^URL:\s*"([^"\n]+)"\s*$', re.MULTILINE)
+# Inside-frontmatter field lines. Quoted (`key: "v"`) and bare (`key: v`) are
+# both accepted, the same two forms `obsidian.read_frontmatter_field` takes.
+# `[ \t]` rather than `\s` around the value: `\s` crosses the newline, so an
+# empty field would capture the *next* line and hand it to the validators.
+_FIELD_VALUE = r'(?:"([^"\n]*)"|(\S[^\n]*))'
+_VIDEO_ID_LINE_RE = re.compile(rf"^video_id:[ \t]*{_FIELD_VALUE}[ \t]*$", re.MULTILINE)
+_URL_LINE_RE = re.compile(rf"^URL:[ \t]*{_FIELD_VALUE}[ \t]*$", re.MULTILINE)
 
 # Cap the frontmatter scan — long titles/playlists still fit comfortably.
 _FRONTMATTER_SCAN_BYTES = 2048
+
+
+def _field_value(match: re.Match[str] | None) -> str | None:
+    """The quoted or the bare capture of a field line, stripped; None if absent."""
+    if match is None:
+        return None
+    quoted, bare = match.group(1), match.group(2)
+    return (quoted if quoted is not None else bare).strip()
 
 
 def extract_trusted_video_id(md_bytes: bytes) -> str | None:
@@ -74,20 +98,17 @@ def extract_trusted_video_id(md_bytes: bytes) -> str | None:
         return None
     block = fm_match.group(1)
 
-    vid_match = _VIDEO_ID_LINE_RE.search(block)
-    if vid_match is None:
+    video_id = _field_value(_VIDEO_ID_LINE_RE.search(block))
+    if video_id is None:
         return None
-    video_id = vid_match.group(1)
 
     if _YT_VIDEO_ID_RE.match(video_id) is None:
         return None
 
     # Integrity cross-check: if URL is present, it must embed the same video_id.
-    url_match = _URL_LINE_RE.search(block)
-    if url_match is not None:
-        url = url_match.group(1)
-        if f"v={video_id}" not in url and f"/{video_id}" not in url:
-            return None
+    url = _field_value(_URL_LINE_RE.search(block))
+    if url is not None and f"v={video_id}" not in url and f"/{video_id}" not in url:
+        return None
 
     return video_id
 
