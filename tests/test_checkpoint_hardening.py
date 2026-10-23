@@ -6,6 +6,9 @@ pipeline-produced output. These tests encode the three trust layers:
   1. Well-formed `---...---` frontmatter block required.
   2. `video_id` must match YouTube's 11-char `[A-Za-z0-9_-]` format.
   3. If `URL:` is present, it must reference the same video_id.
+
+`TestQuotingForms` covers what is *not* a layer: a field value may be quoted
+or bare, and all three layers have to hold on either form.
 """
 
 from __future__ import annotations
@@ -132,4 +135,92 @@ class TestRobustness:
         must not be matched (self-DoS prevention + bounded read cost)."""
         padding = b"x" * 4096
         data = b"---\n" + padding + b'\nvideo_id: "' + _VALID.encode("utf-8") + b'"\n---\n'
+        assert extract_trusted_video_id(data) is None
+
+
+class TestQuotingForms:
+    """Quoting is not a trust layer — the bare form must be accepted too.
+
+    Obsidian rewrites the frontmatter of notes it has open and drops the
+    double quotes. Every layer still has to hold on the bare form.
+    """
+
+    def test_accepts_bare_video_id(self):
+        data = _fm("date: 2026-04-18 12:34", f"video_id: {_VALID}")
+        assert extract_trusted_video_id(data) == _VALID
+
+    def test_accepts_bare_video_id_and_bare_url(self):
+        """The shape Obsidian leaves behind: both fields unquoted."""
+        data = _fm(
+            f"URL: https://www.youtube.com/watch?v={_VALID}",
+            f"video_id: {_VALID}",
+        )
+        assert extract_trusted_video_id(data) == _VALID
+
+    def test_accepts_bare_value_with_trailing_whitespace(self):
+        data = _fm(f"video_id: {_VALID}   ")
+        assert extract_trusted_video_id(data) == _VALID
+
+    def test_layer2_still_rejects_bare_value_of_wrong_format(self):
+        data = _fm("video_id: not-an-id")
+        assert extract_trusted_video_id(data) is None
+
+    def test_layer3_still_rejects_bare_url_of_another_video(self):
+        data = _fm(
+            "URL: https://www.youtube.com/watch?v=xxxxxxxxxxx",
+            f"video_id: {_VALID}",
+        )
+        assert extract_trusted_video_id(data) is None
+
+    def test_bare_url_no_longer_bypasses_the_cross_check(self):
+        """Regression: an unquoted URL used to parse as absent.
+
+        Layer 3 was then skipped, so a quoted video_id paired with a bare URL
+        naming a different video was accepted.
+        """
+        data = _fm(
+            "URL: https://www.youtube.com/watch?v=xxxxxxxxxxx",
+            f'video_id: "{_VALID}"',
+        )
+        assert extract_trusted_video_id(data) is None
+
+    def test_rejects_unbalanced_opening_quote(self):
+        data = _fm(f'video_id: "{_VALID}')
+        assert extract_trusted_video_id(data) is None
+
+    def test_rejects_empty_field_without_swallowing_the_next_line(self):
+        r"""`\s*` after the colon would cross the newline and capture `URL:`."""
+        data = _fm("video_id:", f'URL: "https://www.youtube.com/watch?v={_VALID}"')
+        assert extract_trusted_video_id(data) is None
+
+    def test_rejects_bare_value_carrying_a_yaml_comment(self):
+        data = _fm(f"video_id: {_VALID} # planted")
+        assert extract_trusted_video_id(data) is None
+
+    def test_accepts_the_shape_obsidian_actually_writes(self):
+        """Bare scalars plus a `tags:` block list — the observed rewrite."""
+        data = _fm(
+            "date: 2026-10-22 00:05",
+            f"URL: https://www.youtube.com/watch?v={_VALID}",
+            f"video_id: {_VALID}",
+            "tags:",
+            "  - youtube",
+            "  - learning",
+        )
+        assert extract_trusted_video_id(data) == _VALID
+
+    def test_empty_quoted_url_now_fails_the_cross_check(self):
+        """Behavior change, pinned on purpose: `URL: ""` used to be skipped.
+
+        The old pattern required at least one character, so an empty URL
+        parsed as "no URL field" and layer 3 never ran. The value may now be
+        empty, so the cross-check runs and an empty URL cannot reference the
+        video — fail closed, the stricter direction.
+        """
+        data = _fm('URL: ""', f'video_id: "{_VALID}"')
+        assert extract_trusted_video_id(data) is None
+
+    def test_single_quoted_value_is_still_rejected(self):
+        """Unchanged: only the double-quoted and bare forms are recognised."""
+        data = _fm(f"video_id: '{_VALID}'")
         assert extract_trusted_video_id(data) is None
