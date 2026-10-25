@@ -65,9 +65,11 @@ _FRONTMATTER_BLOCK_RE = re.compile(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", re.DOTALL)
 # both accepted, the same two forms `obsidian.read_frontmatter_field` takes.
 # `[ \t]` rather than `\s` around the value: `\s` crosses the newline, so an
 # empty field would capture the *next* line and hand it to the validators.
+# The trailing class also takes `\r`: in a CRLF note the `\r` sits before the
+# `$`, and without it a quoted value falls through to the bare branch as `"…"`.
 _FIELD_VALUE = r'(?:"([^"\n]*)"|(\S[^\n]*))'
-_VIDEO_ID_LINE_RE = re.compile(rf"^video_id:[ \t]*{_FIELD_VALUE}[ \t]*$", re.MULTILINE)
-_URL_LINE_RE = re.compile(rf"^URL:[ \t]*{_FIELD_VALUE}[ \t]*$", re.MULTILINE)
+_VIDEO_ID_LINE_RE = re.compile(rf"^video_id:[ \t]*{_FIELD_VALUE}[ \t\r]*$", re.MULTILINE)
+_URL_LINE_RE = re.compile(rf"^URL:[ \t]*{_FIELD_VALUE}[ \t\r]*$", re.MULTILINE)
 
 # Cap the frontmatter scan — long titles/playlists still fit comfortably.
 _FRONTMATTER_SCAN_BYTES = 2048

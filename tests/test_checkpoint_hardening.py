@@ -224,3 +224,22 @@ class TestQuotingForms:
         """Unchanged: only the double-quoted and bare forms are recognised."""
         data = _fm(f"video_id: '{_VALID}'")
         assert extract_trusted_video_id(data) is None
+
+    def test_accepts_quoted_values_in_a_crlf_note(self):
+        """Regression: the trailing class did not take the CRLF carriage return.
+
+        The quoted branch then failed to reach the end of the line, the bare
+        branch took the value with its quotes, and layer 2 rejected it.
+        """
+        data = _fm(
+            f'URL: "https://www.youtube.com/watch?v={_VALID}"',
+            f'video_id: "{_VALID}"',
+        ).replace(b"\n", b"\r\n")
+        assert extract_trusted_video_id(data) == _VALID
+
+    def test_accepts_bare_values_in_a_crlf_note(self):
+        data = _fm(
+            f"URL: https://www.youtube.com/watch?v={_VALID}",
+            f"video_id: {_VALID}",
+        ).replace(b"\n", b"\r\n")
+        assert extract_trusted_video_id(data) == _VALID
