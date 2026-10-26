@@ -894,8 +894,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.3.3" },
-    { name = "filelock", marker = "extra == 'mlx'", specifier = ">=3.13" },
-    { name = "filelock", marker = "extra == 'whisper'", specifier = ">=3.13" },
+    { name = "filelock", marker = "extra == 'mlx'", specifier = ">=4.2.1" },
+    { name = "filelock", marker = "extra == 'whisper'", specifier = ">=4.2.1" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "mlx-whisper", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'mlx'", specifier = ">=0.4" },
     { name = "openai-whisper", marker = "extra == 'whisper'", specifier = ">=20240930" },
