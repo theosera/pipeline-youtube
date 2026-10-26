@@ -2,6 +2,7 @@
 
 This is the authoritative CLAUDE.md for this repository. It is version-controlled;
 any modification is visible in `git diff` and requires review.
+The GitHub repository is `theosera/pipeline-youtube`; the local checkout directory is `pipeline-youtube-repo` (the sister `theosera/pipeline-youtube-SDK` uses one name for both).
 
 > 3 層設計: 普遍ルール (行動原則 / セキュリティ境界 / エスカレーション) は共通グローバル層
 > `CLAUDE.global.md` (= `~/.claude/CLAUDE.md` 想定) にある。本ファイル = リポ固有ハードルール。
